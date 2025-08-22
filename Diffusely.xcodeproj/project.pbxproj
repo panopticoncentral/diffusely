@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		8B618FAE2E58CD0400EC66FD /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = 8B618FAD2E58CD0400EC66FD /* CLAUDE.md */; };
+		8B618FB02E58CD8A00EC66FD /* CivitaiApi.md in Resources */ = {isa = PBXBuildFile; fileRef = 8B618FAF2E58CD7D00EC66FD /* CivitaiApi.md */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		8BF6D0F52E54DA970040BD41 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +29,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		8B618FAD2E58CD0400EC66FD /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
+		8B618FAF2E58CD7D00EC66FD /* CivitaiApi.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CivitaiApi.md; sourceTree = "<group>"; };
 		8BF6D0E32E54DA960040BD41 /* Diffusely.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Diffusely.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8BF6D0F42E54DA970040BD41 /* DiffuselyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DiffuselyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8BF6D0FE2E54DA970040BD41 /* DiffuselyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DiffuselyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -88,6 +95,8 @@
 		8BF6D0DA2E54DA960040BD41 = {
 			isa = PBXGroup;
 			children = (
+				8B618FAF2E58CD7D00EC66FD /* CivitaiApi.md */,
+				8B618FAD2E58CD0400EC66FD /* CLAUDE.md */,
 				8BF6D0E52E54DA960040BD41 /* Diffusely */,
 				8BF6D0F72E54DA970040BD41 /* DiffuselyTests */,
 				8BF6D1012E54DA970040BD41 /* DiffuselyUITests */,
@@ -225,6 +234,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8B618FAE2E58CD0400EC66FD /* CLAUDE.md in Resources */,
+				8B618FB02E58CD8A00EC66FD /* CivitaiApi.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
