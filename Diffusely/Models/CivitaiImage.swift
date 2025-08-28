@@ -69,7 +69,7 @@ struct CivitaiImage: Codable, Identifiable {
     let height: Int?
     let hash: String?
     let hasMeta: Bool
-    let hasPositivePrompt: Bool
+    let hasPositivePrompt: Bool?
     let onSite: Bool
     let remixOfId: Int?
     let createdAt: String
@@ -78,8 +78,8 @@ struct CivitaiImage: Codable, Identifiable {
     let type: String
     let metadata: ImageMetadata?
     let index: Int?
-    let minor: Bool
-    let acceptableMinor: Bool
+    let minor: Bool?
+    let acceptableMinor: Bool?
     let postId: Int
     let postTitle: String?
     let publishedAt: String?

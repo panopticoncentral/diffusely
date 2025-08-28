@@ -74,6 +74,14 @@ type VideoMetadata = {
   parentId?: number;
 }
 
+export const MetricTimeframe = {
+  Day: 'Day',
+  Week: 'Week',
+  Month: 'Month',
+  Year: 'Year',
+  AllTime: 'AllTime',
+} as const;
+
 # APIs
 
 These are the tRPC APIs accessible from the `https://civitai.com/api/trpc/` endpoint.

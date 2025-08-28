@@ -22,7 +22,7 @@ class CivitaiService: ObservableObject {
         nextCursor = nil
     }
     
-    func fetchImages(limit: Int = 20, browsingLevel: Int = 3) async {
+    func fetchImages(limit: Int = 20, browsingLevel: Int = 3, period: MetricTimeframe = .week) async {
         guard !isLoading else { return }
         
         isLoading = true
@@ -32,7 +32,7 @@ class CivitaiService: ObservableObject {
             var components = URLComponents(string: "\(baseURL)/image.getInfinite")!
             
             var inputParams: [String: Any] = [
-                "period": "Week",
+                "period": period.rawValue,
                 "periodMode": "published",
                 "sort": "Most Collected",
                 "types": ["image"],
@@ -82,8 +82,8 @@ class CivitaiService: ObservableObject {
         isLoading = false
     }
     
-    func loadMore(browsingLevel: Int = 3) async {
+    func loadMore(browsingLevel: Int = 3, period: MetricTimeframe = .week) async {
         guard nextCursor != nil else { return }
-        await fetchImages(browsingLevel: browsingLevel)
+        await fetchImages(browsingLevel: browsingLevel, period: period)
     }
 }
