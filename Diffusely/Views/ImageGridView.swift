@@ -11,6 +11,7 @@ struct ImageGridView: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var selectedImage: CivitaiImage?
     @State private var selectedIndex: Int = 0
+    @State private var selectedRating: ContentRating = .pg13
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
     private var columns: [GridItem] {
@@ -42,7 +43,7 @@ struct ImageGridView: View {
                             .onAppear {
                                 if image.id == civitaiService.images.last?.id {
                                     Task {
-                                        await civitaiService.loadMore()
+                                        await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue)
                                     }
                                 }
                             }
@@ -62,13 +63,45 @@ struct ImageGridView: View {
             }
             .navigationTitle("Diffusely")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Picker("Rating", selection: $selectedRating) {
+                            ForEach(ContentRating.allCases) { rating in
+                                VStack(alignment: .leading) {
+                                    Text(rating.displayName)
+                                        .fontWeight(.medium)
+                                    Text(rating.description)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .tag(rating)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(selectedRating.displayName)
+                                .font(.system(size: 14, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(.primary)
+                    }
+                }
+            }
             .refreshable {
                 civitaiService.clear()
-                await civitaiService.fetchImages()
+                await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
             }
             .task {
                 if civitaiService.images.isEmpty {
-                    await civitaiService.fetchImages()
+                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
+                }
+            }
+            .onChange(of: selectedRating) { _, newRating in
+                civitaiService.clear()
+                Task {
+                    await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue)
                 }
             }
         }

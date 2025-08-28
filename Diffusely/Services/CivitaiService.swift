@@ -22,7 +22,7 @@ class CivitaiService: ObservableObject {
         nextCursor = nil
     }
     
-    func fetchImages(limit: Int = 20) async {
+    func fetchImages(limit: Int = 20, browsingLevel: Int = 3) async {
         guard !isLoading else { return }
         
         isLoading = true
@@ -38,7 +38,7 @@ class CivitaiService: ObservableObject {
                 "types": ["image"],
                 "withMeta": false,
                 "useIndex": true,
-                "browsingLevel": 3,
+                "browsingLevel": browsingLevel,
                 "limit": limit,
                 "include": ["tags", "meta", "tagIds"]
             ]
@@ -82,8 +82,8 @@ class CivitaiService: ObservableObject {
         isLoading = false
     }
     
-    func loadMore() async {
+    func loadMore(browsingLevel: Int = 3) async {
         guard nextCursor != nil else { return }
-        await fetchImages()
+        await fetchImages(browsingLevel: browsingLevel)
     }
 }
