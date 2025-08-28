@@ -37,11 +37,11 @@ struct ImageDetailView: View {
     private var regularSizeContent: some View {
         HStack(alignment: .top, spacing: 20) {
             Group {
-                if image.isVideo, let url = URL(string: image.url) {
+                if image.isVideo, let url = URL(string: image.fullURL) {
                     VideoPlayerView(url: url)
                         .frame(maxHeight: 400)
                 } else {
-                    AsyncImage(url: URL(string: image.url)) { image in
+                    AsyncImage(url: URL(string: image.fullURL)) { image in
                         image
                             .resizable()
                             .aspectRatio(contentMode: .fit)
@@ -67,11 +67,11 @@ struct ImageDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Group {
-                    if image.isVideo, let url = URL(string: image.url) {
+                    if image.isVideo, let url = URL(string: image.fullURL) {
                         VideoPlayerView(url: url)
                             .frame(height: 300)
                     } else {
-                        AsyncImage(url: URL(string: image.url)) { image in
+                        AsyncImage(url: URL(string: image.fullURL)) { image in
                             image
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
@@ -105,18 +105,19 @@ struct ImageDetailView: View {
                 }
             }
             
-            if let stats = image.stats {
-                HStack(spacing: 20) {
-                    if let likes = stats.likeCount {
-                        Label("\(likes)", systemImage: "heart")
-                    }
-                    if let comments = stats.commentCount {
-                        Label("\(comments)", systemImage: "message")
-                    }
+            HStack(spacing: 20) {
+                if let likes = image.stats.likeCount {
+                    Label("\(likes)", systemImage: "heart")
                 }
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                if let comments = image.stats.commentCount {
+                    Label("\(comments)", systemImage: "message")
+                }
+                if let hearts = image.stats.heartCount {
+                    Label("\(hearts)", systemImage: "heart.fill")
+                }
             }
+            .font(.subheadline)
+            .foregroundColor(.secondary)
             
             if showingMetadata, let meta = image.meta {
                 VStack(alignment: .leading, spacing: 8) {

@@ -12,10 +12,10 @@ struct ImageThumbnailView: View {
     
     var body: some View {
         Group {
-            if image.isVideo, let url = URL(string: image.url) {
+            if image.isVideo, let url = URL(string: image.fullURL) {
                 VideoThumbnailView(url: url)
             } else {
-                AsyncImage(url: URL(string: image.url)) { image in
+                AsyncImage(url: URL(string: image.fullURL)) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -36,19 +36,17 @@ struct ImageThumbnailView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    if let stats = image.stats {
-                        HStack(spacing: 4) {
-                            if let likes = stats.likeCount, likes > 0 {
-                                Label("\(likes)", systemImage: "heart.fill")
-                                    .font(.caption)
-                                    .foregroundColor(.white)
-                            }
+                    HStack(spacing: 4) {
+                        if let likes = image.stats.likeCount, likes > 0 {
+                            Label("\(likes)", systemImage: "heart.fill")
+                                .font(.caption)
+                                .foregroundColor(.white)
                         }
-                        .padding(4)
-                        .background(.black.opacity(0.6))
-                        .cornerRadius(4)
-                        .padding(4)
                     }
+                    .padding(4)
+                    .background(.black.opacity(0.6))
+                    .cornerRadius(4)
+                    .padding(4)
                 }
             }
         )

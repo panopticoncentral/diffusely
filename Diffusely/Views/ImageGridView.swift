@@ -10,30 +10,34 @@ import SwiftUI
 struct ImageGridView: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var selectedImage: CivitaiImage?
+    @State private var selectedIndex: Int = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
     private var columns: [GridItem] {
         let columnCount: Int
         switch horizontalSizeClass {
         case .compact:
-            columnCount = 2
+            columnCount = 3 // More like Photos app on iPhone
         case .regular:
-            columnCount = 4
+            columnCount = 5 // More like Photos app on iPad
         default:
-            columnCount = 3
+            columnCount = 4
         }
-        return Array(repeating: GridItem(.flexible()), count: columnCount)
+        return Array(repeating: GridItem(.flexible(), spacing: 1), count: columnCount)
     }
     
     var body: some View {
-        NavigationSplitView {
+        NavigationStack {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(civitaiService.images) { image in
-                        ImageThumbnailView(image: image)
+                LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
+                    ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                        PhotosGridThumbnail(image: image)
                             .aspectRatio(1, contentMode: .fit)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
                             .onTapGesture {
                                 selectedImage = image
+                                selectedIndex = index
                             }
                             .onAppear {
                                 if image.id == civitaiService.images.last?.id {
@@ -44,7 +48,6 @@ struct ImageGridView: View {
                             }
                     }
                 }
-                .padding(.horizontal, 8)
                 
                 if civitaiService.isLoading {
                     ProgressView()
@@ -58,32 +61,26 @@ struct ImageGridView: View {
                 }
             }
             .navigationTitle("Diffusely")
+            .navigationBarTitleDisplayMode(.large)
             .refreshable {
-                await civitaiService.fetchImages(refresh: true)
+                civitaiService.clear()
+                await civitaiService.fetchImages()
             }
             .task {
                 if civitaiService.images.isEmpty {
                     await civitaiService.fetchImages()
                 }
             }
-        } detail: {
-            if let selectedImage = selectedImage {
-                ImageDetailView(image: selectedImage)
-            } else {
-                VStack {
-                    Image(systemName: "photo")
-                        .font(.system(size: 60))
-                        .foregroundColor(.secondary)
-                    Text("Select an image to view details")
-                        .font(.title2)
-                        .foregroundColor(.secondary)
-                }
-            }
         }
-        .sheet(item: $selectedImage) { image in
-            if horizontalSizeClass == .compact {
-                ImageDetailView(image: image)
-            }
+        .fullScreenCover(item: $selectedImage) { _ in
+            PhotosCarouselView(
+                images: civitaiService.images,
+                selectedIndex: $selectedIndex,
+                isPresented: Binding(
+                    get: { selectedImage != nil },
+                    set: { if !$0 { selectedImage = nil } }
+                )
+            )
         }
     }
 }
