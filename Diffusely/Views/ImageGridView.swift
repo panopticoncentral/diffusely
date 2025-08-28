@@ -29,79 +29,66 @@ struct ImageGridView: View {
     
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
-                    ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                        PhotosGridThumbnail(image: image)
-                            .aspectRatio(1, contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .clipped()
-                            .onTapGesture {
-                                selectedImage = image
-                                selectedIndex = index
-                            }
-                            .onAppear {
-                                if image.id == civitaiService.images.last?.id {
-                                    Task {
-                                        await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue)
+            ZStack {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
+                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                            PhotosGridThumbnail(image: image)
+                                .aspectRatio(1, contentMode: .fit)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .clipped()
+                                .onTapGesture {
+                                    selectedImage = image
+                                    selectedIndex = index
+                                }
+                                .onAppear {
+                                    if image.id == civitaiService.images.last?.id {
+                                        Task {
+                                            await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue)
+                                        }
                                     }
                                 }
-                            }
+                        }
+                    }
+                    
+                    if civitaiService.isLoading {
+                        ProgressView()
+                            .padding()
+                    }
+                    
+                    if let error = civitaiService.error {
+                        Text("Error: \(error.localizedDescription)")
+                            .foregroundColor(.red)
+                            .padding()
                     }
                 }
-                
-                if civitaiService.isLoading {
-                    ProgressView()
-                        .padding()
-                }
-                
-                if let error = civitaiService.error {
-                    Text("Error: \(error.localizedDescription)")
-                        .foregroundColor(.red)
-                        .padding()
-                }
-            }
-            .navigationTitle("Diffusely")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Picker("Rating", selection: $selectedRating) {
-                            ForEach(ContentRating.allCases) { rating in
-                                VStack(alignment: .leading) {
-                                    Text(rating.displayName)
-                                        .fontWeight(.medium)
-                                    Text(rating.description)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .tag(rating)
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(selectedRating.displayName)
-                                .font(.system(size: 14, weight: .medium))
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(.primary)
-                    }
-                }
-            }
-            .refreshable {
-                civitaiService.clear()
-                await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
-            }
-            .task {
-                if civitaiService.images.isEmpty {
+                .navigationTitle("Diffusely")
+                .navigationBarTitleDisplayMode(.large)
+                .refreshable {
+                    civitaiService.clear()
                     await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
                 }
-            }
-            .onChange(of: selectedRating) { _, newRating in
-                civitaiService.clear()
-                Task {
-                    await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue)
+                .task {
+                    if civitaiService.images.isEmpty {
+                        await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
+                    }
+                }
+                .onChange(of: selectedRating) { _, newRating in
+                    civitaiService.clear()
+                    Task {
+                        await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue)
+                    }
+                }
+                
+                // Floating Photos-style toolbar
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        PhotosFloatingToolbar(selectedRating: $selectedRating)
+                        Spacer()
+                    }
+                    .padding(.bottom, 20)
                 }
             }
         }
