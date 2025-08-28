@@ -10,9 +10,49 @@ import SwiftUI
 struct PhotosFloatingToolbar: View {
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: MetricTimeframe
+    @Binding var selectedSort: ImageSort
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
+            // Sort picker
+            Menu {
+                ForEach(ImageSort.allCases) { sort in
+                    Button(action: {
+                        selectedSort = sort
+                    }) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sort.displayName)
+                                    .fontWeight(.medium)
+                                Text(sort.description)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            if sort == selectedSort {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: selectedSort.icon)
+                        .font(.system(size: 12, weight: .medium))
+                    Text(selectedSort.shortName)
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+            }
+            
+            // Divider
+            Rectangle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: 1, height: 18)
+            
             // Period picker
             Menu {
                 ForEach(MetricTimeframe.allCases) { period in
@@ -36,21 +76,21 @@ struct PhotosFloatingToolbar: View {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "calendar")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                     Text(selectedPeriod.shortName)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(.primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
             }
             
             // Divider
             Rectangle()
                 .fill(Color.gray.opacity(0.3))
-                .frame(width: 1, height: 20)
+                .frame(width: 1, height: 18)
             
             // Rating picker
             Menu {
@@ -75,15 +115,15 @@ struct PhotosFloatingToolbar: View {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "eye")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                     Text(selectedRating.displayName)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(.primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
             }
         }
         .background {

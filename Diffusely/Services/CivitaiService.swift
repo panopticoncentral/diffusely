@@ -22,7 +22,7 @@ class CivitaiService: ObservableObject {
         nextCursor = nil
     }
     
-    func fetchImages(limit: Int = 20, browsingLevel: Int = 3, period: MetricTimeframe = .week) async {
+    func fetchImages(limit: Int = 20, browsingLevel: Int = 3, period: MetricTimeframe = .week, sort: ImageSort = .mostCollected) async {
         guard !isLoading else { return }
         
         isLoading = true
@@ -34,7 +34,7 @@ class CivitaiService: ObservableObject {
             var inputParams: [String: Any] = [
                 "period": period.rawValue,
                 "periodMode": "published",
-                "sort": "Most Collected",
+                "sort": sort.rawValue,
                 "types": ["image"],
                 "withMeta": false,
                 "useIndex": true,
@@ -82,8 +82,8 @@ class CivitaiService: ObservableObject {
         isLoading = false
     }
     
-    func loadMore(browsingLevel: Int = 3, period: MetricTimeframe = .week) async {
+    func loadMore(browsingLevel: Int = 3, period: MetricTimeframe = .week, sort: ImageSort = .mostCollected) async {
         guard nextCursor != nil else { return }
-        await fetchImages(browsingLevel: browsingLevel, period: period)
+        await fetchImages(browsingLevel: browsingLevel, period: period, sort: sort)
     }
 }

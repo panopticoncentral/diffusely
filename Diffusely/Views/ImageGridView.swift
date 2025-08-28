@@ -13,6 +13,7 @@ struct ImageGridView: View {
     @State private var selectedIndex: Int = 0
     @State private var selectedRating: ContentRating = .pg13
     @State private var selectedPeriod: MetricTimeframe = .week
+    @State private var selectedSort: ImageSort = .mostCollected
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
     private var columns: [GridItem] {
@@ -45,7 +46,7 @@ struct ImageGridView: View {
                             .onAppear {
                                 if image.id == civitaiService.images.last?.id {
                                     Task {
-                                        await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod)
+                                        await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                                     }
                                 }
                             }
@@ -68,23 +69,29 @@ struct ImageGridView: View {
             .ignoresSafeArea(.all)
             .refreshable {
                 civitaiService.clear()
-                await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod)
+                await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
             }
             .task {
                 if civitaiService.images.isEmpty {
-                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod)
+                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedRating) { _, newRating in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue, period: selectedPeriod)
+                    await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedPeriod) { _, newPeriod in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: newPeriod)
+                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: newPeriod, sort: selectedSort)
+                }
+            }
+            .onChange(of: selectedSort) { _, newSort in
+                civitaiService.clear()
+                Task {
+                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: newSort)
                 }
             }
             
@@ -120,7 +127,7 @@ struct ImageGridView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    PhotosFloatingToolbar(selectedRating: $selectedRating, selectedPeriod: $selectedPeriod)
+                    PhotosFloatingToolbar(selectedRating: $selectedRating, selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
                     Spacer()
                 }
                 .padding(.bottom, 20)
