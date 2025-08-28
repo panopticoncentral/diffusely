@@ -28,68 +28,95 @@ struct ImageGridView: View {
     }
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
-                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                            PhotosGridThumbnail(image: image)
-                                .aspectRatio(1, contentMode: .fit)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .clipped()
-                                .onTapGesture {
-                                    selectedImage = image
-                                    selectedIndex = index
-                                }
-                                .onAppear {
-                                    if image.id == civitaiService.images.last?.id {
-                                        Task {
-                                            await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue)
-                                        }
+        ZStack {
+            // Full-screen grid with edge-to-edge content
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
+                    ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                        PhotosGridThumbnail(image: image)
+                            .aspectRatio(1, contentMode: .fit)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .onTapGesture {
+                                selectedImage = image
+                                selectedIndex = index
+                            }
+                            .onAppear {
+                                if image.id == civitaiService.images.last?.id {
+                                    Task {
+                                        await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue)
                                     }
                                 }
-                        }
-                    }
-                    
-                    if civitaiService.isLoading {
-                        ProgressView()
-                            .padding()
-                    }
-                    
-                    if let error = civitaiService.error {
-                        Text("Error: \(error.localizedDescription)")
-                            .foregroundColor(.red)
-                            .padding()
+                            }
                     }
                 }
-                .navigationTitle("Diffusely")
-                .navigationBarTitleDisplayMode(.large)
-                .refreshable {
-                    civitaiService.clear()
-                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
-                }
-                .task {
-                    if civitaiService.images.isEmpty {
-                        await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
-                    }
-                }
-                .onChange(of: selectedRating) { _, newRating in
-                    civitaiService.clear()
-                    Task {
-                        await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue)
-                    }
+                .padding(.top, 80) // Space for floating title
+                .padding(.bottom, 100) // Space for floating toolbar
+                
+                if civitaiService.isLoading {
+                    ProgressView()
+                        .padding()
                 }
                 
-                // Floating Photos-style toolbar
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        PhotosFloatingToolbar(selectedRating: $selectedRating)
-                        Spacer()
-                    }
-                    .padding(.bottom, 20)
+                if let error = civitaiService.error {
+                    Text("Error: \(error.localizedDescription)")
+                        .foregroundColor(.red)
+                        .padding()
                 }
+            }
+            .ignoresSafeArea(.all)
+            .refreshable {
+                civitaiService.clear()
+                await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
+            }
+            .task {
+                if civitaiService.images.isEmpty {
+                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue)
+                }
+            }
+            .onChange(of: selectedRating) { _, newRating in
+                civitaiService.clear()
+                Task {
+                    await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue)
+                }
+            }
+            
+            // Floating transparent title at top
+            VStack {
+                HStack {
+                    Text("Diffusely")
+                        .font(.system(size: 34, weight: .bold, design: .default))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                    Spacer()
+                }
+                .background {
+                    // Gradient fade from semi-transparent to completely transparent
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.15),
+                            Color.black.opacity(0.05),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .ignoresSafeArea(.all, edges: .top)
+                }
+                Spacer()
+            }
+            
+            // Floating Photos-style toolbar at bottom
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    PhotosFloatingToolbar(selectedRating: $selectedRating)
+                    Spacer()
+                }
+                .padding(.bottom, 20)
             }
         }
         .fullScreenCover(item: $selectedImage) { _ in
