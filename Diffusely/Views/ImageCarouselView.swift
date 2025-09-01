@@ -1,13 +1,6 @@
-//
-//  PhotosCarouselView.swift
-//  Diffusely
-//
-//  Created by Claude on 8/27/25.
-//
-
 import SwiftUI
 
-struct PhotosCarouselView: View {
+struct ImageCarouselView: View {
     let images: [CivitaiImage]
     @Binding var selectedIndex: Int
     @Binding var isPresented: Bool
@@ -53,7 +46,7 @@ struct PhotosCarouselView: View {
                 TabView(selection: $selectedIndex) {
                     ForEach(Array(images.enumerated()), id: \.element.id) { index, image in
                         GeometryReader { geometry in
-                            AsyncImage(url: URL(string: image.fullURL)) { phase in
+                            AsyncImage(url: URL(string: image.detailURL)) { phase in
                                 switch phase {
                                 case .success(let image):
                                     image

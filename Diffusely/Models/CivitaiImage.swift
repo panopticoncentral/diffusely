@@ -1,10 +1,3 @@
-//
-//  CivitaiImage.swift
-//  Diffusely
-//
-//  Created by Claude on 8/20/25.
-//
-
 import Foundation
 
 struct TRPCBatchResponse: Codable {
@@ -90,20 +83,30 @@ struct CivitaiImage: Codable, Identifiable {
     let tagIds: [Int]?
     let user: CivitaiUser
     let stats: IndexedImageStats
-    let thumbnailUrl: String?
+    private let thumbnailUrl: String?
     
     // Additional fields for indexed response
     let reactionCount: Int?
     let commentCount: Int?
     let collectedCount: Int?
     
-    // Computed property to return the full image URL
-    var fullURL: String {
+    var detailURL: String {
         if url.hasPrefix("http") {
             return url
+        } else if isVideo {
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=true,transcode=true/\(id).mp4"
         } else {
-            // Construct full URL from the image ID/hash
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/original=true/\(url).jpeg"
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false/\(id).jpeg"
+        }
+    }
+    
+    var thumbnailURL: String {
+        if url.hasPrefix("http") {
+            return url
+        } else if isVideo {
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,transcode=true/\(id).jpeg"
+        } else {
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false/\(id).jpeg"
         }
     }
     

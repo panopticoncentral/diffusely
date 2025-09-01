@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum MetricTimeframe: String, CaseIterable, Identifiable {
+enum Timeframe: String, CaseIterable, Identifiable {
     case day = "Day"
     case week = "Week"
     case month = "Month"
@@ -49,15 +49,15 @@ enum MetricTimeframe: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .day:
-            return "Images from today"
+            return "From today"
         case .week:
-            return "Images from this week"
+            return "From this week"
         case .month:
-            return "Images from this month"
+            return "From this month"
         case .year:
-            return "Images from this year"
+            return "From this year"
         case .allTime:
-            return "All images ever"
+            return "All ever"
         }
     }
 }

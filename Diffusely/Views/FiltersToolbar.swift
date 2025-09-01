@@ -1,15 +1,8 @@
-//
-//  PhotosFloatingToolbar.swift
-//  Diffusely
-//
-//  Created by Claude on 8/28/25.
-//
-
 import SwiftUI
 
-struct PhotosFloatingToolbar: View {
+struct FiltersToolbar: View {
     @Binding var selectedRating: ContentRating
-    @Binding var selectedPeriod: MetricTimeframe
+    @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: ImageSort
     
     var body: some View {
@@ -55,7 +48,7 @@ struct PhotosFloatingToolbar: View {
             
             // Period picker
             Menu {
-                ForEach(MetricTimeframe.allCases) { period in
+                ForEach(Timeframe.allCases) { period in
                     Button(action: {
                         selectedPeriod = period
                     }) {

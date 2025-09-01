@@ -1,20 +1,15 @@
-//
-//  ImageGridView.swift
-//  Diffusely
-//
-//  Created by Claude on 8/20/25.
-//
-
 import SwiftUI
 
 struct ImageGridView: View {
     @StateObject private var civitaiService = CivitaiService()
-    @State private var selectedImage: CivitaiImage?
+    @State private var selected: CivitaiImage?
     @State private var selectedIndex: Int = 0
-    @State private var selectedRating: ContentRating = .pg13
-    @State private var selectedPeriod: MetricTimeframe = .week
-    @State private var selectedSort: ImageSort = .mostCollected
+    @State private var selectedRating: ContentRating = .g
+    @State private var selectedPeriod: Timeframe = .week
+    @State private var selectedSort: ImageSort = .mostReactions
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    let videos: Bool
     
     private var columns: [GridItem] {
         let columnCount: Int
@@ -31,22 +26,21 @@ struct ImageGridView: View {
     
     var body: some View {
         ZStack {
-            // Full-screen grid with edge-to-edge content
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
                     ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                        PhotosGridThumbnail(image: image)
+                        ImageThumbnail(image: image)
                             .aspectRatio(1, contentMode: .fit)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .clipped()
                             .onTapGesture {
-                                selectedImage = image
+                                selected = image
                                 selectedIndex = index
                             }
                             .onAppear {
                                 if image.id == civitaiService.images.last?.id {
                                     Task {
-                                        await civitaiService.loadMore(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                                        await civitaiService.loadMore(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                                     }
                                 }
                             }
@@ -69,36 +63,36 @@ struct ImageGridView: View {
             .ignoresSafeArea(.all)
             .refreshable {
                 civitaiService.clear()
-                await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
             }
             .task {
                 if civitaiService.images.isEmpty {
-                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedRating) { _, newRating in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(browsingLevel: newRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                    await civitaiService.fetchImages(videos: videos, browsingLevel: newRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedPeriod) { _, newPeriod in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: newPeriod, sort: selectedSort)
+                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: newPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedSort) { _, newSort in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: newSort)
+                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: newSort)
                 }
             }
             
             // Floating transparent title at top
             VStack {
                 HStack {
-                    Text("Diffusely")
+                    Text(videos ? "Videos" : "Images")
                         .font(.system(size: 34, weight: .bold, design: .default))
                         .foregroundStyle(.white)
                         .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
@@ -122,24 +116,23 @@ struct ImageGridView: View {
                 Spacer()
             }
             
-            // Floating Photos-style toolbar at bottom
             VStack {
                 Spacer()
                 HStack {
                     Spacer()
-                    PhotosFloatingToolbar(selectedRating: $selectedRating, selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
+                    FiltersToolbar(selectedRating: $selectedRating, selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
                     Spacer()
                 }
                 .padding(.bottom, 20)
             }
         }
-        .fullScreenCover(item: $selectedImage) { _ in
-            PhotosCarouselView(
+        .fullScreenCover(item: $selected) { _ in
+            ImageCarouselView(
                 images: civitaiService.images,
                 selectedIndex: $selectedIndex,
                 isPresented: Binding(
-                    get: { selectedImage != nil },
-                    set: { if !$0 { selectedImage = nil } }
+                    get: { selected != nil },
+                    set: { if !$0 { selected = nil } }
                 )
             )
         }
