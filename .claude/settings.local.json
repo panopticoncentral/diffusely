@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:civitai.com)",
+      "WebSearch",
+      "WebFetch(domain:developer.civitai.com)",
+      "Bash(xcodebuild:*)",
+      "Bash(swift:*)",
+      "Bash(python3:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

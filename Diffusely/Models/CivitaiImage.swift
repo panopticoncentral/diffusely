@@ -104,9 +104,9 @@ struct CivitaiImage: Codable, Identifiable {
         if url.hasPrefix("http") {
             return url
         } else if isVideo {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,transcode=true/\(id).jpeg"
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,transcode=true,width=400/\(id).jpeg"
         } else {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false/\(id).jpeg"
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,width=400/\(id).jpeg"
         }
     }
     

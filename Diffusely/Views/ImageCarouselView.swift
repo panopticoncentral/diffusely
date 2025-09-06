@@ -1,4 +1,6 @@
 import SwiftUI
+import AVKit
+import Combine
 
 struct ImageCarouselView: View {
     let images: [CivitaiImage]
@@ -8,6 +10,7 @@ struct ImageCarouselView: View {
     @State private var showingDetails = false
     @State private var detailOffset: CGFloat = 0
     @State private var dragOffset: CGFloat = 0
+    @StateObject private var videoPlayerManager = VideoPlayerManager()
     
     private let detailThreshold: CGFloat = 150
     
@@ -17,110 +20,143 @@ struct ImageCarouselView: View {
     }
     
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                // Top toolbar
-                HStack {
-                    Button("Done") {
-                        isPresented = false
-                    }
-                    .foregroundColor(.white)
-                    
-                    Spacer()
-                    
-                    if !showingDetails {
-                        Button(action: {
-                            showingDetails = true
-                        }) {
-                            Image(systemName: "info.circle")
-                                .foregroundColor(.white)
-                        }
-                    }
-                }
-                .padding()
-                .background(Color.black.opacity(showingDetails ? 0.8 : 0.0))
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
                 
-                // Image carousel
+                // Full-screen image carousel
                 TabView(selection: $selectedIndex) {
                     ForEach(Array(images.enumerated()), id: \.element.id) { index, image in
-                        GeometryReader { geometry in
-                            AsyncImage(url: URL(string: image.detailURL)) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fit)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                case .failure(_):
-                                    Rectangle()
-                                        .fill(Color.gray.opacity(0.3))
-                                        .overlay(
-                                            VStack {
-                                                Image(systemName: "photo")
-                                                    .font(.system(size: 50))
-                                                Text("Failed to load")
-                                            }
-                                            .foregroundColor(.gray)
-                                        )
-                                case .empty:
-                                    Rectangle()
-                                        .fill(Color.clear)
-                                        .overlay(
-                                            ProgressView()
-                                                .tint(.white)
-                                        )
-                                @unknown default:
-                                    EmptyView()
+                        ZStack {
+                            if image.isVideo {
+                                SharedVideoPlayerView(
+                                    image: image,
+                                    videoPlayerManager: videoPlayerManager,
+                                    index: index,
+                                    isCurrentIndex: selectedIndex == index
+                                )
+                            } else {
+                                AsyncImage(url: URL(string: image.detailURL)) { phase in
+                                    switch phase {
+                                    case .success(let image):
+                                        image
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fit)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    case .failure(_):
+                                        Rectangle()
+                                            .fill(Color.gray.opacity(0.3))
+                                            .overlay(
+                                                VStack {
+                                                    Image(systemName: "photo")
+                                                        .font(.system(size: 50))
+                                                    Text("Failed to load")
+                                                }
+                                                .foregroundColor(.gray)
+                                            )
+                                    case .empty:
+                                        Rectangle()
+                                            .fill(Color.clear)
+                                            .overlay(
+                                                ProgressView()
+                                                    .tint(.white)
+                                            )
+                                    @unknown default:
+                                        EmptyView()
+                                    }
                                 }
                             }
                         }
                         .tag(index)
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                showingDetails.toggle()
-                            }
-                        }
                     }
                 }
                 .tabViewStyle(PageTabViewStyle())
-                .frame(maxHeight: .infinity)
-                .offset(y: showingDetails ? -100 : 0)
-            }
-            
-            // Slide-up detail panel
-            VStack {
-                Spacer()
+                .ignoresSafeArea()
                 
-                PhotosDetailPanel(
-                    image: currentImage,
-                    isShowing: $showingDetails,
-                    offset: $detailOffset
-                )
-                .offset(y: showingDetails ? detailOffset + dragOffset : 400)
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            dragOffset = max(0, value.translation.height)
+                // Top toolbar overlay
+                VStack {
+                    HStack {
+                        Button(action: {
+                            isPresented = false
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.white)
                         }
-                        .onEnded { value in
-                            withAnimation(.spring()) {
-                                if value.translation.height > detailThreshold {
-                                    showingDetails = false
-                                    detailOffset = 0
-                                } else {
-                                    detailOffset = 0
-                                }
-                                dragOffset = 0
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.4)) {
+                                showingDetails = true
                             }
+                        }) {
+                            Image(systemName: "info.circle")
+                                .font(.title2)
+                                .foregroundColor(.white)
                         }
-                )
-                .animation(.spring(), value: showingDetails)
+                    }
+                    .padding()
+                    .background(
+                        LinearGradient(
+                            colors: [.black.opacity(0.6), .clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 100)
+                        .offset(y: -20)
+                    )
+                    
+                    Spacer()
+                }
+                .opacity(showingDetails ? 0 : 1)
+                .animation(.easeInOut(duration: 0.3), value: showingDetails)
+                
+                // Stats text bar at bottom
+                if let currentImage = currentImage {
+                    VStack {
+                        Spacer()
+                        StatsTextBar(image: currentImage)
+                    }
+                    .opacity(showingDetails ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.3), value: showingDetails)
+                }
+                
+                // Photos app-style slide up detail panel
+                if showingDetails {
+                    PhotosDetailPanel(
+                        image: currentImage,
+                        isShowing: $showingDetails,
+                        offset: $detailOffset
+                    )
+                    .transition(.move(edge: .bottom))
+                    .offset(y: detailOffset + dragOffset)
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                dragOffset = max(0, value.translation.height)
+                            }
+                            .onEnded { value in
+                                withAnimation(.spring()) {
+                                    if value.translation.height > detailThreshold {
+                                        showingDetails = false
+                                        detailOffset = 0
+                                    } else {
+                                        detailOffset = 0
+                                    }
+                                    dragOffset = 0
+                                }
+                            }
+                    )
+                }
             }
         }
-        .statusBarHidden(!showingDetails)
+        .statusBarHidden()
+        .onDisappear {
+            videoPlayerManager.stop()
+        }
     }
+    
 }
 
 struct PhotosDetailPanel: View {
@@ -257,6 +293,132 @@ struct DetailItem: View {
                 .foregroundColor(.secondary)
             Text(value)
                 .font(.caption)
+        }
+    }
+}
+
+struct SharedVideoPlayerView: View {
+    let image: CivitaiImage
+    @ObservedObject var videoPlayerManager: VideoPlayerManager
+    let index: Int
+    let isCurrentIndex: Bool
+    
+    var body: some View {
+        ZStack {
+            VideoPlayer(player: videoPlayerManager.player)
+                .onAppear {
+                    if isCurrentIndex {
+                        videoPlayerManager.playVideo(url: image.detailURL, at: index)
+                    }
+                }
+                .onChange(of: isCurrentIndex) { oldValue, newValue in
+                    if newValue {
+                        videoPlayerManager.playVideo(url: image.detailURL, at: index)
+                    } else if videoPlayerManager.currentVideoIndex == index {
+                        videoPlayerManager.pause()
+                    }
+                }
+                .opacity(videoPlayerManager.isLoading ? 0 : 1)
+                .animation(.easeInOut(duration: 0.3), value: videoPlayerManager.isLoading)
+            
+            if videoPlayerManager.isLoading && !videoPlayerManager.hasError {
+                Rectangle()
+                    .fill(Color.black)
+                    .overlay(
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(1.2)
+                            Text("Loading video...")
+                                .foregroundColor(.white)
+                                .font(.caption)
+                        }
+                    )
+            }
+            
+            if videoPlayerManager.hasError {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+                    .overlay(
+                        VStack(spacing: 12) {
+                            Image(systemName: "play.slash")
+                                .font(.system(size: 50))
+                            Text("Failed to load video")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.gray)
+                    )
+            }
+        }
+    }
+}
+
+
+struct StatsTextBar: View {
+    let image: CivitaiImage
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            formatStatsWithIcons()
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.6)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 60)
+        )
+    }
+    
+    private func formatStatsWithIcons() -> some View {
+        HStack(spacing: 16) {
+            if let likes = image.stats.likeCount, likes > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "heart")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    Text(formatCount(likes))
+                        .font(.caption)
+                        .foregroundColor(.white)
+                }
+            }
+            
+            if let comments = image.stats.commentCount, comments > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "message")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    Text(formatCount(comments))
+                        .font(.caption)
+                        .foregroundColor(.white)
+                }
+            }
+            
+            if let hearts = image.stats.heartCount, hearts > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "heart.fill")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    Text(formatCount(hearts))
+                        .font(.caption)
+                        .foregroundColor(.white)
+                }
+            }
+        }
+        .shadow(color: .black.opacity(0.8), radius: 1, x: 0, y: 1)
+    }
+    
+    private func formatCount(_ count: Int) -> String {
+        if count >= 1000000 {
+            return String(format: "%.1fM", Double(count) / 1000000)
+        } else if count >= 1000 {
+            return String(format: "%.1fK", Double(count) / 1000)
+        } else {
+            return "\(count)"
         }
     }
 }
