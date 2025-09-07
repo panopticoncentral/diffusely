@@ -10,7 +10,6 @@ struct ImageCarouselView: View {
     @State private var showingDetails = false
     @State private var detailOffset: CGFloat = 0
     @State private var dragOffset: CGFloat = 0
-    @StateObject private var videoPlayerManager = VideoPlayerManager()
     
     private let detailThreshold: CGFloat = 150
     
@@ -31,7 +30,6 @@ struct ImageCarouselView: View {
                             if image.isVideo {
                                 SharedVideoPlayerView(
                                     image: image,
-                                    videoPlayerManager: videoPlayerManager,
                                     index: index,
                                     isCurrentIndex: selectedIndex == index
                                 )
@@ -152,9 +150,6 @@ struct ImageCarouselView: View {
             }
         }
         .statusBarHidden()
-        .onDisappear {
-            videoPlayerManager.stop()
-        }
     }
     
 }
@@ -299,29 +294,29 @@ struct DetailItem: View {
 
 struct SharedVideoPlayerView: View {
     let image: CivitaiImage
-    @ObservedObject var videoPlayerManager: VideoPlayerManager
     let index: Int
     let isCurrentIndex: Bool
     
+    @State private var individualPlayer = AVPlayer()
+    @State private var isLoading = false
+    @State private var hasError = false
+    @State private var cancellables = Set<AnyCancellable>()
+    
     var body: some View {
         ZStack {
-            VideoPlayerView(player: videoPlayerManager.player)
+            VideoPlayerView(player: individualPlayer)
                 .onAppear {
-                    if isCurrentIndex {
-                        videoPlayerManager.playVideo(url: image.detailURL, at: index)
-                    }
+                    setupPlayer()
                 }
                 .onChange(of: isCurrentIndex) { oldValue, newValue in
                     if newValue {
-                        videoPlayerManager.playVideo(url: image.detailURL, at: index)
-                    } else if videoPlayerManager.currentVideoIndex == index {
-                        videoPlayerManager.pause()
+                        playVideo()
+                    } else {
+                        pauseVideo()
                     }
                 }
-                .opacity(videoPlayerManager.isLoading ? 0 : 1)
-                .animation(.easeInOut(duration: 0.3), value: videoPlayerManager.isLoading)
             
-            if videoPlayerManager.isLoading && !videoPlayerManager.hasError {
+            if isLoading && !hasError {
                 Rectangle()
                     .fill(Color.black)
                     .overlay(
@@ -336,7 +331,7 @@ struct SharedVideoPlayerView: View {
                     )
             }
             
-            if videoPlayerManager.hasError {
+            if hasError {
                 Rectangle()
                     .fill(Color.gray.opacity(0.3))
                     .overlay(
@@ -350,6 +345,76 @@ struct SharedVideoPlayerView: View {
                     )
             }
         }
+        .onDisappear {
+            individualPlayer.pause()
+            individualPlayer.replaceCurrentItem(with: nil)
+        }
+    }
+    
+    private func setupPlayer() {
+        guard let videoURL = URL(string: image.detailURL) else {
+            hasError = true
+            return
+        }
+        
+        isLoading = true
+        hasError = false
+        
+        let item = AVPlayerItem(url: videoURL)
+        individualPlayer.replaceCurrentItem(with: item)
+        
+        // Setup audio
+        individualPlayer.isMuted = false
+        individualPlayer.volume = 1.0
+        
+        // Monitor status
+        item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { status in
+                switch status {
+                case .readyToPlay:
+                    isLoading = false
+                    hasError = false
+                    if isCurrentIndex {
+                        individualPlayer.play()
+                    }
+                case .failed:
+                    isLoading = false
+                    hasError = true
+                case .unknown:
+                    break
+                @unknown default:
+                    isLoading = false
+                    hasError = true
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Setup looping
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            individualPlayer.seek(to: .zero)
+            if isCurrentIndex {
+                individualPlayer.play()
+            }
+        }
+        
+        if isCurrentIndex {
+            playVideo()
+        }
+    }
+    
+    private func playVideo() {
+        if individualPlayer.currentItem?.status == .readyToPlay {
+            individualPlayer.play()
+        }
+    }
+    
+    private func pauseVideo() {
+        individualPlayer.pause()
     }
 }
 
