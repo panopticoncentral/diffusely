@@ -305,7 +305,7 @@ struct SharedVideoPlayerView: View {
     
     var body: some View {
         ZStack {
-            VideoPlayer(player: videoPlayerManager.player)
+            VideoPlayerView(player: videoPlayerManager.player)
                 .onAppear {
                     if isCurrentIndex {
                         videoPlayerManager.playVideo(url: image.detailURL, at: index)
@@ -353,6 +353,31 @@ struct SharedVideoPlayerView: View {
     }
 }
 
+struct VideoPlayerView: UIViewRepresentable {
+    let player: AVPlayer
+    
+    func makeUIView(context: Context) -> PlayerUIView {
+        let view = PlayerUIView()
+        let playerLayer = AVPlayerLayer(player: player)
+        playerLayer.videoGravity = .resizeAspect
+        view.layer.addSublayer(playerLayer)
+        view.playerLayer = playerLayer
+        return view
+    }
+    
+    func updateUIView(_ uiView: PlayerUIView, context: Context) {
+        uiView.playerLayer?.player = player
+    }
+}
+
+class PlayerUIView: UIView {
+    var playerLayer: AVPlayerLayer?
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer?.frame = bounds
+    }
+}
 
 struct StatsTextBar: View {
     let image: CivitaiImage

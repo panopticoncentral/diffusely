@@ -21,18 +21,18 @@ struct ImageGridView: View {
         default:
             columnCount = 4
         }
-        return Array(repeating: GridItem(.flexible(), spacing: 1), count: columnCount)
+        return Array(repeating: GridItem(.flexible(), spacing: 2), count: columnCount)
     }
     
     var body: some View {
         ZStack {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 1) { // Minimal spacing like Photos
+                LazyVGrid(columns: columns, spacing: 2) { // Minimal spacing like Photos
                     ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
                         ImageThumbnail(image: image)
                             .aspectRatio(1, contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .clipped()
+                            .contentShape(Rectangle())
                             .onTapGesture {
                                 selected = image
                                 selectedIndex = index

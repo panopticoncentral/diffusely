@@ -52,6 +52,9 @@ class VideoPlayerManager: ObservableObject {
         // Set up observers for the new item
         setupPlayerItemObservers(for: item)
         
+        // Enable looping
+        setupLooping(for: item)
+        
         // Start playing
         player.play()
     }
@@ -128,5 +131,15 @@ class VideoPlayerManager: ObservableObject {
         // Ensure audio is not muted
         player.isMuted = false
         player.volume = 1.0
+    }
+    
+    private func setupLooping(for item: AVPlayerItem) {
+        NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime, object: item)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.player.seek(to: .zero)
+                self?.player.play()
+            }
+            .store(in: &cancellables)
     }
 }
