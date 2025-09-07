@@ -4,9 +4,9 @@ struct ImageGridView: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var selected: CivitaiImage?
     @State private var selectedIndex: Int = 0
-    @State private var selectedRating: ContentRating = .g
-    @State private var selectedPeriod: Timeframe = .week
-    @State private var selectedSort: ImageSort = .mostReactions
+    @Binding var selectedRating: ContentRating
+    @Binding var selectedPeriod: Timeframe
+    @Binding var selectedSort: ImageSort
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     let videos: Bool
