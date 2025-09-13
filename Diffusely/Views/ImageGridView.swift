@@ -134,7 +134,9 @@ struct ImageGridView: View {
                     get: { selected != nil },
                     set: { if !$0 { selected = nil } }
                 )
-            )
+            ) {
+                await civitaiService.loadMore(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+            }
         }
     }
 }

@@ -6,6 +6,7 @@ struct ImageCarouselView: View {
     let images: [CivitaiImage]
     @Binding var selectedIndex: Int
     @Binding var isPresented: Bool
+    let onLoadMore: () async -> Void
     
     @State private var showingDetails = false
     @State private var detailOffset: CGFloat = 0
@@ -73,6 +74,14 @@ struct ImageCarouselView: View {
                 .tabViewStyle(PageTabViewStyle())
                 .ignoresSafeArea()
                 .offset(y: dismissDragOffset)
+                .onChange(of: selectedIndex) { oldValue, newValue in
+                    // Load more when we're near the end (within 3 images)
+                    if newValue >= images.count - 3 {
+                        Task {
+                            await onLoadMore()
+                        }
+                    }
+                }
                 .gesture(
                     DragGesture()
                         .onChanged { value in
