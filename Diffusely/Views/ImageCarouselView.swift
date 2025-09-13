@@ -10,8 +10,10 @@ struct ImageCarouselView: View {
     @State private var showingDetails = false
     @State private var detailOffset: CGFloat = 0
     @State private var dragOffset: CGFloat = 0
+    @State private var dismissDragOffset: CGFloat = 0
     
     private let detailThreshold: CGFloat = 150
+    private let dismissThreshold: CGFloat = 100
     
     var currentImage: CivitaiImage? {
         guard selectedIndex < images.count else { return nil }
@@ -70,6 +72,24 @@ struct ImageCarouselView: View {
                 }
                 .tabViewStyle(PageTabViewStyle())
                 .ignoresSafeArea()
+                .offset(y: dismissDragOffset)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            // Only allow downward drags to dismiss
+                            if value.translation.height > 0 {
+                                dismissDragOffset = value.translation.height
+                            }
+                        }
+                        .onEnded { value in
+                            withAnimation(.spring()) {
+                                if value.translation.height > dismissThreshold {
+                                    isPresented = false
+                                }
+                                dismissDragOffset = 0
+                            }
+                        }
+                )
                 
                 // Top toolbar overlay
                 VStack {
@@ -109,6 +129,7 @@ struct ImageCarouselView: View {
                 }
                 .opacity(showingDetails ? 0 : 1)
                 .animation(.easeInOut(duration: 0.3), value: showingDetails)
+                .offset(y: dismissDragOffset)
                 
                 // Stats text bar at bottom
                 if let currentImage = currentImage {
@@ -118,6 +139,7 @@ struct ImageCarouselView: View {
                     }
                     .opacity(showingDetails ? 0 : 1)
                     .animation(.easeInOut(duration: 0.3), value: showingDetails)
+                    .offset(y: dismissDragOffset)
                 }
                 
                 // Photos app-style slide up detail panel
