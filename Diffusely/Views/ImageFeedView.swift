@@ -30,10 +30,11 @@ struct ImageFeedView: View {
                             showingFilters = true
                         } label: {
                             Image(systemName: "line.3.horizontal.decrease.circle")
-                                .font(.title2)
+                                .font(.system(size: 24, weight: .medium))
                                 .foregroundColor(.primary)
                         }
-                        .padding(.trailing, 20)
+                        .frame(width: 44, height: 44)
+                        .padding(.trailing, 16)
                         .padding(.top, 8)
                     }
                     .background(Color(.systemBackground))
