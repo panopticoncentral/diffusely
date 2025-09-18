@@ -5,7 +5,6 @@ import Combine
 struct ImageFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var selectedImage: CivitaiImage?
-    @State private var showingFilters = false
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: ImageSort
@@ -26,8 +25,58 @@ struct ImageFeedView: View {
                             .padding(.bottom, 16)
                         Spacer()
 
-                        Button {
-                            showingFilters = true
+                        Menu {
+                            // Content Menu
+                            Menu("Content") {
+                                ForEach(ContentRating.allCases) { rating in
+                                    Button {
+                                        selectedRating = rating
+                                    } label: {
+                                        HStack {
+                                            Text(rating.displayName)
+                                            if rating == selectedRating {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Time Menu
+                            Menu("Time") {
+                                ForEach(Timeframe.allCases) { period in
+                                    Button {
+                                        selectedPeriod = period
+                                    } label: {
+                                        HStack {
+                                            Text(period.displayName)
+                                            if period == selectedPeriod {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Sort Menu
+                            Menu("Sort") {
+                                ForEach(ImageSort.allCases) { sort in
+                                    Button {
+                                        selectedSort = sort
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: sort.icon)
+                                            Text(sort.displayName)
+                                            if sort == selectedSort {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         } label: {
                             Image(systemName: "line.3.horizontal.decrease.circle")
                                 .font(.system(size: 24, weight: .medium))
@@ -120,14 +169,6 @@ struct ImageFeedView: View {
                     get: { selectedImage != nil },
                     set: { if !$0 { selectedImage = nil } }
                 )
-            )
-        }
-        .sheet(isPresented: $showingFilters) {
-            FiltersSheet(
-                selectedRating: $selectedRating,
-                selectedPeriod: $selectedPeriod,
-                selectedSort: $selectedSort,
-                isPresented: $showingFilters
             )
         }
     }
