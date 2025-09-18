@@ -5,10 +5,10 @@ struct ContentView: View {
     @State private var selectedRating: ContentRating = .g
     @State private var selectedPeriod: Timeframe = .week
     @State private var selectedSort: ImageSort = .mostReactions
-    
+
     var body: some View {
         TabView(selection: $selectedTab) {
-            ImageGridView(
+            ImageFeedView(
                 selectedRating: $selectedRating,
                 selectedPeriod: $selectedPeriod,
                 selectedSort: $selectedSort,
@@ -20,7 +20,7 @@ struct ContentView: View {
                 }
                 .tag(0)
 
-            ImageGridView(
+            ImageFeedView(
                 selectedRating: $selectedRating,
                 selectedPeriod: $selectedPeriod,
                 selectedSort: $selectedSort,
@@ -31,6 +31,7 @@ struct ContentView: View {
                     Text("Videos")
                 }
                 .tag(1)
+
         }
     }
 }
