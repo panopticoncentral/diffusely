@@ -236,10 +236,43 @@ struct FeedItemView: View {
                 HStack(spacing: 16) {
                     if image.stats.likeCountAllTime > 0 {
                         HStack(spacing: 4) {
-                            Image(systemName: "heart")
+                            Image(systemName: "hand.thumbsup.fill")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             Text("\(formatCount(image.stats.likeCountAllTime))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if image.stats.heartCountAllTime > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "heart.fill")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                            Text("\(formatCount(image.stats.heartCountAllTime))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if image.stats.laughCountAllTime > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "face.smiling")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("\(formatCount(image.stats.laughCountAllTime))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if image.stats.cryCountAllTime > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "face.dashed")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("\(formatCount(image.stats.cryCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -256,12 +289,12 @@ struct FeedItemView: View {
                         }
                     }
 
-                    if image.stats.collectedCountAllTime > 0 {
+                    if image.stats.dislikeCountAllTime > 0 {
                         HStack(spacing: 4) {
-                            Image(systemName: "bookmark")
+                            Image(systemName: "hand.thumbsdown")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(image.stats.collectedCountAllTime))")
+                            Text("\(formatCount(image.stats.dislikeCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

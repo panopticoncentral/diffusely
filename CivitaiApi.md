@@ -108,12 +108,17 @@ galleries, feeds, or browsing interfaces.
 
 #### Engagement (stats property object)
 
-| Field                 | Type   | Description                |
-| --------------------- | ------ | -------------------------- |
-| likeCountAllTime      | number | Total likes                |
-| heartCountAllTime     | number | Total hearts               |
-| commentCountAllTime   | number | Total comments             |
-| collectedCountAllTime | number | Total collections saved to |
+| Field                    | Type   | Description                |
+| ------------------------ | ------ | -------------------------- |
+| likeCountAllTime         | number | Total likes                |
+| laughCountAllTime        | number | Total laughs               |
+| heartCountAllTime        | number | Total hearts               |
+| cryCountAllTime          | number | Total cries                |
+| commentCountAllTime      | number | Total comments             |
+| collectedCountAllTime    | number | Total collections saved to |
+| tippedAmountCountAllTime | number | Total tips                 |
+| dislikeCountAllTime      | number | Total dislikes             |
+| viewCountAllTime         | number | Total view count           |
 
 #### AI Generation Data (meta property object)
 
