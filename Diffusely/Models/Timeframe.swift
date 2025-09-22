@@ -1,10 +1,3 @@
-//
-//  MetricTimeframe.swift
-//  Diffusely
-//
-//  Created by Claude on 8/28/25.
-//
-
 import Foundation
 
 enum Timeframe: String, CaseIterable, Identifiable {

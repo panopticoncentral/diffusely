@@ -4,7 +4,7 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @State private var selectedRating: ContentRating = .g
     @State private var selectedPeriod: Timeframe = .week
-    @State private var selectedSort: ImageSort = .mostReactions
+    @State private var selectedSort: FeedSort = .mostReactions
 
     var body: some View {
         TabView(selection: $selectedTab) {

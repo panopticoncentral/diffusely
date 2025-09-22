@@ -1,10 +1,3 @@
-//
-//  ContentRating.swift
-//  Diffusely
-//
-//  Created by Claude on 8/28/25.
-//
-
 import Foundation
 
 enum ContentRating: Int, CaseIterable, Identifiable {

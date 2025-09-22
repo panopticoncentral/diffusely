@@ -7,7 +7,7 @@ struct ImageFeedView: View {
     @State private var selectedImage: CivitaiImage?
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
-    @Binding var selectedSort: ImageSort
+    @Binding var selectedSort: FeedSort
 
     let videos: Bool
 
@@ -62,7 +62,7 @@ struct ImageFeedView: View {
 
                             // Sort Menu
                             Menu("Sort") {
-                                ForEach(ImageSort.allCases) { sort in
+                                ForEach(FeedSort.allCases) { sort in
                                     Button {
                                         selectedSort = sort
                                     } label: {
@@ -195,12 +195,9 @@ struct FeedItemView: View {
                         )
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(image.username ?? "Unknown")
+                        Text(image.user.username ?? "Unknown")
                             .font(.subheadline)
                             .fontWeight(.semibold)
-                        Text(formatDate(image.createdAt))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
                 }
 
@@ -237,23 +234,23 @@ struct FeedItemView: View {
             // Statistics only
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 16) {
-                    if let likes = image.stats.likeCount, likes > 0 {
+                    if image.stats.likeCountAllTime > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "heart")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(likes))")
+                            Text("\(formatCount(image.stats.likeCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    if let comments = image.stats.commentCount, comments > 0 {
+                    if image.stats.commentCountAllTime > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "message")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(comments))")
+                            Text("\(formatCount(image.stats.commentCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -277,7 +274,7 @@ struct FeedItemView: View {
 
                 if let prompt = image.meta?.prompt, !prompt.isEmpty {
                     HStack(alignment: .top) {
-                        Text(image.username ?? "")
+                        Text(image.user.username ?? "")
                             .fontWeight(.semibold) +
                         Text(" \(prompt)")
                     }
@@ -464,5 +461,173 @@ struct ImageDetailSheet: View {
             .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+}
+
+struct DetailItem: View {
+    let title: String
+    let value: String
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.caption)
+        }
+    }
+}
+
+struct SharedVideoPlayerView: View {
+    let image: CivitaiImage
+    let index: Int
+    let isCurrentIndex: Bool
+    
+    @State private var individualPlayer = AVPlayer()
+    @State private var isLoading = false
+    @State private var hasError = false
+    @State private var cancellables = Set<AnyCancellable>()
+    
+    var body: some View {
+        ZStack {
+            VideoPlayerView(player: individualPlayer)
+                .onAppear {
+                    setupPlayer()
+                }
+                .onChange(of: isCurrentIndex) { oldValue, newValue in
+                    if newValue {
+                        playVideo()
+                    } else {
+                        pauseVideo()
+                    }
+                }
+            
+            if isLoading && !hasError {
+                Rectangle()
+                    .fill(Color.black)
+                    .overlay(
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .tint(.white)
+                                .scaleEffect(1.2)
+                            Text("Loading video...")
+                                .foregroundColor(.white)
+                                .font(.caption)
+                        }
+                    )
+            }
+            
+            if hasError {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+                    .overlay(
+                        VStack(spacing: 12) {
+                            Image(systemName: "play.slash")
+                                .font(.system(size: 50))
+                            Text("Failed to load video")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.gray)
+                    )
+            }
+        }
+        .onDisappear {
+            individualPlayer.pause()
+            individualPlayer.replaceCurrentItem(with: nil)
+        }
+    }
+    
+    private func setupPlayer() {
+        guard let videoURL = URL(string: image.detailURL) else {
+            hasError = true
+            return
+        }
+        
+        isLoading = true
+        hasError = false
+        
+        let item = AVPlayerItem(url: videoURL)
+        individualPlayer.replaceCurrentItem(with: item)
+        
+        // Setup audio
+        individualPlayer.isMuted = false
+        individualPlayer.volume = 1.0
+        
+        // Monitor status
+        item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { status in
+                switch status {
+                case .readyToPlay:
+                    isLoading = false
+                    hasError = false
+                    if isCurrentIndex {
+                        individualPlayer.play()
+                    }
+                case .failed:
+                    isLoading = false
+                    hasError = true
+                case .unknown:
+                    break
+                @unknown default:
+                    isLoading = false
+                    hasError = true
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Setup looping
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            individualPlayer.seek(to: .zero)
+            if isCurrentIndex {
+                individualPlayer.play()
+            }
+        }
+        
+        if isCurrentIndex {
+            playVideo()
+        }
+    }
+    
+    private func playVideo() {
+        if individualPlayer.currentItem?.status == .readyToPlay {
+            individualPlayer.play()
+        }
+    }
+    
+    private func pauseVideo() {
+        individualPlayer.pause()
+    }
+}
+
+struct VideoPlayerView: UIViewRepresentable {
+    let player: AVPlayer
+    
+    func makeUIView(context: Context) -> PlayerUIView {
+        let view = PlayerUIView()
+        let playerLayer = AVPlayerLayer(player: player)
+        playerLayer.videoGravity = .resizeAspect
+        view.layer.addSublayer(playerLayer)
+        view.playerLayer = playerLayer
+        return view
+    }
+    
+    func updateUIView(_ uiView: PlayerUIView, context: Context) {
+        uiView.playerLayer?.player = player
+    }
+}
+
+class PlayerUIView: UIView {
+    var playerLayer: AVPlayerLayer?
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer?.frame = bounds
     }
 }

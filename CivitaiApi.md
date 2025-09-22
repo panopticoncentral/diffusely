@@ -293,17 +293,9 @@ for building social feeds, post browsing interfaces, and content discovery.
 | detail     | string | Post description                            |
 | nsfwLevel  | number | Content level                               |
 | imageCount | number | Number of images                            |
-| user       | object | Creator info (see below)                    |
+| user       | object | Creator info (same as image.getInfinite)    |
 | stats      | object | Statistics (see below)                      |
 | images     | array  | Array of images (same as image.getInfinite) |
-
-#### Creator Info (user property object)
-
-| Field    | Type   | Description         |
-| -------- | ------ | ------------------- |
-| id       | number | User ID             |
-| username | string | Display name        |
-| image    | string | Profile picture URL |
 
 #### Engagement (stats property object)
 
@@ -312,3 +304,6 @@ for building social feeds, post browsing interfaces, and content discovery.
 | likeCount    | number | Total likes    |
 | heartCount   | number | Total hearts   |
 | commentCount | number | Total comments |
+| dislikeCount | number | Total dislikes |
+| laughCount   | number | Total laughs   |
+| cryCount     | number | Total cries    |

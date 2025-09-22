@@ -1,110 +1,23 @@
 import Foundation
 
-struct TRPCBatchResponse: Codable {
-    let result: TRPCResult
-}
-
-struct TRPCResult: Codable {
-    let data: TRPCData
-}
-
-struct TRPCData: Codable {
-    let json: CivitaiImageResponse
-}
-
-struct CivitaiImageResponse: Codable {
-    let items: [CivitaiImage]
-    let nextCursor: AnyCursor?
-}
-
-// Support both Int and String cursor types
-enum AnyCursor: Codable {
-    case int(Int)
-    case string(String)
-    
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let intValue = try? container.decode(Int.self) {
-            self = .int(intValue)
-        } else if let stringValue = try? container.decode(String.self) {
-            self = .string(stringValue)
-        } else {
-            throw DecodingError.typeMismatch(AnyCursor.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected Int or String"))
-        }
-    }
-    
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .int(let intValue):
-            try container.encode(intValue)
-        case .string(let stringValue):
-            try container.encode(stringValue)
-        }
-    }
-    
-    var stringValue: String {
-        switch self {
-        case .int(let intValue):
-            return String(intValue)
-        case .string(let stringValue):
-            return stringValue
-        }
-    }
-}
-
 struct CivitaiImage: Codable, Identifiable {
     let id: Int
     let name: String?
     private let url: String // Make this private since we need to construct the full URL
-    let nsfwLevel: Int
     let width: Int?
     let height: Int?
-    let hash: String?
-    let hasMeta: Bool
-    let hasPositivePrompt: Bool?
-    let onSite: Bool
-    let remixOfId: Int?
-    let createdAt: String
-    let sortAt: String
-    let mimeType: String?
+    let nsfwLevel: Int
     let type: String
-    let metadata: ImageMetadata?
-    let index: Int?
-    let minor: Bool?
-    let acceptableMinor: Bool?
     let postId: Int
-    let postTitle: String?
-    let publishedAt: String?
-    let modelVersionId: Int?
-    let availability: String
-    let meta: ImageGenerationProps?
-    let baseModel: String?
-    let tagIds: [Int]?
+    let hash: String?
     let user: CivitaiUser
-    let stats: IndexedImageStats
-    private let thumbnailUrl: String?
-    
-    // Additional fields for indexed response
-    let reactionCount: Int?
-    let commentCount: Int?
-    let collectedCount: Int?
-    
+    let stats: ImageStats
+    let hasMeta: Bool
+    let meta: ImageMeta?
+
     var detailURL: String {
-        if url.hasPrefix("http") {
-            return url
-        } else if isVideo {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=true,transcode=true/\(id).mp4"
-        } else {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false/\(id).jpeg"
-        }
-    }
-    
-    var thumbnailURL: String {
-        if url.hasPrefix("http") {
-            return url
-        } else if isVideo {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,transcode=true,width=400/\(id).jpeg"
+        if isVideo {
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=true,transcode=true,width=400/\(id).mp4"
         } else {
             return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,width=400/\(id).jpeg"
         }
@@ -117,22 +30,9 @@ struct CivitaiImage: Codable, Identifiable {
     var nsfw: Bool {
         return nsfwLevel > 2
     }
-    
-    // For compatibility with views expecting username directly
-    var username: String? {
-        return user.username
-    }
 }
 
-struct CivitaiUser: Codable {
-    let id: Int
-    let username: String?
-    let image: String?
-    let deletedAt: String?
-}
-
-// Stats structure for indexed responses (useIndex: true)
-struct IndexedImageStats: Codable {
+struct ImageStats: Codable {
     let likeCountAllTime: Int
     let laughCountAllTime: Int
     let heartCountAllTime: Int
@@ -142,37 +42,9 @@ struct IndexedImageStats: Codable {
     let tippedAmountCountAllTime: Int
     let dislikeCountAllTime: Int
     let viewCountAllTime: Int
-    
-    // For compatibility with existing views
-    var likeCount: Int? { likeCountAllTime }
-    var commentCount: Int? { commentCountAllTime }
-    var heartCount: Int? { heartCountAllTime }
 }
 
-// Legacy stats structure for non-indexed responses
-struct ImageStats: Codable {
-    let likeCountAllTime: Int
-    let laughCountAllTime: Int
-    let heartCountAllTime: Int
-    let cryCountAllTime: Int
-    let commentCountAllTime: Int
-    let collectedCountAllTime: Int
-    let tippedAmountCountAllTime: Int
-    
-    // For compatibility with existing views
-    var likeCount: Int? { likeCountAllTime }
-    var commentCount: Int? { commentCountAllTime }
-    var heartCount: Int? { heartCountAllTime }
-}
-
-struct ImageMetadata: Codable {
-    let hash: String?
-    let size: Int?
-    let width: Int
-    let height: Int
-}
-
-struct ImageGenerationProps: Codable {
+struct ImageMeta: Codable {
     let prompt: String?
     let negativePrompt: String?
     let cfgScale: Double?
@@ -199,6 +71,3 @@ struct ImageGenerationProps: Codable {
         case size = "Size"
     }
 }
-
-// For compatibility with existing views that expect ImageMeta
-typealias ImageMeta = ImageGenerationProps

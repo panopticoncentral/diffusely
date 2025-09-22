@@ -1,11 +1,56 @@
-//
-//  CivitaiService.swift
-//  Diffusely
-//
-//  Created by Claude on 8/20/25.
-//
-
 import Foundation
+
+fileprivate struct Response<T: Codable>: Codable {
+    let result: Result<T>
+}
+
+fileprivate struct Result<T: Codable>: Codable {
+    let data: Data<T>
+}
+
+fileprivate struct Data<T: Codable>: Codable {
+    let json: ResponseBody<T>
+}
+
+fileprivate struct ResponseBody<T: Codable>: Codable {
+    let items: [T]
+    let nextCursor: Cursor?
+}
+
+fileprivate enum Cursor: Codable {
+    case int(Int)
+    case string(String)
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int.self) {
+            self = .int(intValue)
+        } else if let stringValue = try? container.decode(String.self) {
+            self = .string(stringValue)
+        } else {
+            throw DecodingError.typeMismatch(Cursor.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected Int or String"))
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .int(let intValue):
+            try container.encode(intValue)
+        case .string(let stringValue):
+            try container.encode(stringValue)
+        }
+    }
+    
+    var stringValue: String {
+        switch self {
+        case .int(let intValue):
+            return String(intValue)
+        case .string(let stringValue):
+            return stringValue
+        }
+    }
+}
 
 @MainActor
 class CivitaiService: ObservableObject {
@@ -24,7 +69,7 @@ class CivitaiService: ObservableObject {
         nextCursor = nil
     }
     
-    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: ImageSort = .mostCollected) async {
+    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected) async {
         // Cancel any existing request
         currentTask?.cancel()
         
@@ -76,7 +121,7 @@ class CivitaiService: ObservableObject {
                 // Check if task was cancelled
                 try Task.checkCancellation()
                 
-                let tRPCResponse = try JSONDecoder().decode([TRPCBatchResponse].self, from: data)
+                let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
                 let response = tRPCResponse[0].result.data.json
                 
                 images.append(contentsOf: response.items)
@@ -97,7 +142,7 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
     
-    func loadMore(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: ImageSort = .mostCollected) async {
+    func loadMore(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected) async {
         guard nextCursor != nil else { return }
         await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort)
     }

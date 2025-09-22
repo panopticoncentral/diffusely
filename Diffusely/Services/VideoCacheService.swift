@@ -106,7 +106,6 @@ class VideoCacheService: ObservableObject {
                         print("✅ Video loaded: \(url) in \(String(format: "%.2f", loadTime))s")
 
                     case .failed:
-                        let loadTime = Date().timeIntervalSince(startTime)
                         let error = item.error ?? URLError(.unknown)
                         self.videoStates[url] = .failed(error)
                         self.loadingTasks[url] = nil

@@ -1,13 +1,6 @@
-//
-//  ImageSort.swift
-//  Diffusely
-//
-//  Created by Claude on 8/28/25.
-//
-
 import Foundation
 
-enum ImageSort: String, CaseIterable, Identifiable {
+enum FeedSort: String, CaseIterable, Identifiable {
     case mostReactions = "Most Reactions"
     case mostComments = "Most Comments"
     case mostCollected = "Most Collected"
