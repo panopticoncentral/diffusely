@@ -283,8 +283,10 @@ for building social feeds, post browsing interfaces, and content discovery.
   {
     "result": {
       "data": {
-        "items": [ ... ],
-        "nextCursor": "..."
+        "json": {
+          "items": [ ... ],
+          "nextCursor": "..."
+        }
       }
     }
   }
@@ -294,9 +296,8 @@ for building social feeds, post browsing interfaces, and content discovery.
 | Field      | Type   | Description                                 |
 | ---------- | ------ | ------------------------------------------- |
 | id         | number | Unique post identifier                      |
-| name       | string | Post title (can be null)                    |
-| detail     | string | Post description                            |
 | nsfwLevel  | number | Content level                               |
+| title      | string | Post title (can be null)                    |
 | imageCount | number | Number of images                            |
 | user       | object | Creator info (same as image.getInfinite)    |
 | stats      | object | Statistics (see below)                      |
@@ -306,9 +307,9 @@ for building social feeds, post browsing interfaces, and content discovery.
 
 | Field        | Type   | Description    |
 | -------------| ------ | -------------- |
+| cryCount     | number | Total cries    |
 | likeCount    | number | Total likes    |
 | heartCount   | number | Total hearts   |
+| laughCount   | number | Total laughs   |
 | commentCount | number | Total comments |
 | dislikeCount | number | Total dislikes |
-| laughCount   | number | Total laughs   |
-| cryCount     | number | Total cries    |
