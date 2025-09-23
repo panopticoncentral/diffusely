@@ -1,15 +1,11 @@
 import SwiftUI
-import AVKit
-import Combine
 
-struct ImageFeedView: View {
+struct PostsFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
-    @State private var selectedImage: CivitaiImage?
+    @State private var selectedPost: CivitaiPost?
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: FeedSort
-
-    let videos: Bool
 
     var body: some View {
         ZStack {
@@ -17,7 +13,7 @@ struct ImageFeedView: View {
                 LazyVStack(spacing: 0) {
                     // Sticky header that scrolls with content
                     HStack {
-                        Text(videos ? "Videos" : "Images")
+                        Text("Posts")
                             .font(.system(size: 34, weight: .bold, design: .default))
                             .foregroundStyle(.primary)
                             .padding(.horizontal, 20)
@@ -88,30 +84,16 @@ struct ImageFeedView: View {
                     }
                     .background(Color(.systemBackground))
 
-                    ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                        FeedItemView(
-                            image: image,
-                            onTap: { selectedImage = image }
+                    ForEach(Array(civitaiService.posts.enumerated()), id: \.element.id) { index, post in
+                        PostItemView(
+                            post: post,
+                            onTap: { selectedPost = post }
                         )
                         .onAppear {
-                            // Preload images ahead
-                            ImageCacheService.shared.preloadAhead(
-                                currentIndex: index,
-                                images: civitaiService.images,
-                                lookahead: 5
-                            )
-
-                            // Preload videos ahead
-                            VideoCacheService.shared.preloadAhead(
-                                currentIndex: index,
-                                images: civitaiService.images,
-                                lookahead: 3
-                            )
-
                             // Load more content when reaching the end
-                            if image.id == civitaiService.images.last?.id {
+                            if post.id == civitaiService.posts.last?.id {
                                 Task {
-                                    await civitaiService.loadMore(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                                    await civitaiService.loadMorePosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                                 }
                             }
                         }
@@ -134,51 +116,50 @@ struct ImageFeedView: View {
             .ignoresSafeArea(.all)
             .refreshable {
                 civitaiService.clear()
-                await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
             }
             .task {
-                if civitaiService.images.isEmpty {
-                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                if civitaiService.posts.isEmpty {
+                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedRating) { _, newRating in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(videos: videos, browsingLevel: newRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                    await civitaiService.fetchPosts(browsingLevel: newRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedPeriod) { _, newPeriod in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: newPeriod, sort: selectedSort)
+                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: newPeriod, sort: selectedSort)
                 }
             }
             .onChange(of: selectedSort) { _, newSort in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: newSort)
+                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: newSort)
                 }
             }
-
-
         }
-        .fullScreenCover(item: $selectedImage) { image in
-            ImageDetailView(
-                image: image,
+        .fullScreenCover(item: $selectedPost) { post in
+            PostDetailView(
+                post: post,
                 isPresented: Binding(
-                    get: { selectedImage != nil },
-                    set: { if !$0 { selectedImage = nil } }
+                    get: { selectedPost != nil },
+                    set: { if !$0 { selectedPost = nil } }
                 )
             )
         }
     }
 }
 
-struct FeedItemView: View {
-    let image: CivitaiImage
+struct PostItemView: View {
+    let post: CivitaiPost
     let onTap: () -> Void
 
     @State private var showingDetails = false
+    @State private var currentImageIndex = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -195,9 +176,16 @@ struct FeedItemView: View {
                         )
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(image.user?.username ?? "Unknown")
+                        Text(post.user.username ?? "Unknown")
                             .font(.subheadline)
                             .fontWeight(.semibold)
+
+                        if let title = post.title, !title.isEmpty {
+                            Text(title)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
 
@@ -214,87 +202,121 @@ struct FeedItemView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
-            // Main image/video content
-            if image.isVideo {
-                CachedVideoPlayer(
-                    url: image.detailURL,
-                    autoPlay: true,
-                    isMuted: true,
-                    onTap: onTap
-                )
-                .aspectRatio(contentMode: .fit)
-            } else {
-                CachedAsyncImageSimple(url: image.detailURL)
-                    .aspectRatio(contentMode: .fit)
-                    .onTapGesture {
-                        onTap()
+            // Full-width image carousel for all images
+            if !post.images.isEmpty {
+                GeometryReader { geometry in
+                    TabView(selection: $currentImageIndex) {
+                        ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                            if image.isVideo {
+                                CachedVideoPlayer(
+                                    url: image.detailURL,
+                                    autoPlay: false,
+                                    isMuted: true,
+                                    onTap: onTap
+                                )
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .clipped()
+                                .tag(index)
+                            } else {
+                                CachedAsyncImageSimple(url: image.detailURL)
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                                    .clipped()
+                                    .onTapGesture {
+                                        onTap()
+                                    }
+                                    .tag(index)
+                            }
+                        }
                     }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                }
+                .frame(height: UIScreen.main.bounds.width) // Square aspect ratio
+
+                // Custom page indicator and image counter
+                if post.images.count > 1 {
+                    HStack {
+                        Spacer()
+
+                        // Image counter
+                        Text("\(currentImageIndex + 1)/\(post.images.count)")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(12)
+                            .padding(.trailing, 12)
+                            .padding(.top, -30)
+                    }
+                }
             }
 
-            // Statistics only
+            // Statistics
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 16) {
-                    if let stats = image.stats, stats.likeCountAllTime > 0 {
+                    if post.stats.likeCount > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "hand.thumbsup.fill")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.likeCountAllTime))")
+                            Text("\(formatCount(post.stats.likeCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    if let stats = image.stats, stats.heartCountAllTime > 0 {
+                    if post.stats.heartCount > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "heart.fill")
                                 .font(.caption)
                                 .foregroundColor(.red)
-                            Text("\(formatCount(stats.heartCountAllTime))")
+                            Text("\(formatCount(post.stats.heartCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    if let stats = image.stats, stats.laughCountAllTime > 0 {
+                    if post.stats.laughCount > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "face.smiling")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.laughCountAllTime))")
+                            Text("\(formatCount(post.stats.laughCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    if let stats = image.stats, stats.cryCountAllTime > 0 {
+                    if post.stats.cryCount > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "face.dashed")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.cryCountAllTime))")
+                            Text("\(formatCount(post.stats.cryCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    if let stats = image.stats, stats.commentCountAllTime > 0 {
+                    if post.stats.commentCount > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "message")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.commentCountAllTime))")
+                            Text("\(formatCount(post.stats.commentCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    if let stats = image.stats, stats.dislikeCountAllTime > 0 {
+                    if post.stats.dislikeCount > 0 {
                         HStack(spacing: 4) {
                             Image(systemName: "hand.thumbsdown")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.dislikeCountAllTime))")
+                            Text("\(formatCount(post.stats.dislikeCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -305,9 +327,11 @@ struct FeedItemView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
 
-                if let prompt = image.meta?.prompt, !prompt.isEmpty {
+                // Show first image's prompt if available
+                if let firstImage = post.images.first,
+                   let prompt = firstImage.meta?.prompt, !prompt.isEmpty {
                     HStack(alignment: .top) {
-                        Text(image.user?.username ?? "")
+                        Text(post.user.username ?? "")
                             .fontWeight(.semibold) +
                         Text(" \(prompt)")
                     }
@@ -319,40 +343,9 @@ struct FeedItemView: View {
             .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))
-        .onAppear {
-            print("📱 FeedItem appeared for image: \(image.id)")
-        }
-        .onDisappear {
-            print("📱 FeedItem disappeared for image: \(image.id)")
-        }
         .sheet(isPresented: $showingDetails) {
-            ImageDetailSheet(image: image)
+            PostDetailSheet(post: post)
         }
-    }
-
-    private func formatDate(_ dateString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: dateString) {
-            let now = Date()
-            let timeInterval = now.timeIntervalSince(date)
-
-            if timeInterval < 60 {
-                return "now"
-            } else if timeInterval < 3600 {
-                let minutes = Int(timeInterval / 60)
-                return "\(minutes)m"
-            } else if timeInterval < 86400 {
-                let hours = Int(timeInterval / 3600)
-                return "\(hours)h"
-            } else if timeInterval < 604800 {
-                let days = Int(timeInterval / 86400)
-                return "\(days)d"
-            } else {
-                let weeks = Int(timeInterval / 604800)
-                return "\(weeks)w"
-            }
-        }
-        return ""
     }
 
     private func formatCount(_ count: Int) -> String {
@@ -366,51 +359,60 @@ struct FeedItemView: View {
     }
 }
 
-
-struct ImageDetailView: View {
-    let image: CivitaiImage
+struct PostDetailView: View {
+    let post: CivitaiPost
     @Binding var isPresented: Bool
+    @State private var currentImageIndex = 0
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if image.isVideo {
-                SharedVideoPlayerView(
-                    image: image,
-                    index: 0,
-                    isCurrentIndex: true
-                )
-            } else {
-                AsyncImage(url: URL(string: image.detailURL)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    case .failure(_):
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.3))
-                            .overlay(
-                                VStack {
-                                    Image(systemName: "photo")
-                                        .font(.system(size: 50))
-                                    Text("Failed to load")
+            if !post.images.isEmpty {
+                TabView(selection: $currentImageIndex) {
+                    ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                        if image.isVideo {
+                            SharedVideoPlayerView(
+                                image: image,
+                                index: index,
+                                isCurrentIndex: currentImageIndex == index
+                            )
+                            .tag(index)
+                        } else {
+                            AsyncImage(url: URL(string: image.detailURL)) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                case .failure(_):
+                                    Rectangle()
+                                        .fill(Color.gray.opacity(0.3))
+                                        .overlay(
+                                            VStack {
+                                                Image(systemName: "photo")
+                                                    .font(.system(size: 50))
+                                                Text("Failed to load")
+                                            }
+                                            .foregroundColor(.gray)
+                                        )
+                                case .empty:
+                                    Rectangle()
+                                        .fill(Color.clear)
+                                        .overlay(
+                                            ProgressView()
+                                                .tint(.white)
+                                        )
+                                @unknown default:
+                                    EmptyView()
                                 }
-                                .foregroundColor(.gray)
-                            )
-                    case .empty:
-                        Rectangle()
-                            .fill(Color.clear)
-                            .overlay(
-                                ProgressView()
-                                    .tint(.white)
-                            )
-                    @unknown default:
-                        EmptyView()
+                            }
+                            .tag(index)
+                        }
                     }
                 }
+                .tabViewStyle(.page)
             }
 
             VStack {
@@ -422,7 +424,18 @@ struct ImageDetailView: View {
                             .font(.title2)
                             .foregroundColor(.white)
                     }
+
                     Spacer()
+
+                    if post.images.count > 1 {
+                        Text("\(currentImageIndex + 1) / \(post.images.count)")
+                            .foregroundColor(.white)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.5))
+                            .cornerRadius(8)
+                    }
                 }
                 .padding()
                 .background(
@@ -441,14 +454,38 @@ struct ImageDetailView: View {
     }
 }
 
-struct ImageDetailSheet: View {
-    let image: CivitaiImage
+struct PostDetailSheet: View {
+    let post: CivitaiPost
 
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let meta = image.meta {
+                    if let title = post.title, !title.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Title")
+                                .font(.headline)
+                            Text(title)
+                                .font(.body)
+                        }
+                    }
+
+                    Text("Post Statistics")
+                        .font(.headline)
+
+                    LazyVGrid(columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ], spacing: 8) {
+                        DetailItem(title: "Images", value: "\(post.imageCount)")
+                        DetailItem(title: "Likes", value: "\(post.stats.likeCount)")
+                        DetailItem(title: "Hearts", value: "\(post.stats.heartCount)")
+                        DetailItem(title: "Comments", value: "\(post.stats.commentCount)")
+                    }
+
+                    if !post.images.isEmpty,
+                       let firstImage = post.images.first,
+                       let meta = firstImage.meta {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Generation Details")
                                 .font(.headline)
@@ -491,176 +528,9 @@ struct ImageDetailSheet: View {
                 }
                 .padding()
             }
-            .navigationTitle("Details")
+            .navigationTitle("Post Details")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
 }
 
-struct DetailItem: View {
-    let title: String
-    let value: String
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.caption)
-        }
-    }
-}
-
-struct SharedVideoPlayerView: View {
-    let image: CivitaiImage
-    let index: Int
-    let isCurrentIndex: Bool
-    
-    @State private var individualPlayer = AVPlayer()
-    @State private var isLoading = false
-    @State private var hasError = false
-    @State private var cancellables = Set<AnyCancellable>()
-    
-    var body: some View {
-        ZStack {
-            VideoPlayerView(player: individualPlayer)
-                .onAppear {
-                    setupPlayer()
-                }
-                .onChange(of: isCurrentIndex) { oldValue, newValue in
-                    if newValue {
-                        playVideo()
-                    } else {
-                        pauseVideo()
-                    }
-                }
-            
-            if isLoading && !hasError {
-                Rectangle()
-                    .fill(Color.black)
-                    .overlay(
-                        VStack(spacing: 16) {
-                            ProgressView()
-                                .tint(.white)
-                                .scaleEffect(1.2)
-                            Text("Loading video...")
-                                .foregroundColor(.white)
-                                .font(.caption)
-                        }
-                    )
-            }
-            
-            if hasError {
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay(
-                        VStack(spacing: 12) {
-                            Image(systemName: "play.slash")
-                                .font(.system(size: 50))
-                            Text("Failed to load video")
-                                .font(.caption)
-                        }
-                        .foregroundColor(.gray)
-                    )
-            }
-        }
-        .onDisappear {
-            individualPlayer.pause()
-            individualPlayer.replaceCurrentItem(with: nil)
-        }
-    }
-    
-    private func setupPlayer() {
-        guard let videoURL = URL(string: image.detailURL) else {
-            hasError = true
-            return
-        }
-        
-        isLoading = true
-        hasError = false
-        
-        let item = AVPlayerItem(url: videoURL)
-        individualPlayer.replaceCurrentItem(with: item)
-        
-        // Setup audio
-        individualPlayer.isMuted = false
-        individualPlayer.volume = 1.0
-        
-        // Monitor status
-        item.publisher(for: \.status)
-            .receive(on: DispatchQueue.main)
-            .sink { status in
-                switch status {
-                case .readyToPlay:
-                    isLoading = false
-                    hasError = false
-                    if isCurrentIndex {
-                        individualPlayer.play()
-                    }
-                case .failed:
-                    isLoading = false
-                    hasError = true
-                case .unknown:
-                    break
-                @unknown default:
-                    isLoading = false
-                    hasError = true
-                }
-            }
-            .store(in: &cancellables)
-        
-        // Setup looping
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { _ in
-            individualPlayer.seek(to: .zero)
-            if isCurrentIndex {
-                individualPlayer.play()
-            }
-        }
-        
-        if isCurrentIndex {
-            playVideo()
-        }
-    }
-    
-    private func playVideo() {
-        if individualPlayer.currentItem?.status == .readyToPlay {
-            individualPlayer.play()
-        }
-    }
-    
-    private func pauseVideo() {
-        individualPlayer.pause()
-    }
-}
-
-struct VideoPlayerView: UIViewRepresentable {
-    let player: AVPlayer
-    
-    func makeUIView(context: Context) -> PlayerUIView {
-        let view = PlayerUIView()
-        let playerLayer = AVPlayerLayer(player: player)
-        playerLayer.videoGravity = .resizeAspect
-        view.layer.addSublayer(playerLayer)
-        view.playerLayer = playerLayer
-        return view
-    }
-    
-    func updateUIView(_ uiView: PlayerUIView, context: Context) {
-        uiView.playerLayer?.player = player
-    }
-}
-
-class PlayerUIView: UIView {
-    var playerLayer: AVPlayerLayer?
-    
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        playerLayer?.frame = bounds
-    }
-}

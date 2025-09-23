@@ -10,8 +10,8 @@ struct CivitaiImage: Codable, Identifiable {
     let type: String
     let postId: Int
     let hash: String?
-    let user: CivitaiUser
-    let stats: ImageStats
+    let user: CivitaiUser?  // Made optional since it's not always present in posts
+    let stats: ImageStats?  // Made optional since it's not always present in posts
     let hasMeta: Bool
     let meta: ImageMeta?
 

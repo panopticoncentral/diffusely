@@ -32,6 +32,17 @@ struct ContentView: View {
                 }
                 .tag(1)
 
+            PostsFeedView(
+                selectedRating: $selectedRating,
+                selectedPeriod: $selectedPeriod,
+                selectedSort: $selectedSort
+            )
+                .tabItem {
+                    Image(systemName: "rectangle.stack")
+                    Text("Posts")
+                }
+                .tag(2)
+
         }
     }
 }
