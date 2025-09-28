@@ -68,22 +68,10 @@ struct PostsFeedView: View {
                     await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
-            .onChange(of: selectedRating) { _, newRating in
+            .onChange(of: (selectedRating, selectedPeriod, selectedSort)) { _, _ in
                 civitaiService.clear()
                 Task {
-                    await civitaiService.fetchPosts(browsingLevel: newRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
-                }
-            }
-            .onChange(of: selectedPeriod) { _, newPeriod in
-                civitaiService.clear()
-                Task {
-                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: newPeriod, sort: selectedSort)
-                }
-            }
-            .onChange(of: selectedSort) { _, newSort in
-                civitaiService.clear()
-                Task {
-                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: newSort)
+                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
         }
