@@ -366,7 +366,6 @@ struct FeedItemView: View {
     }
 }
 
-
 struct ImageDetailView: View {
     let image: CivitaiImage
     @Binding var isPresented: Bool
@@ -525,7 +524,7 @@ struct SharedVideoPlayerView: View {
     
     var body: some View {
         ZStack {
-            VideoPlayerView(player: individualPlayer)
+            VideoPlayer(player: individualPlayer)
                 .onAppear {
                     setupPlayer()
                 }
@@ -639,28 +638,3 @@ struct SharedVideoPlayerView: View {
     }
 }
 
-struct VideoPlayerView: UIViewRepresentable {
-    let player: AVPlayer
-    
-    func makeUIView(context: Context) -> PlayerUIView {
-        let view = PlayerUIView()
-        let playerLayer = AVPlayerLayer(player: player)
-        playerLayer.videoGravity = .resizeAspect
-        view.layer.addSublayer(playerLayer)
-        view.playerLayer = playerLayer
-        return view
-    }
-    
-    func updateUIView(_ uiView: PlayerUIView, context: Context) {
-        uiView.playerLayer?.player = player
-    }
-}
-
-class PlayerUIView: UIView {
-    var playerLayer: AVPlayerLayer?
-    
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        playerLayer?.frame = bounds
-    }
-}
