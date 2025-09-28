@@ -25,66 +25,11 @@ struct ImageFeedView: View {
                             .padding(.bottom, 16)
                         Spacer()
 
-                        Menu {
-                            // Content Menu
-                            Menu("Content") {
-                                ForEach(ContentRating.allCases) { rating in
-                                    Button {
-                                        selectedRating = rating
-                                    } label: {
-                                        HStack {
-                                            Text(rating.displayName)
-                                            if rating == selectedRating {
-                                                Spacer()
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Time Menu
-                            Menu("Time") {
-                                ForEach(Timeframe.allCases) { period in
-                                    Button {
-                                        selectedPeriod = period
-                                    } label: {
-                                        HStack {
-                                            Text(period.displayName)
-                                            if period == selectedPeriod {
-                                                Spacer()
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Sort Menu
-                            Menu("Sort") {
-                                ForEach(FeedSort.allCases) { sort in
-                                    Button {
-                                        selectedSort = sort
-                                    } label: {
-                                        HStack {
-                                            Image(systemName: sort.icon)
-                                            Text(sort.displayName)
-                                            if sort == selectedSort {
-                                                Spacer()
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
-                                .font(.system(size: 24, weight: .medium))
-                                .foregroundColor(.primary)
-                        }
-                        .frame(width: 44, height: 44)
-                        .padding(.trailing, 16)
-                        .padding(.top, 8)
+                        FeedFilterMenu(
+                            selectedRating: $selectedRating,
+                            selectedPeriod: $selectedPeriod,
+                            selectedSort: $selectedSort
+                        )
                     }
                     .background(Color(.systemBackground))
 
