@@ -80,7 +80,6 @@ class VideoCacheService: ObservableObject {
             return
         }
 
-        print("🎬 Loading video: \(url)")
         let startTime = Date()
 
         await MainActor.run {
@@ -100,17 +99,14 @@ class VideoCacheService: ObservableObject {
 
                     switch status {
                     case .readyToPlay:
-                        let loadTime = Date().timeIntervalSince(startTime)
                         self.videoStates[url] = .loaded(player)
                         self.loadingTasks[url] = nil
-                        print("✅ Video loaded: \(url) in \(String(format: "%.2f", loadTime))s")
 
                     case .failed:
                         let error = item.error ?? URLError(.unknown)
                         self.videoStates[url] = .failed(error)
                         self.loadingTasks[url] = nil
                         self.players[url] = nil
-                        print("❌ Video failed: \(url) - \(error.localizedDescription)")
 
                     case .unknown:
                         break
@@ -166,8 +162,6 @@ class VideoCacheService: ObservableObject {
             .map { $0.detailURL }
 
         preloadVideos(urls: videoUrls, priority: .utility)
-
-        print("🎬 Preloading videos \(startIndex) to \(endIndex) (current: \(currentIndex)) - \(videoUrls.count) videos")
     }
 
     func pauseAll() {

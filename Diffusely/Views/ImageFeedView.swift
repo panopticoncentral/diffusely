@@ -216,7 +216,7 @@ struct FeedItemView: View {
                             Image(systemName: "hand.thumbsup.fill")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.likeCountAllTime))")
+                            Text("\(FormatUtilities.formatCount(stats.likeCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -227,7 +227,7 @@ struct FeedItemView: View {
                             Image(systemName: "heart.fill")
                                 .font(.caption)
                                 .foregroundColor(.red)
-                            Text("\(formatCount(stats.heartCountAllTime))")
+                            Text("\(FormatUtilities.formatCount(stats.heartCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -238,7 +238,7 @@ struct FeedItemView: View {
                             Image(systemName: "face.smiling")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.laughCountAllTime))")
+                            Text("\(FormatUtilities.formatCount(stats.laughCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -249,7 +249,7 @@ struct FeedItemView: View {
                             Image(systemName: "face.dashed")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.cryCountAllTime))")
+                            Text("\(FormatUtilities.formatCount(stats.cryCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -260,7 +260,7 @@ struct FeedItemView: View {
                             Image(systemName: "message")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.commentCountAllTime))")
+                            Text("\(FormatUtilities.formatCount(stats.commentCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -271,7 +271,7 @@ struct FeedItemView: View {
                             Image(systemName: "hand.thumbsdown")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(stats.dislikeCountAllTime))")
+                            Text("\(FormatUtilities.formatCount(stats.dislikeCountAllTime))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -296,46 +296,6 @@ struct FeedItemView: View {
             .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))
-        .onAppear {
-            print("📱 FeedItem appeared for image: \(image.id)")
-        }
-        .onDisappear {
-            print("📱 FeedItem disappeared for image: \(image.id)")
-        }
     }
 
-    private func formatDate(_ dateString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: dateString) {
-            let now = Date()
-            let timeInterval = now.timeIntervalSince(date)
-
-            if timeInterval < 60 {
-                return "now"
-            } else if timeInterval < 3600 {
-                let minutes = Int(timeInterval / 60)
-                return "\(minutes)m"
-            } else if timeInterval < 86400 {
-                let hours = Int(timeInterval / 3600)
-                return "\(hours)h"
-            } else if timeInterval < 604800 {
-                let days = Int(timeInterval / 86400)
-                return "\(days)d"
-            } else {
-                let weeks = Int(timeInterval / 604800)
-                return "\(weeks)w"
-            }
-        }
-        return ""
-    }
-
-    private func formatCount(_ count: Int) -> String {
-        if count >= 1000000 {
-            return String(format: "%.1fM", Double(count) / 1000000)
-        } else if count >= 1000 {
-            return String(format: "%.1fK", Double(count) / 1000)
-        } else {
-            return "\(count)"
-        }
-    }
 }

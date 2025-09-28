@@ -241,7 +241,7 @@ struct PostItemView: View {
                             Image(systemName: "hand.thumbsup.fill")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(post.stats.likeCount))")
+                            Text("\(FormatUtilities.formatCount(post.stats.likeCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -252,7 +252,7 @@ struct PostItemView: View {
                             Image(systemName: "heart.fill")
                                 .font(.caption)
                                 .foregroundColor(.red)
-                            Text("\(formatCount(post.stats.heartCount))")
+                            Text("\(FormatUtilities.formatCount(post.stats.heartCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -263,7 +263,7 @@ struct PostItemView: View {
                             Image(systemName: "face.smiling")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(post.stats.laughCount))")
+                            Text("\(FormatUtilities.formatCount(post.stats.laughCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -274,7 +274,7 @@ struct PostItemView: View {
                             Image(systemName: "face.dashed")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(post.stats.cryCount))")
+                            Text("\(FormatUtilities.formatCount(post.stats.cryCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -285,7 +285,7 @@ struct PostItemView: View {
                             Image(systemName: "message")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(post.stats.commentCount))")
+                            Text("\(FormatUtilities.formatCount(post.stats.commentCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -296,7 +296,7 @@ struct PostItemView: View {
                             Image(systemName: "hand.thumbsdown")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("\(formatCount(post.stats.dislikeCount))")
+                            Text("\(FormatUtilities.formatCount(post.stats.dislikeCount))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -325,13 +325,4 @@ struct PostItemView: View {
         .background(Color(.systemBackground))
     }
 
-    private func formatCount(_ count: Int) -> String {
-        if count >= 1000000 {
-            return String(format: "%.1fM", Double(count) / 1000000)
-        } else if count >= 1000 {
-            return String(format: "%.1fK", Double(count) / 1000)
-        } else {
-            return "\(count)"
-        }
-    }
 }

@@ -81,7 +81,6 @@ class ImageCacheService: ObservableObject {
             return
         }
 
-        print("🔄 Loading image: \(url)")
         let startTime = Date()
 
         do {
@@ -93,7 +92,6 @@ class ImageCacheService: ObservableObject {
                     let error = URLError(.badServerResponse)
                     imageStates[url] = .failed(error)
                     loadingTasks[url] = nil
-                    print("❌ Image failed (bad response): \(url)")
                 }
                 return
             }
@@ -103,7 +101,6 @@ class ImageCacheService: ObservableObject {
                     let error = URLError(.cannotDecodeContentData)
                     imageStates[url] = .failed(error)
                     loadingTasks[url] = nil
-                    print("❌ Image failed (decode): \(url)")
                 }
                 return
             }
@@ -112,22 +109,12 @@ class ImageCacheService: ObservableObject {
                 cache[url] = uiImage
                 imageStates[url] = .loaded(uiImage)
                 loadingTasks[url] = nil
-
-                let loadTime = Date().timeIntervalSince(startTime)
-                print("✅ Image loaded: \(url) in \(String(format: "%.2f", loadTime))s")
             }
 
         } catch {
             await MainActor.run {
                 imageStates[url] = .failed(error)
                 loadingTasks[url] = nil
-
-                let loadTime = Date().timeIntervalSince(startTime)
-                if (error as NSError).code == NSURLErrorCancelled {
-                    print("🚫 Image loading cancelled: \(url) after \(String(format: "%.2f", loadTime))s")
-                } else {
-                    print("❌ Image failed: \(url) - \(error.localizedDescription)")
-                }
             }
         }
     }
@@ -151,7 +138,5 @@ class ImageCacheService: ObservableObject {
 
         let urlsToPreload = Array(images[startIndex...endIndex]).map { $0.detailURL }
         preloadImages(urls: urlsToPreload, priority: .utility)
-
-        print("📱 Preloading images \(startIndex) to \(endIndex) (current: \(currentIndex))")
     }
 }
