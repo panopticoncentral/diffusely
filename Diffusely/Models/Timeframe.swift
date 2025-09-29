@@ -1,6 +1,6 @@
 import Foundation
 
-enum Timeframe: String, CaseIterable, Identifiable {
+enum Timeframe: String, CaseIterable, Identifiable, Equatable {
     case day = "Day"
     case week = "Week"
     case month = "Month"

@@ -80,8 +80,6 @@ class VideoCacheService: ObservableObject {
             return
         }
 
-        let startTime = Date()
-
         await MainActor.run {
             let player = AVPlayer()
             let item = AVPlayerItem(url: videoURL)

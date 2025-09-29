@@ -1,6 +1,6 @@
 import Foundation
 
-enum FeedSort: String, CaseIterable, Identifiable {
+enum FeedSort: String, CaseIterable, Identifiable, Equatable {
     case mostReactions = "Most Reactions"
     case mostComments = "Most Comments"
     case mostCollected = "Most Collected"

@@ -1,6 +1,6 @@
 import Foundation
 
-enum ContentRating: Int, CaseIterable, Identifiable {
+enum ContentRating: Int, CaseIterable, Identifiable, Equatable {
     case g = 1
     case pg = 2
     case pg13 = 4

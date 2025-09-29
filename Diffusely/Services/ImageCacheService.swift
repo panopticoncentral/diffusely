@@ -81,8 +81,6 @@ class ImageCacheService: ObservableObject {
             return
         }
 
-        let startTime = Date()
-
         do {
             let (data, response) = try await URLSession.shared.data(from: imageURL)
 

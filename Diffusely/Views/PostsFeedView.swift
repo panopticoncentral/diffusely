@@ -68,12 +68,16 @@ struct PostsFeedView: View {
                     await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
-            .onChange(of: (selectedRating, selectedPeriod, selectedSort)) { _, _ in
-                civitaiService.clear()
-                Task {
-                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
-                }
-            }
+            .onChange(of: selectedRating) { _, _ in refreshPosts() }
+            .onChange(of: selectedPeriod) { _, _ in refreshPosts() }
+            .onChange(of: selectedSort) { _, _ in refreshPosts() }
+        }
+    }
+
+    private func refreshPosts() {
+        civitaiService.clear()
+        Task {
+            await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
         }
     }
 }

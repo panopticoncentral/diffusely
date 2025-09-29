@@ -86,12 +86,16 @@ struct ImageFeedView: View {
                     await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
                 }
             }
-            .onChange(of: (selectedRating, selectedPeriod, selectedSort)) { _, _ in
-                civitaiService.clear()
-                Task {
-                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
-                }
-            }
+            .onChange(of: selectedRating) { _, _ in refreshImages() }
+            .onChange(of: selectedPeriod) { _, _ in refreshImages() }
+            .onChange(of: selectedSort) { _, _ in refreshImages() }
+        }
+    }
+
+    private func refreshImages() {
+        civitaiService.clear()
+        Task {
+            await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
         }
     }
 }
