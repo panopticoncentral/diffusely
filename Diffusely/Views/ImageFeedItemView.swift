@@ -11,12 +11,16 @@ struct ImageFeedItemView: View {
 
             // Main image/video content
             if image.isVideo {
-                CachedVideoPlayer(
-                    url: image.detailURL,
-                    autoPlay: true,
-                    isMuted: true
-                )
-                .aspectRatio(contentMode: .fit)
+                let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
+                GeometryReader { geometry in
+                    CachedVideoPlayer(
+                        url: image.detailURL,
+                        autoPlay: true,
+                        isMuted: true
+                    )
+                    .frame(width: geometry.size.width, height: geometry.size.width / aspectRatio)
+                }
+                .aspectRatio(aspectRatio, contentMode: .fit)
             } else {
                 CachedAsyncImage(url: image.detailURL)
                     .aspectRatio(contentMode: .fit)
