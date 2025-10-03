@@ -2,7 +2,6 @@ import SwiftUI
 
 struct PostsFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
-    @State private var selectedPost: CivitaiPost?
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: FeedSort
@@ -31,8 +30,7 @@ struct PostsFeedView: View {
 
                     ForEach(Array(civitaiService.posts.enumerated()), id: \.element.id) { index, post in
                         PostsFeedItemView(
-                            post: post,
-                            onTap: { selectedPost = post }
+                            post: post
                         )
                         .onAppear {
                             // Load more content when reaching the end

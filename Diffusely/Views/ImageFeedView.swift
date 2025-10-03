@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ImageFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
-    @State private var selectedImage: CivitaiImage?
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: FeedSort
@@ -33,8 +32,7 @@ struct ImageFeedView: View {
 
                     ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
                         ImageFeedItemView(
-                            image: image,
-                            onTap: { selectedImage = image }
+                            image: image
                         )
                         .onAppear {
                             // Preload images ahead
