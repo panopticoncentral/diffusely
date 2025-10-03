@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ImageFeedItemView: View {
     let image: CivitaiImage
-    let onTap: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -15,16 +14,12 @@ struct ImageFeedItemView: View {
                 CachedVideoPlayer(
                     url: image.detailURL,
                     autoPlay: true,
-                    isMuted: true,
-                    onTap: onTap
+                    isMuted: true
                 )
                 .aspectRatio(contentMode: .fit)
             } else {
                 CachedAsyncImageSimple(url: image.detailURL)
                     .aspectRatio(contentMode: .fit)
-                    .onTapGesture {
-                        onTap()
-                    }
             }
 
             FeedItemStats(

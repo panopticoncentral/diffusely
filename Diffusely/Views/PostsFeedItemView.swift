@@ -2,7 +2,6 @@ import SwiftUI
 
 struct PostsFeedItemView: View {
     let post: CivitaiPost
-    let onTap: () -> Void
 
     @State private var currentImageIndex = 0
 
@@ -13,7 +12,6 @@ struct PostsFeedItemView: View {
                 title: post.title
             )
 
-            // Full-width image carousel for all images
             if !post.images.isEmpty {
                 GeometryReader { geometry in
                     TabView(selection: $currentImageIndex) {
@@ -22,8 +20,7 @@ struct PostsFeedItemView: View {
                                 CachedVideoPlayer(
                                     url: image.detailURL,
                                     autoPlay: false,
-                                    isMuted: true,
-                                    onTap: onTap
+                                    isMuted: true
                                 )
                                 .aspectRatio(contentMode: .fill)
                                 .frame(width: geometry.size.width, height: geometry.size.height)
@@ -34,9 +31,6 @@ struct PostsFeedItemView: View {
                                     .aspectRatio(contentMode: .fill)
                                     .frame(width: geometry.size.width, height: geometry.size.height)
                                     .clipped()
-                                    .onTapGesture {
-                                        onTap()
-                                    }
                                     .tag(index)
                             }
                         }
