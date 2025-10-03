@@ -64,94 +64,14 @@ struct PostsFeedItemView: View {
                 }
             }
 
-            // Statistics
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 16) {
-                    if post.stats.likeCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "hand.thumbsup.fill")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(FormatUtilities.formatCount(post.stats.likeCount))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    if post.stats.heartCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "heart.fill")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                            Text("\(FormatUtilities.formatCount(post.stats.heartCount))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    if post.stats.laughCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "face.smiling")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(FormatUtilities.formatCount(post.stats.laughCount))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    if post.stats.cryCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "face.dashed")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(FormatUtilities.formatCount(post.stats.cryCount))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    if post.stats.commentCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "message")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(FormatUtilities.formatCount(post.stats.commentCount))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    if post.stats.dislikeCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "hand.thumbsdown")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(FormatUtilities.formatCount(post.stats.dislikeCount))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-
-                // Show first image's prompt if available
-                if let firstImage = post.images.first,
-                   let prompt = firstImage.meta?.prompt, !prompt.isEmpty {
-                    HStack(alignment: .top) {
-                        Text(post.user.username ?? "")
-                            .fontWeight(.semibold) +
-                        Text(" \(prompt)")
-                    }
-                    .font(.subheadline)
-                    .lineLimit(3)
-                    .padding(.horizontal, 16)
-                }
-            }
-            .padding(.bottom, 16)
+            FeedItemStats(
+                likeCount: post.stats.likeCount,
+                heartCount: post.stats.heartCount,
+                laughCount: post.stats.laughCount,
+                cryCount: post.stats.cryCount,
+                commentCount: post.stats.commentCount,
+                dislikeCount: post.stats.dislikeCount
+            )
         }
         .background(Color(.systemBackground))
     }
