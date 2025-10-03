@@ -4,6 +4,7 @@ struct PostsFeedItemView: View {
     let post: CivitaiPost
 
     @State private var currentImageIndex = 0
+    @State private var currentHeight: CGFloat = UIScreen.main.bounds.width
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -16,28 +17,43 @@ struct PostsFeedItemView: View {
                 GeometryReader { geometry in
                     TabView(selection: $currentImageIndex) {
                         ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                            let aspectRatio = CGFloat(image.width ?? 1) / CGFloat(image.height ?? 1)
                             if image.isVideo {
                                 CachedVideoPlayer(
                                     url: image.detailURL,
                                     autoPlay: false,
                                     isMuted: true
                                 )
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .clipped()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: geometry.size.width)
                                 .tag(index)
                             } else {
                                 CachedAsyncImage(url: image.detailURL)
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: geometry.size.width, height: geometry.size.height)
-                                    .clipped()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: geometry.size.width)
                                     .tag(index)
                             }
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
+                    .onChange(of: currentImageIndex) { newIndex in
+                        if newIndex < post.images.count {
+                            let image = post.images[newIndex]
+                            let aspectRatio = CGFloat(image.width ?? 1) / CGFloat(image.height ?? 1)
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                currentHeight = geometry.size.width / aspectRatio
+                            }
+                        }
+                    }
                 }
-                .frame(height: UIScreen.main.bounds.width) // Square aspect ratio
+                .frame(height: currentHeight)
+                .onAppear {
+                    if !post.images.isEmpty {
+                        let image = post.images[0]
+                        let aspectRatio = CGFloat(image.width ?? 1) / CGFloat(image.height ?? 1)
+                        currentHeight = UIScreen.main.bounds.width / aspectRatio
+                    }
+                }
 
                 // Custom page indicator and image counter
                 if post.images.count > 1 {
