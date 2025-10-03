@@ -1,7 +1,6 @@
 import SwiftUI
 
-// Simple version that matches AsyncImage API
-struct CachedAsyncImageSimple: View {
+struct CachedAsyncImage: View {
     let url: String
 
     @StateObject private var imageCache = ImageCacheService.shared

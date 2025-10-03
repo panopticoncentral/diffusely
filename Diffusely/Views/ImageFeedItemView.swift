@@ -18,7 +18,7 @@ struct ImageFeedItemView: View {
                 )
                 .aspectRatio(contentMode: .fit)
             } else {
-                CachedAsyncImageSimple(url: image.detailURL)
+                CachedAsyncImage(url: image.detailURL)
                     .aspectRatio(contentMode: .fit)
             }
 

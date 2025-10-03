@@ -27,7 +27,7 @@ struct PostsFeedItemView: View {
                                 .clipped()
                                 .tag(index)
                             } else {
-                                CachedAsyncImageSimple(url: image.detailURL)
+                                CachedAsyncImage(url: image.detailURL)
                                     .aspectRatio(contentMode: .fill)
                                     .frame(width: geometry.size.width, height: geometry.size.height)
                                     .clipped()
