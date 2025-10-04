@@ -10,7 +10,6 @@ struct PostsFeedView: View {
         ZStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    // Sticky header that scrolls with content
                     HStack {
                         Text("Posts")
                             .font(.system(size: 34, weight: .bold, design: .default))
@@ -33,10 +32,9 @@ struct PostsFeedView: View {
                             post: post
                         )
                         .onAppear {
-                            // Load more content when reaching the end
                             if post.id == civitaiService.posts.last?.id {
                                 Task {
-                                    await civitaiService.loadMorePosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                                    await loadPosts()
                                 }
                             }
                         }
@@ -58,24 +56,25 @@ struct PostsFeedView: View {
             }
             .ignoresSafeArea(.all)
             .refreshable {
-                civitaiService.clear()
-                await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                await refreshPosts()
             }
             .task {
                 if civitaiService.posts.isEmpty {
-                    await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                    await loadPosts()
                 }
             }
-            .onChange(of: selectedRating) { _, _ in refreshPosts() }
-            .onChange(of: selectedPeriod) { _, _ in refreshPosts() }
-            .onChange(of: selectedSort) { _, _ in refreshPosts() }
+            .onChange(of: selectedRating) { _, _ in Task { await refreshPosts() } }
+            .onChange(of: selectedPeriod) { _, _ in Task { await refreshPosts() } }
+            .onChange(of: selectedSort) { _, _ in Task { await refreshPosts() } }
         }
     }
 
-    private func refreshPosts() {
+    private func loadPosts() async {
+        await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+    }
+
+    private func refreshPosts() async {
         civitaiService.clear()
-        Task {
-            await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
-        }
+        await civitaiService.fetchPosts(browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
     }
 }

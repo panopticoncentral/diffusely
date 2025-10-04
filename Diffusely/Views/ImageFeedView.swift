@@ -12,7 +12,6 @@ struct ImageFeedView: View {
         ZStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    // Sticky header that scrolls with content
                     HStack {
                         Text(videos ? "Videos" : "Images")
                             .font(.system(size: 34, weight: .bold, design: .default))
@@ -35,21 +34,20 @@ struct ImageFeedView: View {
                             image: image
                         )
                         .onAppear {
-                            // Preload images ahead
-                            ImageCacheService.shared.preloadAhead(
-                                currentIndex: index,
-                                images: civitaiService.images,
-                                lookahead: 5
-                            )
+                            if videos {
+                                VideoCacheService.shared.preloadAhead(
+                                    currentIndex: index,
+                                    images: civitaiService.images,
+                                    lookahead: 3
+                                )
+                            } else {
+                                ImageCacheService.shared.preloadAhead(
+                                    currentIndex: index,
+                                    images: civitaiService.images,
+                                    lookahead: 5
+                                )
+                            }
 
-                            // Preload videos ahead
-                            VideoCacheService.shared.preloadAhead(
-                                currentIndex: index,
-                                images: civitaiService.images,
-                                lookahead: 3
-                            )
-
-                            // Load more content when reaching the end
                             if image.id == civitaiService.images.last?.id {
                                 Task {
                                     await civitaiService.loadMore(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
@@ -74,24 +72,25 @@ struct ImageFeedView: View {
             }
             .ignoresSafeArea(.all)
             .refreshable {
-                civitaiService.clear()
-                await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                await refreshImages()
             }
             .task {
                 if civitaiService.images.isEmpty {
-                    await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                    await loadImages()
                 }
             }
-            .onChange(of: selectedRating) { _, _ in refreshImages() }
-            .onChange(of: selectedPeriod) { _, _ in refreshImages() }
-            .onChange(of: selectedSort) { _, _ in refreshImages() }
+            .onChange(of: selectedRating) { _, _ in Task { await refreshImages() } }
+            .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
+            .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
         }
     }
 
-    private func refreshImages() {
+    private func loadImages() async {
+        await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+    }
+
+    private func refreshImages() async {
         civitaiService.clear()
-        Task {
-            await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
-        }
+        await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
     }
 }
