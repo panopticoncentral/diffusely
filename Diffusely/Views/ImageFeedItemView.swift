@@ -9,7 +9,6 @@ struct ImageFeedItemView: View {
                 username: image.user?.username, 
                 title: nil)
 
-            // Main image/video content
             if image.isVideo {
                 let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
                 GeometryReader { geometry in
