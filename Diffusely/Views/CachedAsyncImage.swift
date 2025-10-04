@@ -3,17 +3,17 @@ import SwiftUI
 struct CachedAsyncImage: View {
     let url: String
 
-    @StateObject private var imageCache = ImageCacheService.shared
+    @StateObject private var mediaCache = MediaCacheService.shared
 
     var body: some View {
         Group {
-            switch imageCache.getImageState(for: url) {
+            switch mediaCache.getMediaState(for: url) {
             case .idle:
                 Rectangle()
                     .fill(Color.gray.opacity(0.1))
                     .overlay(ProgressView())
                     .onAppear {
-                        imageCache.loadImage(url: url)
+                        mediaCache.loadMedia(url: url, isVideo: false)
                     }
 
             case .loading:
@@ -21,9 +21,11 @@ struct CachedAsyncImage: View {
                     .fill(Color.gray.opacity(0.1))
                     .overlay(ProgressView())
 
-            case .loaded(let uiImage):
-                Image(uiImage: uiImage)
-                    .resizable()
+            case .loaded(let content):
+                if let uiImage = content.image {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                }
 
             case .failed(_):
                 Rectangle()
@@ -38,12 +40,12 @@ struct CachedAsyncImage: View {
                         }
                     )
                     .onTapGesture {
-                        imageCache.retryFailedImage(url: url)
+                        mediaCache.retryFailed(url: url, isVideo: false)
                     }
             }
         }
-        .onReceive(imageCache.$imageStates) { _ in
-            // Ensures view updates when image state changes
+        .onReceive(mediaCache.$mediaStates) { _ in
+            // Ensures view updates when media state changes
         }
     }
 }

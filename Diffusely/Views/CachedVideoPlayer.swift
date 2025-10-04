@@ -8,7 +8,7 @@ struct CachedVideoPlayer: View {
     let isMuted: Bool
     let onTap: (() -> Void)?
 
-    @StateObject private var videoCache = VideoCacheService.shared
+    @StateObject private var mediaCache = MediaCacheService.shared
     @State private var isCurrentlyPlaying = false
 
     init(url: String, autoPlay: Bool = true, isMuted: Bool = true, onTap: (() -> Void)? = nil) {
@@ -20,7 +20,7 @@ struct CachedVideoPlayer: View {
 
     var body: some View {
         Group {
-            switch videoCache.getVideoState(for: url) {
+            switch mediaCache.getMediaState(for: url) {
             case .idle:
                 Rectangle()
                     .fill(Color.black)
@@ -29,7 +29,7 @@ struct CachedVideoPlayer: View {
                             .tint(.white)
                     )
                     .onAppear {
-                        videoCache.loadVideo(url: url)
+                        mediaCache.loadMedia(url: url, isVideo: true)
                     }
 
             case .loading:
@@ -40,21 +40,23 @@ struct CachedVideoPlayer: View {
                             .tint(.white)
                     )
 
-            case .loaded(let player):
-                VideoPlayer(player: player)
-                .onAppear {
-                    player.isMuted = isMuted
-                    if autoPlay && !isCurrentlyPlaying {
-                        player.play()
-                        isCurrentlyPlaying = true
+            case .loaded(let content):
+                if let player = content.player {
+                    VideoPlayer(player: player)
+                    .onAppear {
+                        player.isMuted = isMuted
+                        if autoPlay && !isCurrentlyPlaying {
+                            player.play()
+                            isCurrentlyPlaying = true
+                        }
                     }
-                }
-                .onDisappear {
-                    player.pause()
-                    isCurrentlyPlaying = false
-                }
-                .onTapGesture {
-                    onTap?()
+                    .onDisappear {
+                        player.pause()
+                        isCurrentlyPlaying = false
+                    }
+                    .onTapGesture {
+                        onTap?()
+                    }
                 }
 
             case .failed(_):
@@ -71,12 +73,12 @@ struct CachedVideoPlayer: View {
                         }
                     )
                     .onTapGesture {
-                        videoCache.retryFailedVideo(url: url)
+                        mediaCache.retryFailed(url: url, isVideo: true)
                     }
             }
         }
-        .onReceive(videoCache.$videoStates) { _ in
-            // Ensures view updates when video state changes
+        .onReceive(mediaCache.$mediaStates) { _ in
+            // Ensures view updates when media state changes
         }
     }
 }

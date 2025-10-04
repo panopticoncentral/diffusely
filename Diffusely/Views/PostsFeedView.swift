@@ -32,6 +32,13 @@ struct PostsFeedView: View {
                             post: post
                         )
                         .onAppear {
+                            // Preload media for nearby posts
+                            let startIndex = max(0, index - 1)
+                            let endIndex = min(civitaiService.posts.count - 1, index + 3)
+                            let imagesToPreload = Array(civitaiService.posts[startIndex...endIndex]).flatMap { $0.images }
+
+                            MediaCacheService.shared.preloadImages(imagesToPreload)
+
                             if post.id == civitaiService.posts.last?.id {
                                 Task {
                                     await loadPosts()
