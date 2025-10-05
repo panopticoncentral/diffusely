@@ -10,6 +10,7 @@ struct CachedVideoPlayer: View {
 
     @StateObject private var mediaCache = MediaCacheService.shared
     @State private var isCurrentlyPlaying = false
+    @State private var loopObserver: Any?
 
     init(url: String, autoPlay: Bool = true, isMuted: Bool = true, onTap: (() -> Void)? = nil) {
         self.url = url
@@ -49,10 +50,26 @@ struct CachedVideoPlayer: View {
                             player.play()
                             isCurrentlyPlaying = true
                         }
+
+                        // Set up looping
+                        loopObserver = NotificationCenter.default.addObserver(
+                            forName: .AVPlayerItemDidPlayToEndTime,
+                            object: player.currentItem,
+                            queue: .main
+                        ) { _ in
+                            player.seek(to: .zero)
+                            player.play()
+                        }
                     }
                     .onDisappear {
                         player.pause()
                         isCurrentlyPlaying = false
+
+                        // Remove observer
+                        if let observer = loopObserver {
+                            NotificationCenter.default.removeObserver(observer)
+                            loopObserver = nil
+                        }
                     }
                     .onTapGesture {
                         onTap?()
