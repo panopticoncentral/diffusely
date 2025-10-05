@@ -1,0 +1,183 @@
+import SwiftUI
+
+struct PostDetailView: View {
+    let post: CivitaiPost
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var currentImageIndex = 0
+    @State private var dragOffset: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            Color.black
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                // Header
+                HStack {
+                    Button(action: {
+                        dismiss()
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .padding()
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let username = post.user.username {
+                            Text(username)
+                                .font(.headline)
+                                .foregroundColor(.white)
+                        }
+
+                        if let title = post.title {
+                            Text(title)
+                                .font(.subheadline)
+                                .foregroundColor(.white.opacity(0.8))
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer()
+                }
+                .background(Color.black.opacity(0.3))
+
+                // Main content - scrollable
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // Image/Video carousel
+                        if !post.images.isEmpty {
+                            TabView(selection: $currentImageIndex) {
+                                ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                                    if image.isVideo {
+                                        let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
+                                        CachedVideoPlayer(
+                                            url: image.detailURL,
+                                            autoPlay: true,
+                                            isMuted: false
+                                        )
+                                        .aspectRatio(aspectRatio, contentMode: .fit)
+                                        .frame(maxWidth: .infinity)
+                                        .tag(index)
+                                    } else {
+                                        CachedAsyncImage(url: image.detailURL)
+                                            .aspectRatio(contentMode: .fit)
+                                            .frame(maxWidth: .infinity)
+                                            .tag(index)
+                                    }
+                                }
+                            }
+                            .tabViewStyle(.page(indexDisplayMode: .never))
+                            .frame(maxWidth: .infinity)
+
+                            // Image counter
+                            if post.images.count > 1 {
+                                HStack {
+                                    ForEach(0..<post.images.count, id: \.self) { index in
+                                        Circle()
+                                            .fill(currentImageIndex == index ? Color.white : Color.white.opacity(0.4))
+                                            .frame(width: 6, height: 6)
+                                    }
+                                }
+                                .padding(.vertical, 12)
+                            }
+                        }
+
+                        // Stats section
+                        VStack(alignment: .leading, spacing: 12) {
+                            FeedItemStats(
+                                likeCount: post.stats.likeCount,
+                                heartCount: post.stats.heartCount,
+                                laughCount: post.stats.laughCount,
+                                cryCount: post.stats.cryCount,
+                                commentCount: post.stats.commentCount,
+                                dislikeCount: post.stats.dislikeCount
+                            )
+
+                            Divider()
+                                .background(Color.white.opacity(0.2))
+
+                            // Additional metadata
+                            if let firstImage = post.images.first, let meta = firstImage.meta {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Generation Details")
+                                        .font(.headline)
+                                        .foregroundColor(.white)
+
+                                    if let prompt = meta.prompt {
+                                        MetadataRow(label: "Prompt", value: prompt)
+                                    }
+
+                                    if let negativePrompt = meta.negativePrompt {
+                                        MetadataRow(label: "Negative Prompt", value: negativePrompt)
+                                    }
+
+                                    if let model = meta.model {
+                                        MetadataRow(label: "Model", value: model)
+                                    }
+
+                                    HStack(spacing: 16) {
+                                        if let steps = meta.steps {
+                                            SmallMetadataItem(label: "Steps", value: "\(steps)")
+                                        }
+                                        if let cfgScale = meta.cfgScale {
+                                            SmallMetadataItem(label: "CFG", value: String(format: "%.1f", cfgScale))
+                                        }
+                                        if let seed = meta.seed {
+                                            SmallMetadataItem(label: "Seed", value: "\(seed)")
+                                        }
+                                    }
+
+                                    if let sampler = meta.sampler {
+                                        MetadataRow(label: "Sampler", value: sampler)
+                                    }
+
+                                    if let size = meta.size {
+                                        MetadataRow(label: "Size", value: size)
+                                    }
+                                }
+                                .padding(.top, 8)
+                            }
+                        }
+                        .padding()
+                    }
+                }
+                .background(Color.black)
+            }
+        }
+        .navigationBarHidden(true)
+    }
+}
+
+struct MetadataRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+            Text(value)
+                .font(.body)
+                .foregroundColor(.white)
+        }
+    }
+}
+
+struct SmallMetadataItem: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.6))
+            Text(value)
+                .font(.caption)
+                .foregroundColor(.white)
+        }
+    }
+}

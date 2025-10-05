@@ -2,17 +2,18 @@ import SwiftUI
 
 struct PostsFeedItemView: View {
     let post: CivitaiPost
-    
+
     @State private var currentImageIndex = 0
     @State private var currentHeight: CGFloat = UIScreen.main.bounds.width
-    
+    @State private var showingDetail = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             FeedItemHeader(
                 username: post.user.username,
                 title: post.title
             )
-            
+
             if !post.images.isEmpty {
                 GeometryReader { geometry in
                     TabView(selection: $currentImageIndex) {
@@ -20,12 +21,18 @@ struct PostsFeedItemView: View {
                             if image.isVideo {
                                 let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
                                 GeometryReader { geometry in
-                                    CachedVideoPlayer(
-                                        url: image.detailURL,
-                                        autoPlay: true,
-                                        isMuted: true
-                                    )
-                                    .frame(width: geometry.size.width, height: geometry.size.width / aspectRatio)
+                                    ZStack {
+                                        CachedVideoPlayer(
+                                            url: image.detailURL,
+                                            autoPlay: true,
+                                            isMuted: true
+                                        )
+                                        .frame(width: geometry.size.width, height: geometry.size.width / aspectRatio)
+                                        .allowsHitTesting(false)
+
+                                        Color.clear
+                                            .contentShape(Rectangle())
+                                    }
                                 }
                                 .aspectRatio(aspectRatio, contentMode: .fit)
                                 .tag(index)
@@ -56,12 +63,15 @@ struct PostsFeedItemView: View {
                         currentHeight = UIScreen.main.bounds.width / aspectRatio
                     }
                 }
-                
+                .onTapGesture {
+                    showingDetail = true
+                }
+
                 // Custom page indicator and image counter
                 if post.images.count > 1 {
                     HStack {
                         Spacer()
-                        
+
                         // Image counter
                         Text("\(currentImageIndex + 1)/\(post.images.count)")
                             .font(.caption)
@@ -75,7 +85,7 @@ struct PostsFeedItemView: View {
                     }
                 }
             }
-            
+
             FeedItemStats(
                 likeCount: post.stats.likeCount,
                 heartCount: post.stats.heartCount,
@@ -86,5 +96,8 @@ struct PostsFeedItemView: View {
             )
         }
         .background(Color(.systemBackground))
+        .fullScreenCover(isPresented: $showingDetail) {
+            PostDetailView(post: post)
+        }
     }
 }
