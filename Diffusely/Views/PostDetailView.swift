@@ -4,8 +4,11 @@ struct PostDetailView: View {
     let post: CivitaiPost
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var civitaiService = CivitaiService()
     @State private var currentImageIndex = 0
     @State private var dragOffset: CGFloat = 0
+    @State private var generationData: GenerationData?
+    @State private var isLoadingGenData = false
 
     var body: some View {
         ZStack {
@@ -48,28 +51,31 @@ struct PostDetailView: View {
                     VStack(spacing: 0) {
                         // Image/Video carousel
                         if !post.images.isEmpty {
-                            TabView(selection: $currentImageIndex) {
-                                ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
-                                    if image.isVideo {
-                                        let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                                        CachedVideoPlayer(
-                                            url: image.detailURL,
-                                            autoPlay: true,
-                                            isMuted: false
-                                        )
-                                        .aspectRatio(aspectRatio, contentMode: .fit)
-                                        .frame(maxWidth: .infinity)
-                                        .tag(index)
-                                    } else {
-                                        CachedAsyncImage(url: image.detailURL)
-                                            .aspectRatio(contentMode: .fit)
+                            GeometryReader { geometry in
+                                TabView(selection: $currentImageIndex) {
+                                    ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                                        if image.isVideo {
+                                            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+                                            CachedVideoPlayer(
+                                                url: image.detailURL,
+                                                autoPlay: true,
+                                                isMuted: false
+                                            )
+                                            .aspectRatio(aspectRatio, contentMode: .fit)
                                             .frame(maxWidth: .infinity)
                                             .tag(index)
+                                        } else {
+                                            CachedAsyncImage(url: image.detailURL)
+                                                .aspectRatio(contentMode: .fit)
+                                                .frame(maxWidth: .infinity)
+                                                .tag(index)
+                                        }
                                     }
                                 }
+                                .tabViewStyle(.page(indexDisplayMode: .never))
+                                .frame(width: geometry.size.width, height: geometry.size.height)
                             }
-                            .tabViewStyle(.page(indexDisplayMode: .never))
-                            .frame(maxWidth: .infinity)
+                            .frame(height: UIScreen.main.bounds.height * 0.6)
 
                             // Image counter
                             if post.images.count > 1 {
@@ -97,6 +103,15 @@ struct PostDetailView: View {
 
                             Divider()
                                 .background(Color.white.opacity(0.2))
+
+                            // Generation data section
+                            if isLoadingGenData {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .padding()
+                            } else if let genData = generationData {
+                                GenerationDataView(data: genData)
+                            }
                         }
                         .padding()
                     }
@@ -105,5 +120,26 @@ struct PostDetailView: View {
             }
         }
         .navigationBarHidden(true)
+        .onChange(of: currentImageIndex) { _, newIndex in
+            Task {
+                await loadGenerationData(for: newIndex)
+            }
+        }
+        .task {
+            await loadGenerationData(for: currentImageIndex)
+        }
+    }
+
+    private func loadGenerationData(for index: Int) async {
+        guard index < post.images.count else { return }
+        let imageId = post.images[index].id
+
+        isLoadingGenData = true
+        do {
+            generationData = try await civitaiService.fetchGenerationData(imageId: imageId)
+        } catch {
+            // Silently fail - generation data may not be available for all images
+        }
+        isLoadingGenData = false
     }
 }

@@ -223,4 +223,48 @@ class CivitaiService: ObservableObject {
         await fetchPosts(browsingLevel: browsingLevel, period: period, sort: sort)
     }
 
+    func fetchGenerationData(imageId: Int) async throws -> GenerationData {
+        var components = URLComponents(string: "\(baseURL)/image.getGenerationData")!
+
+        let inputParams: [String: Any] = [
+            "id": imageId
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        let (data, _) = try await session.data(from: url)
+
+        // The response structure for getGenerationData is different - it returns a single object not an array
+        struct SingleResponse: Codable {
+            let result: SingleResult
+        }
+
+        struct SingleResult: Codable {
+            let data: SingleData
+        }
+
+        struct SingleData: Codable {
+            let json: GenerationData
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([SingleResponse].self, from: data)
+        return tRPCResponse[0].result.data.json
+    }
+
 }

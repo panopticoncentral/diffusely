@@ -4,6 +4,9 @@ struct ImageDetailView: View {
     let image: CivitaiImage
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var civitaiService = CivitaiService()
+    @State private var generationData: GenerationData?
+    @State private var isLoadingGenData = false
 
     var body: some View {
         ZStack {
@@ -64,6 +67,15 @@ struct ImageDetailView: View {
 
                             Divider()
                                 .background(Color.white.opacity(0.2))
+
+                            // Generation data section
+                            if isLoadingGenData {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .padding()
+                            } else if let genData = generationData {
+                                GenerationDataView(data: genData)
+                            }
                         }
                         .padding()
                     }
@@ -72,5 +84,128 @@ struct ImageDetailView: View {
             }
         }
         .navigationBarHidden(true)
+        .task {
+            await loadGenerationData()
+        }
+    }
+
+    private func loadGenerationData() async {
+        isLoadingGenData = true
+        do {
+            generationData = try await civitaiService.fetchGenerationData(imageId: image.id)
+        } catch {
+            // Silently fail - generation data may not be available for all images
+        }
+        isLoadingGenData = false
+    }
+}
+
+struct GenerationDataView: View {
+    let data: GenerationData
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Generation Info")
+                .font(.headline)
+                .foregroundColor(.white)
+
+            if let meta = data.meta {
+                if let prompt = meta.prompt, !prompt.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Prompt")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(prompt)
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    }
+                }
+
+                if let negativePrompt = meta.negativePrompt, !negativePrompt.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Negative Prompt")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(negativePrompt)
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    }
+                }
+
+                HStack(spacing: 16) {
+                    if let steps = meta.steps {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Steps")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.7))
+                            Text("\(steps)")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+
+                    if let cfgScale = meta.cfgScale {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("CFG Scale")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.7))
+                            Text(String(format: "%.1f", cfgScale))
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+
+                    if let sampler = meta.sampler {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Sampler")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.7))
+                            Text(sampler)
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+
+                    if let seed = meta.seed {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Seed")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.7))
+                            Text("\(seed)")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                }
+            }
+
+            if let resources = data.resources, !resources.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Models")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+
+                    ForEach(Array(resources.enumerated()), id: \.offset) { _, resource in
+                        HStack(spacing: 8) {
+                            if let modelName = resource.modelName {
+                                Text(modelName)
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                            }
+                            if let modelType = resource.modelType {
+                                Text("(\(modelType))")
+                                    .font(.caption2)
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                            if let strength = resource.strength {
+                                Text(String(format: "%.2f", strength))
+                                    .font(.caption2)
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
