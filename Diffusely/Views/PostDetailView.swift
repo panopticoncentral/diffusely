@@ -51,7 +51,7 @@ struct PostDetailView: View {
                             TabView(selection: $currentImageIndex) {
                                 ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
                                     if image.isVideo {
-                                        let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
+                                        let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                                         CachedVideoPlayer(
                                             url: image.detailURL,
                                             autoPlay: true,
@@ -97,48 +97,6 @@ struct PostDetailView: View {
 
                             Divider()
                                 .background(Color.white.opacity(0.2))
-
-                            // Additional metadata
-                            if let firstImage = post.images.first, let meta = firstImage.meta {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Generation Details")
-                                        .font(.headline)
-                                        .foregroundColor(.white)
-
-                                    if let prompt = meta.prompt {
-                                        MetadataRow(label: "Prompt", value: prompt)
-                                    }
-
-                                    if let negativePrompt = meta.negativePrompt {
-                                        MetadataRow(label: "Negative Prompt", value: negativePrompt)
-                                    }
-
-                                    if let model = meta.model {
-                                        MetadataRow(label: "Model", value: model)
-                                    }
-
-                                    HStack(spacing: 16) {
-                                        if let steps = meta.steps {
-                                            SmallMetadataItem(label: "Steps", value: "\(steps)")
-                                        }
-                                        if let cfgScale = meta.cfgScale {
-                                            SmallMetadataItem(label: "CFG", value: String(format: "%.1f", cfgScale))
-                                        }
-                                        if let seed = meta.seed {
-                                            SmallMetadataItem(label: "Seed", value: "\(seed)")
-                                        }
-                                    }
-
-                                    if let sampler = meta.sampler {
-                                        MetadataRow(label: "Sampler", value: sampler)
-                                    }
-
-                                    if let size = meta.size {
-                                        MetadataRow(label: "Size", value: size)
-                                    }
-                                }
-                                .padding(.top, 8)
-                            }
                         }
                         .padding()
                     }
@@ -147,37 +105,5 @@ struct PostDetailView: View {
             }
         }
         .navigationBarHidden(true)
-    }
-}
-
-struct MetadataRow: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.6))
-            Text(value)
-                .font(.body)
-                .foregroundColor(.white)
-        }
-    }
-}
-
-struct SmallMetadataItem: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.white.opacity(0.6))
-            Text(value)
-                .font(.caption)
-                .foregroundColor(.white)
-        }
     }
 }

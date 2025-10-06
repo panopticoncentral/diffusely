@@ -19,7 +19,7 @@ struct PostsFeedItemView: View {
                     TabView(selection: $currentImageIndex) {
                         ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
                             if image.isVideo {
-                                let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
+                                let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                                 GeometryReader { geometry in
                                     ZStack {
                                         CachedVideoPlayer(
@@ -48,7 +48,7 @@ struct PostsFeedItemView: View {
                     .onChange(of: currentImageIndex) { oldValue, newIndex in
                         if newIndex < post.images.count {
                             let image = post.images[newIndex]
-                            let aspectRatio = CGFloat(image.width ?? 1) / CGFloat(image.height ?? 1)
+                            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                             withAnimation(.easeInOut(duration: 0.3)) {
                                 currentHeight = geometry.size.width / aspectRatio
                             }
@@ -59,7 +59,7 @@ struct PostsFeedItemView: View {
                 .onAppear {
                     if !post.images.isEmpty {
                         let image = post.images[0]
-                        let aspectRatio = CGFloat(image.width ?? 1) / CGFloat(image.height ?? 1)
+                        let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                         currentHeight = UIScreen.main.bounds.width / aspectRatio
                     }
                 }

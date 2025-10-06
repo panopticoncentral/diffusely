@@ -12,7 +12,7 @@ struct ImageFeedItemView: View {
                 title: nil)
 
             if image.isVideo {
-                let aspectRatio = CGFloat(image.width ?? 16) / CGFloat(image.height ?? 9)
+                let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                 GeometryReader { geometry in
                     ZStack {
                         CachedVideoPlayer(

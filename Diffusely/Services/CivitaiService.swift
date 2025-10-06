@@ -87,15 +87,12 @@ class CivitaiService: ObservableObject {
                 var components = URLComponents(string: "\(baseURL)/image.getInfinite")!
                 
                 var inputParams: [String: Any] = [
-                    "period": period.rawValue,
-                    "periodMode": "published",
+                    "limit": limit,
                     "sort": sort.rawValue,
                     "types": [videos ? "video" : "image"],
-                    "withMeta": false,
-                    "useIndex": true,
+                    "period": period.rawValue,
                     "browsingLevel": browsingLevel,
-                    "limit": limit,
-                    "include": ["tags", "meta", "tagIds"]
+                    "useIndex": true,
                 ]
                 
                 if let cursor = nextCursor {
@@ -166,11 +163,9 @@ class CivitaiService: ObservableObject {
 
                 var inputParams: [String: Any] = [
                     "period": period.rawValue,
-                    "periodMode": "published",
                     "sort": sort.rawValue,
                     "browsingLevel": browsingLevel,
                     "limit": limit,
-                    "include": ["cosmetics"]
                 ]
 
                 if let cursor = nextPostCursor {

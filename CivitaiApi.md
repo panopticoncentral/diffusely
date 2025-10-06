@@ -15,13 +15,15 @@ galleries, feeds, or browsing interfaces.
 
 ## Request Parameters
 
-### Essential Parameters
-
-| Parameter | Type   | Default  | Description                                            |
-|-----------|--------|----------|--------------------------------------------------------|
-| limit     | number | 50       | Images per page (1-200)                                |
-| sort      | string | "Newest" | Sort order (see options below)                         |
-| cursor    | string | -        | For pagination (use nextCursor from previous response) |
+| Parameter     | Type     | Default  | Description                                                         |
+|---------------|----------|----------|---------------------------------------------------------------------|
+| limit         | number   | 50       | Images per page (1-200)                                             |
+| sort          | string   | "Newest" | Sort order (see options below)                                      |
+| cursor        | string   | -        | For pagination (use nextCursor from previous response)              |
+| useIndex      | boolean  | false    | Whether to use the index to look up images                          |
+| types         | string[] |          | ["image", "video", "audio"]                                         |
+| period        | string   |          | Time range: "Day", "Week", "Month", "Year", "AllTime"               |
+| browsingLevel | number   |          | Content level flags G = 0, PG = 1, PG13 = 2, R = 4, X = 8, XXX = 16 |
 
 #### Sorting Options
 
@@ -31,39 +33,6 @@ galleries, feeds, or browsing interfaces.
 - "Most Comments" - Most discussed
 - "Most Collected" - Most saved to collections
 - "Random" - Random order
-
-### Content Filters
-
-| Parameter      | Type     | Description                                         |
-|----------------|----------|-----------------------------------------------------|
-| types          | string[] | ["image", "video", "audio"]                         |
-| followed       | boolean  | Limited to followed users                           |
-| collectionId   | number   | Filter by collection                                |
-| modelId        | number   | Filter by AI model                                  |
-| modelVersionId | number   | Filter by model version                             |
-| postId         | number   | Filter by post                                      |
-| userId         | number   | Filter by creator                                   |
-| username       | string   | Filter by creator username                          |
-| tags           | number[] | Include images with these tag IDs                   |
-| excludedTagIds | number[] | Exclude images with these tag IDs                   |
-| baseModels     | string[] | AI models: ["SD 1.5", "SDXL 1.0", "Pony", "Flux.1"] |
-
-### Time & Quality Filters
-
-| Parameter     | Type    | Description                                                         |
-|---------------|---------|---------------------------------------------------------------------|
-| period        | string  | Time range: "Day", "Week", "Month", "Year", "AllTime"               |
-| browsingLevel | number  | Content level flags G = 0, PG = 1, PG13 = 2, R = 4, X = 8, XXX = 16 |
-| withMeta      | boolean | Include AI generation parameters                                    |
-| requiringMeta | boolean | Only images with generation data                                    |
-
-### Additional Data
-
-| Parameter | Type     | Description                                                  |
-|-----------|----------|--------------------------------------------------------------|
-| include   | string[] | Extra data: ["tags", "cosmetics", "meta", "profilePictures"] |
-| withTags  | boolean  | Include tag information                                      |
-| reactions | string[] | Filter by reactions: ["Like", "Heart", "Laugh", "Cry"]       |
 
 ## Response Format
 
@@ -85,18 +54,13 @@ galleries, feeds, or browsing interfaces.
 | Field     | Type    | Description                              |
 | --------- | ------- | ---------------------------------------- |
 | id        | number  | Unique image identifier                  |
-| name      | string  | Image name (can be null)                 |
 | url       | string  | Direct image URL                         |
 | width     | number  | Image width                              |
 | height    | number  | Image height                             |
 | nsfwLevel | number  | Content level                            |
 | type      | string  | Content type ("image", "video", "audio") |
-| postId    | number  | ID of post the image is part of          |
-| hash      | number  | Image hash                               |
 | user      | object  | Creator info (see below)                 |
 | stats     | object  | Statistics (see below)                   |
-| hasMeta   | boolean | Has object in the meta property          |
-| meta      | object  | AI generation data (see below)           |
 
 #### Creator Info (user property object)
 
@@ -246,14 +210,12 @@ for building social feeds, post browsing interfaces, and content discovery.
 
 ## Request Parameters
 
-### Essential Parameters
-
-| Parameter | Type     | Default  | Description                                            |
-|-----------|----------|----------|--------------------------------------------------------|
-| limit     | number   | 100      | Posts per page (1-200)                                 |
-| sort      | string   | "Newest" | Sort order (see options below)                         |
-| cursor    | number   | -        | For pagination (use nextCursor from previous response) |
-| include   | string[] |          | Extra data: ["cosmetics"]                              |
+| Parameter     | Type   | Default  | Description                                            |
+|---------------|--------|----------|--------------------------------------------------------|
+| limit         | number | 100      | Posts per page (1-200)                                 |
+| sort          | string | "Newest" | Sort order (see options below)                         |
+| cursor        | number | -        | For pagination (use nextCursor from previous response) |
+| browsingLevel | number |          | Content level flags (same as for images)               |
 
 #### Sorting Options
 
@@ -261,22 +223,6 @@ for building social feeds, post browsing interfaces, and content discovery.
 - "Most Reactions" - Most liked/hearted posts
 - "Most Comments" - Most discussed posts
 - "Most Collected" - Most saved to collections
-
-### Content Filters
-
-| Parameter        | Type     | Description                               |
-|------------------|----------|-------------------------------------------|
-| query            | string   | Search posts by text content              |
-| username         | string   | Filter by creator username                |
-| tags             | number[] | Include posts with these tag IDs          |
-| excludedTagIds   | number[] | Exclude posts with these tag IDs          |
-| excludedUserIds  | number[] | Exclude posts from these users            |
-| excludedImageIds | number[] | Exclude posts containing these images     |
-| modelVersionId   | number   | Filter by AI model version                |
-| collectionId     | number   | Filter by collection                      |
-| clubId           | number   | Filter by club posts                      |
-| ids              | number[] | Get specific posts by IDs                 |
-| browsingLevel    | number   | Content level flags (same as for images)  |
 
 ## Response Format
 

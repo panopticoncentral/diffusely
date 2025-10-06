@@ -8,10 +8,6 @@ struct CivitaiPost: Codable, Identifiable {
     let user: CivitaiUser
     let stats: PostStats
     let images: [CivitaiImage]
-
-    var nsfw: Bool {
-        return nsfwLevel > 2
-    }
 }
 
 struct PostStats: Codable {
