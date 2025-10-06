@@ -40,8 +40,10 @@ galleries, feeds, or browsing interfaces.
 {
   "result": {
     "data": {
-      "items": [ ... ],
-      "nextCursor": "..."
+      "json": {
+        "items": [ ... ],
+        "nextCursor": "..."
+      }
     }
   }
 }
@@ -84,118 +86,66 @@ galleries, feeds, or browsing interfaces.
 | dislikeCountAllTime      | number | Total dislikes             |
 | viewCountAllTime         | number | Total view count           |
 
-#### AI Generation Data (meta property object)
+# image.getGenerationData
 
-##### Text Prompts
+## Overview
 
-| Field          | Type   | Description                                  |
-|----------------|--------|----------------------------------------------|
-| prompt         | string | Primary text prompt used for generation      |
-| negativePrompt | string | Negative prompt to exclude unwanted elements |
+Retrieves the generation information for an image or video.
 
-##### Generation Settings
+## Endpoint
 
-| Field    | Type   | Description                                          |
-|----------|--------|------------------------------------------------------|
-| cfgScale | number | Classifier-Free Guidance scale (typically 1-30)      |
-| steps    | number | Number of denoising steps (typically 20-150)         |
-| sampler  | string | Sampling method (e.g., "DPM++ 2M Karras", "Euler a") |
-| seed     | number | Random seed for reproducible generation              |
-| clipSkip | number | CLIP skip layers (typically 1-2)                     |
+`POST /api/trpc/image.getGenerationData`
 
-##### Model Information
+## Request Parameters
 
-| Field     | Type                   | Description                                            |
-|-----------|------------------------|--------------------------------------------------------|
-| baseModel | string                 | Base model used (e.g., "SD 1.5", "SDXL 1.0", "Flux.1") |
-| hashes    | Record<string, string> | Model file hashes for verification                     |
-| engine    | string                 | Generation engine/platform used                        |
-| version   | string                 | Software/model version                                 |
-| software  | string                 | Software used for generation                           |
+| Parameter | Type   | Description                              |
+|-----------|--------|------------------------------------------|
+| id        | number | ID of the image generation data to fetch |
 
-##### Resource Arrays
-
-resources - Generic Resources
+## Response Format
 
 ```
 {
-  type: string;        // Resource type (e.g., "lora", "embedding")
-  name?: string;       // Resource name
-  weight?: number;     // Strength/weight applied
-  hash?: string;       // File hash
-}[]
-```
-
-civitaiResources - Civitai-Specific Resources
-
-```
-{
-  type?: string;           // Resource type
-  weight?: number;         // Strength applied
-  modelVersionId: number;  // Civitai model version ID
-}[]
-```
-
-additionalResources - Extended Resources
-
-```
-{
-  name?: string;         // Resource name
-  type?: string;         // Resource type
-  strength?: number;     // Primary strength
-  strengthClip?: number; // CLIP strength (for some resource types)
-}[]
-```
-
-##### Workflow Data
-
-comfy - ComfyUI Workflows
-
-Can be either a string (JSON) or parsed object containing:
-
-```
-{
-  prompt?: Record<string, any>;    // ComfyUI prompt structure
-  workflow?: {
-    nodes?: Record<string, any>[]; // Workflow nodes
-  };
+  "result": {
+    "data": {
+      "json": {
+        <properties>
+      }
+    }
+  }
 }
 ```
 
-external - External Service Data
+### Core Properties
 
-```
-{
-  source?: {
-    name?: string;      // Service name
-    homepage?: string;  // Service URL
-  };
-  details?: Record<string, string | number | boolean>; // Custom parameters
-  createUrl?: string;     // URL to recreate
-  referenceUrl?: string;  // Source reference URL
-}
-```
+| Field     | Type   | Description                                                      |
+|-----------|--------|------------------------------------------------------------------|
+| type      | string | Content type ("image", "video", "audio")                         |
+| meta      | object | Generation parameters (see meta object below)                    |
+| resources | array  | List of resources used in generation (see resource object below) |
 
-##### Effects & Control
+#### Meta properties
 
-| Field       | Type                | Description                        |
-|-------------|---------------------|------------------------------------|
-| effects     | Record<string, any> | Custom effects and filters applied |
-| controlNets | string[]            | ControlNet models used             |
+| Field          | Type   | Description                                          |
+|----------------|--------|------------------------------------------------------|
+| prompt         | string | Primary text prompt used for generation              |
+| negativePrompt | string | Negative prompt to exclude unwanted elements         |
+| cfgScale       | number | Classifier-Free Guidance scale (typically 1-30)      |
+| steps          | number | Number of denoising steps (typically 20-150)         |
+| sampler        | string | Sampling method (e.g., "DPM++ 2M Karras", "Euler a") |
+| seed           | number | Random seed for reproducible generation              |
+| clipSkip       | number | CLIP skip layers (typically 1-2)                     |
 
-##### Processing Info
+#### Resource properties
 
-| Field    | Type   | Description                          |
-|----------|--------|--------------------------------------|
-| workflow | string | Workflow identifier or configuration |
-| process  | string | Processing method used               |
-| type     | string | Generation type/category             |
-
-##### Remix Data
-
-| Field           | Type   | Description                             |
-|-----------------|--------|-----------------------------------------|
-| extra.remixOfId | number | ID of original image if this is a remix |
+| Field       | Type   | Description                                             |
+|-------------|--------|---------------------------------------------------------|
+| modelId     | number | The model ID of the model used                          |
+| modelName   | string | The name of the model                                   |
+| modelType   | string | The type of the model (i.e. "Checkpoint", "LORA", etc.) |
+| versionId   | number | The version ID of the model used                        |
+| versionName | string | The name of the model version                           |
+| strength    | number | The strength of the model in the generation             |
 
 # post.getInfinite
 
