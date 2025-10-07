@@ -7,13 +7,16 @@ struct ImageDetailView: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var generationData: GenerationData?
     @State private var isLoadingGenData = false
+    @State private var navigateToPost: CivitaiPost?
+    @State private var isLoadingPost = false
 
     var body: some View {
-        ZStack {
-            Color.black
-                .ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
+                VStack(spacing: 0) {
                 // Header
                 HStack {
                     Button(action: {
@@ -32,6 +35,23 @@ struct ImageDetailView: View {
                     }
 
                     Spacer()
+
+                    Menu {
+                        if image.postId != nil {
+                            Button(action: {
+                                Task {
+                                    await loadPost()
+                                }
+                            }) {
+                                Label("View Post", systemImage: "photo.stack")
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .padding()
+                    }
                 }
                 .background(Color.black.opacity(0.3))
 
@@ -81,11 +101,15 @@ struct ImageDetailView: View {
                     }
                 }
                 .background(Color.black)
+                }
             }
-        }
-        .navigationBarHidden(true)
-        .task {
-            await loadGenerationData()
+            .navigationBarHidden(true)
+            .task {
+                await loadGenerationData()
+            }
+            .navigationDestination(item: $navigateToPost) { post in
+                PostDetailView(post: post)
+            }
         }
     }
 
@@ -97,6 +121,19 @@ struct ImageDetailView: View {
             // Silently fail - generation data may not be available for all images
         }
         isLoadingGenData = false
+    }
+
+    private func loadPost() async {
+        guard let postId = image.postId, !isLoadingPost else { return }
+
+        isLoadingPost = true
+        do {
+            let post = try await civitaiService.getPost(postId: postId)
+            navigateToPost = post
+        } catch {
+            // Silently fail - could show an error message here if needed
+        }
+        isLoadingPost = false
     }
 }
 

@@ -24,6 +24,7 @@ galleries, feeds, or browsing interfaces.
 | types         | string[] |          | ["image", "video", "audio"]                                         |
 | period        | string   |          | Time range: "Day", "Week", "Month", "Year", "AllTime"               |
 | browsingLevel | number   |          | Content level flags G = 0, PG = 1, PG13 = 2, R = 4, X = 8, XXX = 16 |
+| postId        | number   |          | ID of post to filter to                                             |
 
 #### Sorting Options
 
@@ -61,6 +62,7 @@ galleries, feeds, or browsing interfaces.
 | height    | number  | Image height                             |
 | nsfwLevel | number  | Content level                            |
 | type      | string  | Content type ("image", "video", "audio") |
+| postId    | number  | The post that the image belongs to       |
 | user      | object  | Creator info (see below)                 |
 | stats     | object  | Statistics (see below)                   |
 
@@ -209,3 +211,42 @@ for building social feeds, post browsing interfaces, and content discovery.
 | laughCount   | number | Total laughs   |
 | commentCount | number | Total comments |
 | dislikeCount | number | Total dislikes |
+
+# post.get
+
+## Overview
+
+Retrieves information about a post.
+
+## Endpoint
+
+`POST /api/trpc/post.get`
+
+## Request Parameters
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| id        | number | ID of the post to fetch |
+
+## Response Format
+
+```
+{
+  "result": {
+    "data": {
+      "json": {
+        <properties>
+      }
+    }
+  }
+}
+```
+
+### Core Properties
+
+| Field      | Type   | Description                                 |
+| ---------- | ------ | ------------------------------------------- |
+| id         | number | Unique post identifier                      |
+| nsfwLevel  | number | Content level                               |
+| title      | string | Post title (can be null)                    |
+| user       | object | Creator info (same as image.getInfinite)    |

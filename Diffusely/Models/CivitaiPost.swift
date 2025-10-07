@@ -1,6 +1,6 @@
 import Foundation
 
-struct CivitaiPost: Codable, Identifiable {
+struct CivitaiPost: Codable, Identifiable, Hashable {
     let id: Int
     let nsfwLevel: Int
     let title: String?
@@ -10,7 +10,7 @@ struct CivitaiPost: Codable, Identifiable {
     let images: [CivitaiImage]
 }
 
-struct PostStats: Codable {
+struct PostStats: Codable, Hashable {
     let cryCount: Int
     let likeCount: Int
     let heartCount: Int

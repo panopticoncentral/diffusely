@@ -267,4 +267,107 @@ class CivitaiService: ObservableObject {
         return tRPCResponse[0].result.data.json
     }
 
+    func getPost(postId: Int) async throws -> CivitaiPost {
+        // First, fetch the basic post information
+        var components = URLComponents(string: "\(baseURL)/post.get")!
+
+        let inputParams: [String: Any] = [
+            "id": postId
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        let (data, _) = try await session.data(from: url)
+
+        // post.get returns a single object without images or stats
+        struct PostDetail: Codable {
+            let id: Int
+            let nsfwLevel: Int
+            let title: String?
+            let user: CivitaiUser
+        }
+
+        struct SingleResponse: Codable {
+            let result: SingleResult
+        }
+
+        struct SingleResult: Codable {
+            let data: SingleData
+        }
+
+        struct SingleData: Codable {
+            let json: PostDetail
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([SingleResponse].self, from: data)
+        let postDetail = tRPCResponse[0].result.data.json
+
+        // Now fetch the images for this post
+        var imageComponents = URLComponents(string: "\(baseURL)/image.getInfinite")!
+
+        let imageInputParams: [String: Any] = [
+            "postId": postId,
+            "include": []
+        ]
+
+        let imageTRPCInput = [
+            "0": [
+                "json": imageInputParams
+            ]
+        ]
+
+        let imageInputData = try JSONSerialization.data(withJSONObject: imageTRPCInput)
+        let imageInputString = String(data: imageInputData, encoding: .utf8)!
+
+        imageComponents.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: imageInputString)
+        ]
+
+        guard let imageUrl = imageComponents.url else {
+            throw URLError(.badURL)
+        }
+
+        let (imageData, _) = try await session.data(from: imageUrl)
+
+        let imageTRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: imageData)
+        let imageResponse = imageTRPCResponse[0].result.data.json
+
+        // Combine the post detail and images into a CivitaiPost
+        let post = CivitaiPost(
+            id: postDetail.id,
+            nsfwLevel: postDetail.nsfwLevel,
+            title: postDetail.title,
+            imageCount: imageResponse.items.count,
+            user: postDetail.user,
+            stats: PostStats(
+                cryCount: 0,
+                likeCount: 0,
+                heartCount: 0,
+                laughCount: 0,
+                commentCount: 0,
+                dislikeCount: 0
+            ),
+            images: imageResponse.items
+        )
+
+        return post
+    }
+
 }

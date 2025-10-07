@@ -1,12 +1,13 @@
 import Foundation
 
-struct CivitaiImage: Codable, Identifiable {
+struct CivitaiImage: Codable, Identifiable, Hashable {
     let id: Int
     private let url: String // Make this private since we need to construct the full URL
     let width: Int
     let height: Int
     let nsfwLevel: Int
     let type: String
+    let postId: Int?  // The post that the image belongs to
     let user: CivitaiUser?  // Made optional since it's not always present in posts
     let stats: ImageStats?  // Made optional since it's not always present in posts
 
@@ -23,7 +24,7 @@ struct CivitaiImage: Codable, Identifiable {
     }
 }
 
-struct ImageStats: Codable {
+struct ImageStats: Codable, Hashable {
     let likeCountAllTime: Int
     let laughCountAllTime: Int
     let heartCountAllTime: Int
