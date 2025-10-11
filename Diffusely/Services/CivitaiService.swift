@@ -56,6 +56,7 @@ fileprivate enum Cursor: Codable {
 class CivitaiService: ObservableObject {
     @Published var images: [CivitaiImage] = []
     @Published var posts: [CivitaiPost] = []
+    @Published var collections: [CivitaiCollection] = []
     @Published var isLoading = false
     @Published var error: Error?
 
@@ -73,28 +74,34 @@ class CivitaiService: ObservableObject {
         nextPostCursor = nil
     }
     
-    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected) async {
+    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         // Cancel any existing request
         currentTask?.cancel()
-        
+
         guard !isLoading else { return }
-        
+
         currentTask = Task {
             isLoading = true
             error = nil
-            
+
             do {
                 var components = URLComponents(string: "\(baseURL)/image.getInfinite")!
-                
+
                 var inputParams: [String: Any] = [
                     "limit": limit,
                     "sort": sort.rawValue,
                     "types": [videos ? "video" : "image"],
                     "period": period.rawValue,
                     "browsingLevel": browsingLevel,
-                    "useIndex": true,
                 ]
-                
+
+                if let collectionId = collectionId {
+                    inputParams["collectionId"] = collectionId
+                } else {
+                    // Only use index when not filtering by collection
+                    inputParams["useIndex"] = true
+                }
+
                 if let cursor = nextCursor {
                     inputParams["cursor"] = cursor
                 }
@@ -116,15 +123,22 @@ class CivitaiService: ObservableObject {
                 guard let url = components.url else {
                     throw URLError(.badURL)
                 }
-                
-                let (data, _) = try await session.data(from: url)
-                
+
+                var request = URLRequest(url: url)
+
+                // Add API key if available
+                if let apiKey = APIKeyManager.shared.apiKey {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
+
+                let (data, _) = try await session.data(for: request)
+
                 // Check if task was cancelled
                 try Task.checkCancellation()
-                
+
                 let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
                 let response = tRPCResponse[0].result.data.json
-                
+
                 images.append(contentsOf: response.items)
                 
                 if let cursor = response.nextCursor {
@@ -136,19 +150,19 @@ class CivitaiService: ObservableObject {
                     self.error = error
                 }
             }
-            
+
             isLoading = false
         }
         
         await currentTask?.value
     }
     
-    func loadMore(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected) async {
+    func loadMore(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         guard nextCursor != nil else { return }
-        await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort)
+        await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId)
     }
 
-    func fetchPosts(limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected) async {
+    func fetchPosts(limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         // Cancel any existing request
         currentTask?.cancel()
 
@@ -165,8 +179,12 @@ class CivitaiService: ObservableObject {
                     "period": period.rawValue,
                     "sort": sort.rawValue,
                     "browsingLevel": browsingLevel,
-                    "limit": limit,
+                    "limit": limit
                 ]
+
+                if let collectionId = collectionId {
+                    inputParams["collectionId"] = collectionId
+                }
 
                 if let cursor = nextPostCursor {
                     inputParams["cursor"] = cursor
@@ -190,7 +208,14 @@ class CivitaiService: ObservableObject {
                     throw URLError(.badURL)
                 }
 
-                let (data, _) = try await session.data(from: url)
+                var request = URLRequest(url: url)
+
+                // Add API key if available
+                if let apiKey = APIKeyManager.shared.apiKey {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
+
+                let (data, _) = try await session.data(for: request)
 
                 // Check if task was cancelled
                 try Task.checkCancellation()
@@ -218,9 +243,9 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
 
-    func loadMorePosts(browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected) async {
+    func loadMorePosts(browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         guard nextPostCursor != nil else { return }
-        await fetchPosts(browsingLevel: browsingLevel, period: period, sort: sort)
+        await fetchPosts(browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId)
     }
 
     func fetchGenerationData(imageId: Int) async throws -> GenerationData {
@@ -368,6 +393,120 @@ class CivitaiService: ObservableObject {
         )
 
         return post
+    }
+
+    func getAllUserCollections() async throws -> [CivitaiCollection] {
+        var components = URLComponents(string: "\(baseURL)/collection.getAllUser")!
+
+        let tRPCInput = [
+            "0": [
+                "json": [String: Any]()
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+
+        // Add API key if available
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, _) = try await session.data(for: request)
+
+        struct CollectionResponse: Codable {
+            let result: CollectionResult
+        }
+
+        struct CollectionResult: Codable {
+            let data: CollectionData
+        }
+
+        struct CollectionData: Codable {
+            let json: [CivitaiCollection]
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
+        let basicCollections = tRPCResponse[0].result.data.json
+
+        // Fetch full details for each collection to get the type field
+        var detailedCollections: [CivitaiCollection] = []
+        for collection in basicCollections {
+            do {
+                let detailedCollection = try await getCollectionById(id: collection.id)
+                detailedCollections.append(detailedCollection)
+            } catch {
+                // If we fail to get details for one collection, skip it
+                print("Failed to fetch details for collection \(collection.id): \(error)")
+            }
+        }
+
+        return detailedCollections
+    }
+
+    func getCollectionById(id: Int) async throws -> CivitaiCollection {
+        var components = URLComponents(string: "\(baseURL)/collection.getById")!
+
+        let inputParams: [String: Any] = [
+            "id": id
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+
+        // Add API key if available
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, _) = try await session.data(for: request)
+
+        struct CollectionDetailResponse: Codable {
+            let result: CollectionDetailResult
+        }
+
+        struct CollectionDetailResult: Codable {
+            let data: CollectionDetailData
+        }
+
+        struct CollectionDetailData: Codable {
+            let json: CollectionWrapper
+        }
+
+        struct CollectionWrapper: Codable {
+            let collection: CivitaiCollection
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([CollectionDetailResponse].self, from: data)
+        return tRPCResponse[0].result.data.json.collection
     }
 
 }

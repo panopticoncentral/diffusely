@@ -6,7 +6,8 @@
       "WebFetch(domain:developer.civitai.com)",
       "Bash(xcodebuild:*)",
       "Bash(swift:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []

@@ -43,6 +43,13 @@ struct ContentView: View {
                 }
                 .tag(2)
 
+            CollectionsView()
+                .tabItem {
+                    Image(systemName: "square.stack.3d.up")
+                    Text("Collections")
+                }
+                .tag(3)
+
         }
     }
 }

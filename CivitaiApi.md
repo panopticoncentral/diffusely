@@ -25,6 +25,7 @@ galleries, feeds, or browsing interfaces.
 | period        | string   |          | Time range: "Day", "Week", "Month", "Year", "AllTime"               |
 | browsingLevel | number   |          | Content level flags G = 0, PG = 1, PG13 = 2, R = 4, X = 8, XXX = 16 |
 | postId        | number   |          | ID of post to filter to                                             |
+| collectionId  | number   |          | ID of collection to filter to                                       |
 
 #### Sorting Options
 
@@ -168,6 +169,7 @@ for building social feeds, post browsing interfaces, and content discovery.
 | sort          | string | "Newest" | Sort order (see options below)                         |
 | cursor        | number | -        | For pagination (use nextCursor from previous response) |
 | browsingLevel | number |          | Content level flags (same as for images)               |
+| collectionId  | number |          | ID of collection to filter to                          |
 
 #### Sorting Options
 
@@ -201,7 +203,7 @@ for building social feeds, post browsing interfaces, and content discovery.
 | stats      | object | Statistics (see below)                      |
 | images     | array  | Array of images (same as image.getInfinite) |
 
-#### Engagement (stats property object)
+### Engagement (stats property object)
 
 | Field        | Type   | Description    |
 | -------------| ------ | -------------- |
@@ -250,3 +252,71 @@ Retrieves information about a post.
 | nsfwLevel  | number | Content level                               |
 | title      | string | Post title (can be null)                    |
 | user       | object | Creator info (same as image.getInfinite)    |
+
+# collection.getAllUser
+
+## Overview
+
+Retrives all the user's collections.
+
+## Endpoint
+
+`POST /api/trpc/collection.getAllUser`
+
+## Request Parameters
+
+## Response Format
+
+```
+{
+  "result": {
+    "data": {
+      "json": [ ... ]
+    }
+  }
+}
+```
+
+### Core Properties
+
+| Field | Type   | Description   |
+|-------|--------|---------------|
+| id    | number | Collection ID |
+
+# collection.getById
+
+## Overview
+
+Retrieves information about a collection.
+
+## Endpoint
+
+`POST /api/trpc/collection.getById`
+
+## Request Parameters
+
+| Parameter | Type   | Description   |
+|-----------|--------|---------------|
+| id        | number | Collection ID |
+
+## Response Format
+
+```
+{
+  "result": {
+    "data": {
+      "collection": { ... }
+    }
+  }
+}
+```
+
+### Core Properties
+
+| Field       | Type   | Description                        |
+|-------------|--------|------------------------------------|
+| id          | number | Collection ID                      |
+| name        | string | Collection name                    |
+| description | string | Collection description             |
+| type        | string | "Article", "Post", "Image" "Model" |
+
