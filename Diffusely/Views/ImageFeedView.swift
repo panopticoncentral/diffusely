@@ -34,13 +34,7 @@ struct ImageFeedView: View {
                             image: image
                         )
                         .onAppear {
-                            let lookahead = videos ? 3 : 5
-                            let startIndex = max(0, index - 2)
-                            let endIndex = min(civitaiService.images.count - 1, index + lookahead)
-                            let imagesToPreload = Array(civitaiService.images[startIndex...endIndex])
-
-                            MediaCacheService.shared.preloadImages(imagesToPreload)
-
+                            // Load more when reaching the end
                             if image.id == civitaiService.images.last?.id {
                                 Task {
                                     await loadMoreImages()

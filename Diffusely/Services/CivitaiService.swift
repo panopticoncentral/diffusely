@@ -65,6 +65,7 @@ class CivitaiService: ObservableObject {
     private var nextPostCursor: Int?
     private let session = URLSession.shared
     private var currentTask: Task<Void, Never>?
+    private let mediaCacheService = MediaCacheService.shared
 
     func clear() {
         currentTask?.cancel()
@@ -139,8 +140,14 @@ class CivitaiService: ObservableObject {
                 let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
                 let response = tRPCResponse[0].result.data.json
 
-                images.append(contentsOf: response.items)
-                
+                let newImages = response.items
+                images.append(contentsOf: newImages)
+
+                // Trigger preloading for newly added images
+                if !newImages.isEmpty {
+                    mediaCacheService.preloadImages(newImages)
+                }
+
                 if let cursor = response.nextCursor {
                     nextCursor = cursor.stringValue
                 }
