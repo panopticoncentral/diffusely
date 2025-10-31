@@ -2,52 +2,6 @@ import SwiftUI
 import AVKit
 import Combine
 
-enum MediaContent: Equatable {
-    case image(UIImage)
-    case video(AVPlayer)
-
-    static func == (lhs: MediaContent, rhs: MediaContent) -> Bool {
-        switch (lhs, rhs) {
-        case (.image(let img1), .image(let img2)):
-            return img1 === img2
-        case (.video(let player1), .video(let player2)):
-            return player1 === player2
-        default:
-            return false
-        }
-    }
-
-    var image: UIImage? {
-        if case .image(let img) = self { return img }
-        return nil
-    }
-
-    var player: AVPlayer? {
-        if case .video(let player) = self { return player }
-        return nil
-    }
-}
-
-enum MediaLoadingState: Equatable {
-    case idle
-    case loading
-    case loaded(MediaContent)
-    case failed(Error)
-
-    static func == (lhs: MediaLoadingState, rhs: MediaLoadingState) -> Bool {
-        switch (lhs, rhs) {
-        case (.idle, .idle), (.loading, .loading):
-            return true
-        case (.loaded(let content1), .loaded(let content2)):
-            return content1 == content2
-        case (.failed(let err1), .failed(let err2)):
-            return (err1 as NSError) == (err2 as NSError)
-        default:
-            return false
-        }
-    }
-}
-
 @MainActor
 class MediaCacheService: ObservableObject {
     static let shared = MediaCacheService()
@@ -65,29 +19,12 @@ class MediaCacheService: ObservableObject {
         return mediaStates[url] ?? .idle
     }
 
-    func getMedia(for url: String) -> MediaContent? {
-        return cache[url]
-    }
-
     func getImage(for url: String) -> UIImage? {
         return cache[url]?.image
     }
 
     func getPlayer(for url: String) -> AVPlayer? {
         return cache[url]?.player
-    }
-
-    func preloadMedia(urls: [String], isVideo: [Bool], priority: TaskPriority = .medium) {
-        for (url, isVid) in zip(urls, isVideo) {
-            let currentState = mediaStates[url]
-            guard currentState == nil || currentState == .idle else {
-                if case .failed = currentState {
-                    loadMedia(url: url, isVideo: isVid, priority: priority)
-                }
-                continue
-            }
-            loadMedia(url: url, isVideo: isVid, priority: priority)
-        }
     }
 
     func loadMedia(url: String, isVideo: Bool, priority: TaskPriority = .medium) {
@@ -131,32 +68,22 @@ class MediaCacheService: ObservableObject {
         loadingTasks.removeAll()
     }
 
-    // MARK: - Video-specific controls
-
-    func pauseAllVideos() {
-        for content in cache.values {
-            if case .video(let player) = content {
-                player.pause()
-            }
-        }
-    }
-
-    func playVideo(url: String) {
-        guard let player = cache[url]?.player else { return }
-        player.play()
-    }
-
-    func pauseVideo(url: String) {
-        guard let player = cache[url]?.player else { return }
-        player.pause()
-    }
-
     // MARK: - Preloading helpers
 
     func preloadImages(_ images: [CivitaiImage]) {
         let urls = images.map { $0.detailURL }
         let isVideo = images.map { $0.isVideo }
-        preloadMedia(urls: urls, isVideo: isVideo, priority: .utility)
+
+        for (url, isVid) in zip(urls, isVideo) {
+            let currentState = mediaStates[url]
+            guard currentState == nil || currentState == .idle else {
+                if case .failed = currentState {
+                    loadMedia(url: url, isVideo: isVid, priority: .utility)
+                }
+                continue
+            }
+            loadMedia(url: url, isVideo: isVid, priority: .utility)
+        }
     }
 
     // MARK: - Private loading methods

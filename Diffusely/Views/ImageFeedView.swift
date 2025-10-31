@@ -43,7 +43,7 @@ struct ImageFeedView: View {
 
                             if image.id == civitaiService.images.last?.id {
                                 Task {
-                                    await civitaiService.loadMore(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+                                    await loadMoreImages()
                                 }
                             }
                         }
@@ -82,8 +82,12 @@ struct ImageFeedView: View {
         await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
     }
 
+    private func loadMoreImages() async {
+        await civitaiService.loadMoreImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+    }
+
     private func refreshImages() async {
         civitaiService.clear()
-        await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+        await loadImages()
     }
 }

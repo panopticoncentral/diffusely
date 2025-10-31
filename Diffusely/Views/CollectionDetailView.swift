@@ -41,7 +41,7 @@ struct CollectionDetailView: View {
 
                                     if image.id == civitaiService.images.last?.id {
                                         Task {
-                                            await civitaiService.loadMore(
+                                            await civitaiService.loadMoreImages(
                                                 videos: false,
                                                 browsingLevel: selectedRating.browsingLevelValue,
                                                 period: selectedPeriod,

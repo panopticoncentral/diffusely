@@ -157,7 +157,7 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
     
-    func loadMore(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
+    func loadMoreImages(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         guard nextCursor != nil else { return }
         await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId)
     }
@@ -508,5 +508,4 @@ class CivitaiService: ObservableObject {
         let tRPCResponse = try JSONDecoder().decode([CollectionDetailResponse].self, from: data)
         return tRPCResponse[0].result.data.json.collection
     }
-
 }
