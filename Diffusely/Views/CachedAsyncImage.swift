@@ -3,16 +3,18 @@ import SwiftUI
 struct CachedAsyncImage: View {
     let url: String
 
-    @StateObject private var mediaCache = MediaCacheService.shared
+    @State private var state: MediaLoadingState = .idle
+    private let mediaCache = MediaCacheService.shared
 
     var body: some View {
         Group {
-            switch mediaCache.getMediaState(for: url) {
+            switch state {
             case .idle:
                 Rectangle()
                     .fill(Color.gray.opacity(0.1))
                     .overlay(ProgressView())
                     .onAppear {
+                        state = mediaCache.getMediaState(for: url)
                         mediaCache.loadMedia(url: url, isVideo: false)
                     }
 
@@ -44,8 +46,8 @@ struct CachedAsyncImage: View {
                     }
             }
         }
-        .onReceive(mediaCache.$mediaStates) { _ in
-            // Ensures view updates when media state changes
+        .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
+            state = newState
         }
     }
 }

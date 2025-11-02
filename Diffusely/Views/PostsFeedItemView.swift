@@ -14,10 +14,10 @@ struct PostsFeedItemView: View {
                 title: post.title
             )
 
-            if !post.images.isEmpty {
+            if !post.safeImages.isEmpty {
                 GeometryReader { geometry in
                     TabView(selection: $currentImageIndex) {
-                        ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                        ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
                             if image.isVideo {
                                 let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                                 GeometryReader { geometry in
@@ -46,8 +46,8 @@ struct PostsFeedItemView: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .onChange(of: currentImageIndex) { oldValue, newIndex in
-                        if newIndex < post.images.count {
-                            let image = post.images[newIndex]
+                        if newIndex < post.safeImages.count {
+                            let image = post.safeImages[newIndex]
                             let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                             withAnimation(.easeInOut(duration: 0.3)) {
                                 currentHeight = geometry.size.width / aspectRatio
@@ -57,8 +57,8 @@ struct PostsFeedItemView: View {
                 }
                 .frame(height: currentHeight)
                 .onAppear {
-                    if !post.images.isEmpty {
-                        let image = post.images[0]
+                    if !post.safeImages.isEmpty {
+                        let image = post.safeImages[0]
                         let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                         currentHeight = UIScreen.main.bounds.width / aspectRatio
                     }
@@ -68,12 +68,12 @@ struct PostsFeedItemView: View {
                 }
 
                 // Custom page indicator and image counter
-                if post.images.count > 1 {
+                if post.safeImages.count > 1 {
                     HStack {
                         Spacer()
 
                         // Image counter
-                        Text("\(currentImageIndex + 1)/\(post.images.count)")
+                        Text("\(currentImageIndex + 1)/\(post.safeImages.count)")
                             .font(.caption)
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
@@ -87,12 +87,12 @@ struct PostsFeedItemView: View {
             }
 
             FeedItemStats(
-                likeCount: post.stats.likeCount,
-                heartCount: post.stats.heartCount,
-                laughCount: post.stats.laughCount,
-                cryCount: post.stats.cryCount,
-                commentCount: post.stats.commentCount,
-                dislikeCount: post.stats.dislikeCount
+                likeCount: post.safeStats.likeCount,
+                heartCount: post.safeStats.heartCount,
+                laughCount: post.safeStats.laughCount,
+                cryCount: post.safeStats.cryCount,
+                commentCount: post.safeStats.commentCount,
+                dislikeCount: post.safeStats.dislikeCount
             )
         }
         .background(Color(.systemBackground))

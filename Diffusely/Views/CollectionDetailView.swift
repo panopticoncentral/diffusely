@@ -58,7 +58,7 @@ struct CollectionDetailView: View {
                                 .onAppear {
                                     let startIndex = max(0, index - 1)
                                     let endIndex = min(civitaiService.posts.count - 1, index + 3)
-                                    let imagesToPreload = Array(civitaiService.posts[startIndex...endIndex]).flatMap { $0.images }
+                                    let imagesToPreload = Array(civitaiService.posts[startIndex...endIndex]).flatMap { $0.safeImages }
 
                                     MediaCacheService.shared.preloadImages(imagesToPreload)
 

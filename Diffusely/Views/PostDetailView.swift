@@ -50,10 +50,10 @@ struct PostDetailView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         // Image/Video carousel
-                        if !post.images.isEmpty {
+                        if !post.safeImages.isEmpty {
                             GeometryReader { geometry in
                                 TabView(selection: $currentImageIndex) {
-                                    ForEach(Array(post.images.enumerated()), id: \.element.id) { index, image in
+                                    ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
                                         if image.isVideo {
                                             let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                                             CachedVideoPlayer(
@@ -78,9 +78,9 @@ struct PostDetailView: View {
                             .frame(height: UIScreen.main.bounds.height * 0.6)
 
                             // Image counter
-                            if post.images.count > 1 {
+                            if post.safeImages.count > 1 {
                                 HStack {
-                                    ForEach(0..<post.images.count, id: \.self) { index in
+                                    ForEach(0..<post.safeImages.count, id: \.self) { index in
                                         Circle()
                                             .fill(currentImageIndex == index ? Color.white : Color.white.opacity(0.4))
                                             .frame(width: 6, height: 6)
@@ -93,12 +93,12 @@ struct PostDetailView: View {
                         // Stats section
                         VStack(alignment: .leading, spacing: 12) {
                             FeedItemStats(
-                                likeCount: post.stats.likeCount,
-                                heartCount: post.stats.heartCount,
-                                laughCount: post.stats.laughCount,
-                                cryCount: post.stats.cryCount,
-                                commentCount: post.stats.commentCount,
-                                dislikeCount: post.stats.dislikeCount
+                                likeCount: post.safeStats.likeCount,
+                                heartCount: post.safeStats.heartCount,
+                                laughCount: post.safeStats.laughCount,
+                                cryCount: post.safeStats.cryCount,
+                                commentCount: post.safeStats.commentCount,
+                                dislikeCount: post.safeStats.dislikeCount
                             )
 
                             Divider()
@@ -131,8 +131,8 @@ struct PostDetailView: View {
     }
 
     private func loadGenerationData(for index: Int) async {
-        guard index < post.images.count else { return }
-        let imageId = post.images[index].id
+        guard index < post.safeImages.count else { return }
+        let imageId = post.safeImages[index].id
 
         isLoadingGenData = true
         do {

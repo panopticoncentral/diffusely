@@ -6,8 +6,17 @@ struct CivitaiPost: Codable, Identifiable, Hashable {
     let title: String?
     let imageCount: Int
     let user: CivitaiUser
-    let stats: PostStats
-    let images: [CivitaiImage]
+    let stats: PostStats?
+    let images: [CivitaiImage]?
+
+    // Provide defaults for optional fields
+    var safeStats: PostStats {
+        stats ?? PostStats(cryCount: 0, likeCount: 0, heartCount: 0, laughCount: 0, commentCount: 0, dislikeCount: 0)
+    }
+
+    var safeImages: [CivitaiImage] {
+        images ?? []
+    }
 }
 
 struct PostStats: Codable, Hashable {

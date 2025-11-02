@@ -8,9 +8,11 @@ struct CachedVideoPlayer: View {
     let isMuted: Bool
     let onTap: (() -> Void)?
 
-    @StateObject private var mediaCache = MediaCacheService.shared
+    @State private var state: MediaLoadingState = .idle
     @State private var isCurrentlyPlaying = false
     @State private var loopObserver: Any?
+
+    private let mediaCache = MediaCacheService.shared
 
     init(url: String, autoPlay: Bool = true, isMuted: Bool = true, onTap: (() -> Void)? = nil) {
         self.url = url
@@ -21,7 +23,7 @@ struct CachedVideoPlayer: View {
 
     var body: some View {
         Group {
-            switch mediaCache.getMediaState(for: url) {
+            switch state {
             case .idle:
                 Rectangle()
                     .fill(Color.black)
@@ -30,6 +32,7 @@ struct CachedVideoPlayer: View {
                             .tint(.white)
                     )
                     .onAppear {
+                        state = mediaCache.getMediaState(for: url)
                         mediaCache.loadMedia(url: url, isVideo: true)
                     }
 
@@ -94,8 +97,8 @@ struct CachedVideoPlayer: View {
                     }
             }
         }
-        .onReceive(mediaCache.$mediaStates) { _ in
-            // Ensures view updates when media state changes
+        .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
+            state = newState
         }
     }
 }
