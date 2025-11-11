@@ -7,10 +7,6 @@ struct ImageFeedItemView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            FeedItemHeader(
-                username: image.user?.username,
-                title: nil)
-
             if image.isVideo {
                 let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
                 GeometryReader { geometry in

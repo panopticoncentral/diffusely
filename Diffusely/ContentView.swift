@@ -32,23 +32,12 @@ struct ContentView: View {
                 }
                 .tag(1)
 
-            PostsFeedView(
-                selectedRating: $selectedRating,
-                selectedPeriod: $selectedPeriod,
-                selectedSort: $selectedSort
-            )
-                .tabItem {
-                    Image(systemName: "rectangle.stack")
-                    Text("Posts")
-                }
-                .tag(2)
-
             CollectionsView()
                 .tabItem {
                     Image(systemName: "square.stack.3d.up")
                     Text("Collections")
                 }
-                .tag(3)
+                .tag(2)
 
         }
     }

@@ -9,11 +9,6 @@ struct PostsFeedItemView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            FeedItemHeader(
-                username: post.user.username,
-                title: post.title
-            )
-
             if !post.safeImages.isEmpty {
                 GeometryReader { geometry in
                     TabView(selection: $currentImageIndex) {
