@@ -1,6 +1,16 @@
 import SwiftUI
 
 struct FeedItemStats: View {
+    private func formatCount(_ count: Int) -> String {
+        if count >= 1000000 {
+            return String(format: "%.1fM", Double(count) / 1000000)
+        } else if count >= 1000 {
+            return String(format: "%.1fK", Double(count) / 1000)
+        } else {
+            return "\(count)"
+        }
+    }
+
     let likeCount: Int
     let heartCount: Int
     let laughCount: Int
@@ -15,7 +25,7 @@ struct FeedItemStats: View {
                     Image(systemName: "hand.thumbsup.fill")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("\(FormatUtilities.formatCount(likeCount))")
+                    Text("\(formatCount(likeCount))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -26,7 +36,7 @@ struct FeedItemStats: View {
                     Image(systemName: "heart.fill")
                         .font(.caption)
                         .foregroundColor(.red)
-                    Text("\(FormatUtilities.formatCount(heartCount))")
+                    Text("\(formatCount(heartCount))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -37,7 +47,7 @@ struct FeedItemStats: View {
                     Image(systemName: "face.smiling")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("\(FormatUtilities.formatCount(laughCount))")
+                    Text("\(formatCount(laughCount))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -48,7 +58,7 @@ struct FeedItemStats: View {
                     Image(systemName: "face.dashed")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("\(FormatUtilities.formatCount(cryCount))")
+                    Text("\(formatCount(cryCount))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -59,7 +69,7 @@ struct FeedItemStats: View {
                     Image(systemName: "message")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("\(FormatUtilities.formatCount(commentCount))")
+                    Text("\(formatCount(commentCount))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -70,7 +80,7 @@ struct FeedItemStats: View {
                     Image(systemName: "hand.thumbsdown")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("\(FormatUtilities.formatCount(dislikeCount))")
+                    Text("\(formatCount(dislikeCount))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
