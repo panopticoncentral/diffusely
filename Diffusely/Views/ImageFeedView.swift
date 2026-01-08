@@ -5,13 +5,26 @@ struct ImageFeedView: View {
     @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: FeedSort
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     let videos: Bool
+
+    private var isGridLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private var columns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 2),
+            GridItem(.flexible(), spacing: 2),
+            GridItem(.flexible(), spacing: 2)
+        ]
+    }
 
     var body: some View {
         ZStack {
             ScrollView {
-                LazyVStack(spacing: 0) {
+                VStack(spacing: 0) {
                     HStack {
                         Text(videos ? "Videos" : "Images")
                             .font(.system(size: 34, weight: .bold, design: .default))
@@ -29,16 +42,31 @@ struct ImageFeedView: View {
                     }
                     .background(Color(.systemBackground))
 
-                    ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                        ImageFeedItemView(
-                            image: image
-                        )
-                        .onAppear {
-                            // Load more when reaching the end
-                            if image.id == civitaiService.images.last?.id {
-                                Task {
-                                    await loadMoreImages()
-                                }
+                    if isGridLayout {
+                        LazyVGrid(columns: columns, spacing: 2) {
+                            ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                                ImageFeedItemView(image: image, isGridMode: true)
+                                    .onAppear {
+                                        if image.id == civitaiService.images.last?.id {
+                                            Task {
+                                                await loadMoreImages()
+                                            }
+                                        }
+                                    }
+                            }
+                        }
+                        .padding(.horizontal, 2)
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                                ImageFeedItemView(image: image, isGridMode: false)
+                                    .onAppear {
+                                        if image.id == civitaiService.images.last?.id {
+                                            Task {
+                                                await loadMoreImages()
+                                            }
+                                        }
+                                    }
                             }
                         }
                     }

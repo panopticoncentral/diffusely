@@ -6,11 +6,24 @@ struct CollectionDetailView: View {
     @State private var selectedRating: ContentRating = .xxx
     @State private var selectedPeriod: Timeframe = .allTime
     @State private var selectedSort: FeedSort = .newest
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var isGridLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private var columns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 2),
+            GridItem(.flexible(), spacing: 2),
+            GridItem(.flexible(), spacing: 2)
+        ]
+    }
 
     var body: some View {
         ZStack {
             ScrollView {
-                LazyVStack(spacing: 0) {
+                VStack(spacing: 0) {
                     HStack {
                         Text(collection.name)
                             .font(.system(size: 34, weight: .bold, design: .default))
@@ -29,50 +42,49 @@ struct CollectionDetailView: View {
                     .background(Color(.systemBackground))
 
                     if collection.type == "Image" {
-                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                            ImageFeedItemView(image: image)
-                                .onAppear {
-                                    let lookahead = 5
-                                    let startIndex = max(0, index - 2)
-                                    let endIndex = min(civitaiService.images.count - 1, index + lookahead)
-                                    let imagesToPreload = Array(civitaiService.images[startIndex...endIndex])
-
-                                    MediaCacheService.shared.preloadImages(imagesToPreload)
-
-                                    if image.id == civitaiService.images.last?.id {
-                                        Task {
-                                            await civitaiService.loadMoreImages(
-                                                videos: false,
-                                                browsingLevel: selectedRating.browsingLevelValue,
-                                                period: selectedPeriod,
-                                                sort: selectedSort,
-                                                collectionId: collection.id
-                                            )
+                        if isGridLayout {
+                            LazyVGrid(columns: columns, spacing: 2) {
+                                ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                                    ImageFeedItemView(image: image, isGridMode: true)
+                                        .onAppear {
+                                            handleImageAppear(index: index, image: image)
                                         }
-                                    }
                                 }
+                            }
+                            .padding(.horizontal, 2)
+                        } else {
+                            LazyVStack(spacing: 0) {
+                                ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                                    ImageFeedItemView(image: image, isGridMode: false)
+                                        .onAppear {
+                                            handleImageAppear(index: index, image: image)
+                                        }
+                                }
+                            }
                         }
                     } else if collection.type == "Post" {
-                        ForEach(Array(civitaiService.posts.enumerated()), id: \.element.id) { index, post in
-                            PostsFeedItemView(post: post)
-                                .onAppear {
-                                    let startIndex = max(0, index - 1)
-                                    let endIndex = min(civitaiService.posts.count - 1, index + 3)
-                                    let imagesToPreload = Array(civitaiService.posts[startIndex...endIndex]).flatMap { $0.safeImages }
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(civitaiService.posts.enumerated()), id: \.element.id) { index, post in
+                                PostsFeedItemView(post: post)
+                                    .onAppear {
+                                        let startIndex = max(0, index - 1)
+                                        let endIndex = min(civitaiService.posts.count - 1, index + 3)
+                                        let imagesToPreload = Array(civitaiService.posts[startIndex...endIndex]).flatMap { $0.safeImages }
 
-                                    MediaCacheService.shared.preloadImages(imagesToPreload)
+                                        MediaCacheService.shared.preloadImages(imagesToPreload)
 
-                                    if post.id == civitaiService.posts.last?.id {
-                                        Task {
-                                            await civitaiService.loadMorePosts(
-                                                browsingLevel: selectedRating.browsingLevelValue,
-                                                period: selectedPeriod,
-                                                sort: selectedSort,
-                                                collectionId: collection.id
-                                            )
+                                        if post.id == civitaiService.posts.last?.id {
+                                            Task {
+                                                await civitaiService.loadMorePosts(
+                                                    browsingLevel: selectedRating.browsingLevelValue,
+                                                    period: selectedPeriod,
+                                                    sort: selectedSort,
+                                                    collectionId: collection.id
+                                                )
+                                            }
                                         }
                                     }
-                                }
+                            }
                         }
                     }
                 }
@@ -126,5 +138,26 @@ struct CollectionDetailView: View {
     private func refreshContent() async {
         civitaiService.clear()
         await loadContent()
+    }
+
+    private func handleImageAppear(index: Int, image: CivitaiImage) {
+        let lookahead = 5
+        let startIndex = max(0, index - 2)
+        let endIndex = min(civitaiService.images.count - 1, index + lookahead)
+        let imagesToPreload = Array(civitaiService.images[startIndex...endIndex])
+
+        MediaCacheService.shared.preloadImages(imagesToPreload)
+
+        if image.id == civitaiService.images.last?.id {
+            Task {
+                await civitaiService.loadMoreImages(
+                    videos: false,
+                    browsingLevel: selectedRating.browsingLevelValue,
+                    period: selectedPeriod,
+                    sort: selectedSort,
+                    collectionId: collection.id
+                )
+            }
+        }
     }
 }
