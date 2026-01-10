@@ -22,57 +22,53 @@ struct ImageFeedView: View {
     }
 
     var body: some View {
-        ZStack {
+        VStack(spacing: 0) {
+            HStack {
+                Text(videos ? "Videos" : "Images")
+                    .font(.system(size: 34, weight: .bold, design: .default))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
+                Spacer()
+
+                FeedFilterMenu(
+                    selectedRating: $selectedRating,
+                    selectedPeriod: $selectedPeriod,
+                    selectedSort: $selectedSort
+                )
+            }
+            .background(Color(.systemBackground))
+
             ScrollView {
-                VStack(spacing: 0) {
-                    HStack {
-                        Text(videos ? "Videos" : "Images")
-                            .font(.system(size: 34, weight: .bold, design: .default))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 20)
-                            .padding(.top, 8)
-                            .padding(.bottom, 16)
-                        Spacer()
-
-                        FeedFilterMenu(
-                            selectedRating: $selectedRating,
-                            selectedPeriod: $selectedPeriod,
-                            selectedSort: $selectedSort
-                        )
-                    }
-                    .background(Color(.systemBackground))
-
-                    if isGridLayout {
-                        LazyVGrid(columns: columns, spacing: 2) {
-                            ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                                ImageFeedItemView(image: image, isGridMode: true)
-                                    .onAppear {
-                                        if image.id == civitaiService.images.last?.id {
-                                            Task {
-                                                await loadMoreImages()
-                                            }
+                if isGridLayout {
+                    LazyVGrid(columns: columns, spacing: 2) {
+                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                            ImageFeedItemView(image: image, isGridMode: true)
+                                .onAppear {
+                                    if image.id == civitaiService.images.last?.id {
+                                        Task {
+                                            await loadMoreImages()
                                         }
                                     }
-                            }
+                                }
                         }
-                        .padding(.horizontal, 2)
-                    } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                                ImageFeedItemView(image: image, isGridMode: false)
-                                    .onAppear {
-                                        if image.id == civitaiService.images.last?.id {
-                                            Task {
-                                                await loadMoreImages()
-                                            }
+                    }
+                    .padding(.horizontal, 2)
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                            ImageFeedItemView(image: image, isGridMode: false)
+                                .onAppear {
+                                    if image.id == civitaiService.images.last?.id {
+                                        Task {
+                                            await loadMoreImages()
                                         }
                                     }
-                            }
+                                }
                         }
                     }
                 }
-                .padding(.top, 50)
-                .padding(.bottom, 20)
 
                 if civitaiService.isLoading {
                     ProgressView()
@@ -85,7 +81,6 @@ struct ImageFeedView: View {
                         .padding()
                 }
             }
-            .ignoresSafeArea(.all)
             .refreshable {
                 await refreshImages()
             }
