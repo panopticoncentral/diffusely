@@ -13,9 +13,9 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
 
     var detailURL: String {
         if isVideo {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=true,transcode=true,width=400/\(id).mp4"
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/original=true/\(id).mp4"
         } else {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,width=400/\(id).jpeg"
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/width=1024/\(id).jpeg"
         }
     }
     
