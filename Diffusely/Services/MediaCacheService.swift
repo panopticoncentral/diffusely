@@ -23,6 +23,11 @@ class MediaCacheService: ObservableObject {
 
     private var entries: [String: CacheEntry] = [:]
 
+    // Limit concurrent video loads to prevent network connection exhaustion
+    private let maxConcurrentVideoLoads = 3
+    private var activeVideoLoads = 0
+    private var pendingVideoLoads: [(url: String, priority: TaskPriority)] = []
+
     private init() {}
 
     func getStatePublisher(for url: String) -> AnyPublisher<MediaLoadingState, Never> {
@@ -65,15 +70,56 @@ class MediaCacheService: ObservableObject {
 
         entry.state = .loading
 
-        let task = Task(priority: priority) {
-            if isVideo {
+        if isVideo {
+            // Check if already in pending queue
+            if pendingVideoLoads.contains(where: { $0.url == url }) {
+                return
+            }
+
+            // Throttle video loads
+            if activeVideoLoads >= maxConcurrentVideoLoads {
+                pendingVideoLoads.append((url: url, priority: priority))
+                return
+            }
+
+            activeVideoLoads += 1
+
+            let task = Task(priority: priority) {
                 await loadVideoAsync(url: url)
-            } else {
+                await videoLoadCompleted()
+            }
+            entry.loadingTask = task
+        } else {
+            let task = Task(priority: priority) {
                 await loadImageAsync(url: url)
             }
+            entry.loadingTask = task
         }
+    }
 
-        entry.loadingTask = task
+    private func videoLoadCompleted() {
+        activeVideoLoads -= 1
+
+        // Start next pending video if any
+        if let next = pendingVideoLoads.first {
+            pendingVideoLoads.removeFirst()
+            let entry = getOrCreateEntry(for: next.url)
+
+            // Only load if still needed (not cancelled/already loaded)
+            guard entry.content == nil, entry.loadingTask == nil else {
+                // Try next one
+                videoLoadCompleted()
+                return
+            }
+
+            activeVideoLoads += 1
+
+            let task = Task(priority: next.priority) {
+                await loadVideoAsync(url: next.url)
+                await videoLoadCompleted()
+            }
+            entry.loadingTask = task
+        }
     }
 
     func retryFailed(url: String, isVideo: Bool) {
@@ -93,6 +139,8 @@ class MediaCacheService: ObservableObject {
         }
 
         entries.removeAll()
+        pendingVideoLoads.removeAll()
+        activeVideoLoads = 0
     }
 
     func preloadImages(_ images: [CivitaiImage]) {
@@ -174,32 +222,31 @@ class MediaCacheService: ObservableObject {
 
     private func loadVideoAsync(url: String) async {
         guard let videoURL = URL(string: url) else {
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                if let entry = entries[url] {
-                    entry.state = .failed(URLError(.badURL))
-                    entry.loadingTask = nil
-                }
+            if let entry = entries[url] {
+                entry.state = .failed(URLError(.badURL))
+                entry.loadingTask = nil
             }
             return
         }
 
         guard !Task.isCancelled else { return }
 
-        await MainActor.run {
-            guard !Task.isCancelled else { return }
+        // Use withCheckedContinuation to wait for video to be ready or fail
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let player = AVPlayer()
             let item = AVPlayerItem(url: videoURL)
             player.replaceCurrentItem(with: item)
             player.isMuted = true
 
             let content = MediaContent.video(player)
-            if let entry = entries[url] {
+            if let entry = self.entries[url] {
                 entry.content = content
             }
 
             var cancellables = Set<AnyCancellable>()
+            var hasResumed = false
 
+            // Monitor player item status
             item.publisher(for: \.status)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] status in
@@ -211,13 +258,23 @@ class MediaCacheService: ObservableObject {
                             entry.state = .loaded(content)
                             entry.loadingTask = nil
                         }
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume()
+                        }
 
                     case .failed:
                         let error = item.error ?? URLError(.unknown)
+                        print("[VideoError] Failed to load: \(url)")
+                        print("[VideoError] \(error.localizedDescription)")
                         if let entry = self.entries[url] {
                             entry.state = .failed(error)
                             entry.loadingTask = nil
                             entry.content = nil
+                        }
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume()
                         }
 
                     case .unknown:
@@ -229,6 +286,10 @@ class MediaCacheService: ObservableObject {
                             entry.state = .failed(error)
                             entry.loadingTask = nil
                             entry.content = nil
+                        }
+                        if !hasResumed {
+                            hasResumed = true
+                            continuation.resume()
                         }
                     }
                 }

@@ -79,7 +79,7 @@ struct CachedVideoPlayer: View {
                     }
                 }
 
-            case .failed(_):
+            case .failed:
                 Rectangle()
                     .fill(Color.gray.opacity(0.3))
                     .overlay(

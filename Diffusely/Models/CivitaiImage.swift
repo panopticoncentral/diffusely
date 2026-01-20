@@ -13,9 +13,11 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
 
     var detailURL: String {
         if isVideo {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/original=true/\(id).mp4"
+            // Use standard width transcode that's likely cached on CDN
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/transcode=true,width=450,optimized=true/\(id).mp4"
         } else {
-            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/width=1024/\(id).jpeg"
+            // Use standard format that's likely cached on CDN
+            return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,width=450,optimized=true/\(id).jpeg"
         }
     }
     
