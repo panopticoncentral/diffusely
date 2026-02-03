@@ -5,6 +5,9 @@ struct ImageFeedItemView: View {
     var isGridMode: Bool = false
 
     @State private var showingDetail = false
+    @State private var navigateToPost: CivitaiPost?
+    @State private var isLoadingPost = false
+    @StateObject private var civitaiService = CivitaiService()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,6 +20,44 @@ struct ImageFeedItemView: View {
         .background(Color(.systemBackground))
         .fullScreenCover(isPresented: $showingDetail) {
             ImageDetailView(image: image)
+        }
+        .fullScreenCover(item: $navigateToPost) { post in
+            PostDetailView(post: post)
+        }
+    }
+
+    private func loadPost() async {
+        guard let postId = image.postId, !isLoadingPost else { return }
+
+        isLoadingPost = true
+        do {
+            let post = try await civitaiService.getPost(postId: postId)
+            navigateToPost = post
+        } catch {
+            // Silently fail
+        }
+        isLoadingPost = false
+    }
+
+    @ViewBuilder
+    private var ellipsisMenu: some View {
+        if image.postId != nil {
+            Menu {
+                Button(action: {
+                    Task {
+                        await loadPost()
+                    }
+                }) {
+                    Label("View Post", systemImage: "photo.stack")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.caption)
+                    .foregroundColor(.white)
+                    .padding(6)
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(Circle())
+            }
         }
     }
 
@@ -47,21 +88,23 @@ struct ImageFeedItemView: View {
                         showingDetail = true
                     }
 
-                // Video indicator overlay
-                if image.isVideo {
-                    VStack {
-                        HStack {
-                            Spacer()
+                // Top-right overlays (video indicator and ellipsis menu)
+                VStack {
+                    HStack {
+                        Spacer()
+                        if image.isVideo {
                             Image(systemName: "video.fill")
                                 .font(.caption)
                                 .foregroundColor(.white)
                                 .padding(6)
                                 .background(Color.black.opacity(0.5))
                                 .clipShape(Circle())
-                                .padding(8)
                         }
-                        Spacer()
+                        ellipsisMenu
+                            .padding(.leading, 4)
                     }
+                    .padding(8)
+                    Spacer()
                 }
             }
         }
@@ -70,32 +113,38 @@ struct ImageFeedItemView: View {
 
     @ViewBuilder
     private var listContent: some View {
-        if image.isVideo {
-            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-            GeometryReader { geometry in
-                ZStack {
-                    CachedVideoPlayer(
-                        url: image.detailURL,
-                        autoPlay: true,
-                        isMuted: true
-                    )
-                    .frame(width: geometry.size.width, height: geometry.size.width / aspectRatio)
-                    .allowsHitTesting(false)
+        ZStack(alignment: .topTrailing) {
+            if image.isVideo {
+                let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+                GeometryReader { geometry in
+                    ZStack {
+                        CachedVideoPlayer(
+                            url: image.detailURL,
+                            autoPlay: true,
+                            isMuted: true
+                        )
+                        .frame(width: geometry.size.width, height: geometry.size.width / aspectRatio)
+                        .allowsHitTesting(false)
 
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showingDetail = true
-                        }
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingDetail = true
+                            }
+                    }
                 }
+                .aspectRatio(aspectRatio, contentMode: .fit)
+            } else {
+                CachedAsyncImage(url: image.detailURL)
+                    .aspectRatio(contentMode: .fit)
+                    .onTapGesture {
+                        showingDetail = true
+                    }
             }
-            .aspectRatio(aspectRatio, contentMode: .fit)
-        } else {
-            CachedAsyncImage(url: image.detailURL)
-                .aspectRatio(contentMode: .fit)
-                .onTapGesture {
-                    showingDetail = true
-                }
+
+            // Ellipsis menu overlay
+            ellipsisMenu
+                .padding(8)
         }
 
         FeedItemStats(
