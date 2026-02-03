@@ -515,4 +515,210 @@ class CivitaiService: ObservableObject {
         let tRPCResponse = try JSONDecoder().decode([CollectionDetailResponse].self, from: data)
         return tRPCResponse[0].result.data.json.collection
     }
+
+    func addImageToCollection(imageId: Int, collectionId: Int) async throws {
+        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
+
+        let inputParams: [String: Any] = [
+            "imageId": imageId,
+            "type": "Image",
+            "collections": [
+                ["collectionId": collectionId]
+            ]
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
+
+        print("Adding image \(imageId) to collection \(collectionId)")
+        print("Request URL: \(url)")
+        if let bodyString = String(data: bodyData, encoding: .utf8) {
+            print("Request body: \(bodyString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // API key is required for this endpoint
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Response body: \(responseString)")
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        print("Response status code: \(httpResponse.statusCode)")
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
+    func getUserImageCollections() async throws -> [CivitaiCollection] {
+        var components = URLComponents(string: "\(baseURL)/collection.getAllUser")!
+
+        let inputParams: [String: Any] = [
+            "type": "Image"
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+
+        // API key is required for this endpoint
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, _) = try await session.data(for: request)
+
+        struct CollectionResponse: Codable {
+            let result: CollectionResult
+        }
+
+        struct CollectionResult: Codable {
+            let data: CollectionData
+        }
+
+        struct CollectionData: Codable {
+            let json: [CivitaiCollection]
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
+        return tRPCResponse[0].result.data.json
+    }
+
+    func addPostToCollection(postId: Int, collectionId: Int) async throws {
+        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
+
+        let inputParams: [String: Any] = [
+            "postId": postId,
+            "type": "Post",
+            "collections": [
+                ["collectionId": collectionId]
+            ]
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
+
+        print("Adding post \(postId) to collection \(collectionId)")
+        print("Request URL: \(url)")
+        if let bodyString = String(data: bodyData, encoding: .utf8) {
+            print("Request body: \(bodyString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Response body: \(responseString)")
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        print("Response status code: \(httpResponse.statusCode)")
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
+    func getUserPostCollections() async throws -> [CivitaiCollection] {
+        var components = URLComponents(string: "\(baseURL)/collection.getAllUser")!
+
+        let inputParams: [String: Any] = [
+            "type": "Post"
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, _) = try await session.data(for: request)
+
+        struct CollectionResponse: Codable {
+            let result: CollectionResult
+        }
+
+        struct CollectionResult: Codable {
+            let data: CollectionData
+        }
+
+        struct CollectionData: Codable {
+            let json: [CivitaiCollection]
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
+        return tRPCResponse[0].result.data.json
+    }
 }

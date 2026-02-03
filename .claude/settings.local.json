@@ -8,7 +8,8 @@
       "Bash(swift:*)",
       "Bash(python3:*)",
       "Bash(curl:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

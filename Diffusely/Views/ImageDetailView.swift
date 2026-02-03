@@ -9,6 +9,7 @@ struct ImageDetailView: View {
     @State private var isLoadingGenData = false
     @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
+    @State private var showingCollectionPicker = false
 
     var body: some View {
         NavigationStack {
@@ -44,6 +45,14 @@ struct ImageDetailView: View {
                                 }
                             }) {
                                 Label("View Post", systemImage: "photo.stack")
+                            }
+                        }
+
+                        if APIKeyManager.shared.hasAPIKey {
+                            Button(action: {
+                                showingCollectionPicker = true
+                            }) {
+                                Label("Add to Collection", systemImage: "folder.badge.plus")
                             }
                         }
                     } label: {
@@ -109,6 +118,11 @@ struct ImageDetailView: View {
             }
             .navigationDestination(item: $navigateToPost) { post in
                 PostDetailView(post: post)
+            }
+            .sheet(isPresented: $showingCollectionPicker) {
+                CollectionPickerView(itemType: .image(id: image.id)) {
+                    showingCollectionPicker = false
+                }
             }
         }
     }

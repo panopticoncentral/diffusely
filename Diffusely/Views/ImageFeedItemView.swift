@@ -7,6 +7,7 @@ struct ImageFeedItemView: View {
     @State private var showingDetail = false
     @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
+    @State private var showingCollectionPicker = false
     @StateObject private var civitaiService = CivitaiService()
 
     var body: some View {
@@ -24,6 +25,11 @@ struct ImageFeedItemView: View {
         .fullScreenCover(item: $navigateToPost) { post in
             PostDetailView(post: post)
         }
+        .sheet(isPresented: $showingCollectionPicker) {
+            CollectionPickerView(itemType: .image(id: image.id)) {
+                showingCollectionPicker = false
+            }
+        }
     }
 
     private func loadPost() async {
@@ -39,16 +45,30 @@ struct ImageFeedItemView: View {
         isLoadingPost = false
     }
 
+    private var hasMenuItems: Bool {
+        image.postId != nil || APIKeyManager.shared.hasAPIKey
+    }
+
     @ViewBuilder
     private var ellipsisMenu: some View {
-        if image.postId != nil {
+        if hasMenuItems {
             Menu {
-                Button(action: {
-                    Task {
-                        await loadPost()
+                if image.postId != nil {
+                    Button(action: {
+                        Task {
+                            await loadPost()
+                        }
+                    }) {
+                        Label("View Post", systemImage: "photo.stack")
                     }
-                }) {
-                    Label("View Post", systemImage: "photo.stack")
+                }
+
+                if APIKeyManager.shared.hasAPIKey {
+                    Button(action: {
+                        showingCollectionPicker = true
+                    }) {
+                        Label("Add to Collection", systemImage: "folder.badge.plus")
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")

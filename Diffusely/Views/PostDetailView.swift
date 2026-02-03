@@ -9,6 +9,7 @@ struct PostDetailView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var generationData: GenerationData?
     @State private var isLoadingGenData = false
+    @State private var showingCollectionPicker = false
 
     var body: some View {
         ZStack {
@@ -43,6 +44,21 @@ struct PostDetailView: View {
                     }
 
                     Spacer()
+
+                    if APIKeyManager.shared.hasAPIKey {
+                        Menu {
+                            Button(action: {
+                                showingCollectionPicker = true
+                            }) {
+                                Label("Add to Collection", systemImage: "folder.badge.plus")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.title3)
+                                .foregroundColor(.white)
+                                .padding()
+                        }
+                    }
                 }
                 .background(Color.black.opacity(0.3))
 
@@ -127,6 +143,11 @@ struct PostDetailView: View {
         }
         .task {
             await loadGenerationData(for: currentImageIndex)
+        }
+        .sheet(isPresented: $showingCollectionPicker) {
+            CollectionPickerView(itemType: .post(id: post.id)) {
+                showingCollectionPicker = false
+            }
         }
     }
 
