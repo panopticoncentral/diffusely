@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import Combine
+import ImageIO
 
 @MainActor
 class MediaCacheService: ObservableObject {
@@ -10,6 +11,7 @@ class MediaCacheService: ObservableObject {
         var content: MediaContent?
         var loadingTask: Task<Void, Never>?
         let stateSubject: CurrentValueSubject<MediaLoadingState, Never>
+        var lastAccessTime: Date = Date()
 
         init() {
             self.stateSubject = CurrentValueSubject<MediaLoadingState, Never>(.idle)
@@ -28,7 +30,48 @@ class MediaCacheService: ObservableObject {
     private var activeVideoLoads = 0
     private var pendingVideoLoads: [(url: String, priority: TaskPriority)] = []
 
-    private init() {}
+    // Maximum pixel dimension for downsampled images (screens are ~400pt wide, 3 columns = ~133pt per image, @3x = ~400px)
+    // Using 600px gives some headroom for detail view and retina displays
+    private let maxImageDimension: CGFloat = 600
+
+    private init() {
+        setupMemoryPressureHandling()
+    }
+
+    private func setupMemoryPressureHandling() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleMemoryPressure()
+            }
+        }
+    }
+
+    private func handleMemoryPressure() {
+        // Evict oldest image entries to free memory, keeping videos (more expensive to reload)
+        let imageEntries = entries.filter { entry in
+            if let content = entry.value.content, case .image = content {
+                return true
+            }
+            return false
+        }
+
+        // Sort by last access time and remove the oldest half
+        let sortedEntries = imageEntries.sorted { $0.value.lastAccessTime < $1.value.lastAccessTime }
+        let countToRemove = max(sortedEntries.count / 2, 1)
+
+        for (url, entry) in sortedEntries.prefix(countToRemove) {
+            entry.loadingTask?.cancel()
+            entry.content = nil
+            entry.state = .idle
+            entries.removeValue(forKey: url)
+        }
+
+        print("[MediaCache] Memory pressure: evicted \(countToRemove) image entries")
+    }
 
     func getStatePublisher(for url: String) -> AnyPublisher<MediaLoadingState, Never> {
         getOrCreateEntry(for: url).stateSubject.eraseToAnyPublisher()
@@ -39,7 +82,11 @@ class MediaCacheService: ObservableObject {
     }
 
     func getImage(for url: String) -> UIImage? {
-        return entries[url]?.content?.image
+        if let entry = entries[url] {
+            entry.lastAccessTime = Date()
+            return entry.content?.image
+        }
+        return nil
     }
 
     func getPlayer(for url: String) -> AVPlayer? {
@@ -188,7 +235,8 @@ class MediaCacheService: ObservableObject {
                 return
             }
 
-            guard let uiImage = UIImage(data: data) else {
+            // Downsample the image to reduce memory usage
+            guard let uiImage = downsampleImage(data: data, maxDimension: maxImageDimension) else {
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     if let entry = entries[url] {
@@ -218,6 +266,31 @@ class MediaCacheService: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Downsamples an image to the specified maximum dimension while preserving aspect ratio.
+    /// Uses ImageIO for memory-efficient decoding - the full image is never loaded into memory.
+    private func downsampleImage(data: Data, maxDimension: CGFloat) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCache: false
+        ]
+
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
+            return nil
+        }
+
+        let downsampleOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension
+        ]
+
+        guard let downsampledImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, downsampleOptions as CFDictionary) else {
+            return nil
+        }
+
+        return UIImage(cgImage: downsampledImage)
     }
 
     private func loadVideoAsync(url: String) async {
