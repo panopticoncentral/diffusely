@@ -5,6 +5,7 @@ struct CollectionsView: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var showingSettings = false
     @State private var collections: [CivitaiCollection] = []
+    @State private var previewImages: [Int: CivitaiImage] = [:]  // collectionId -> preview image
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -17,6 +18,11 @@ struct CollectionsView: View {
             return false
         }
     }
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
 
     var body: some View {
         NavigationStack {
@@ -94,15 +100,19 @@ struct CollectionsView: View {
                     .padding()
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 16) {
+                        LazyVGrid(columns: columns, spacing: 12) {
                             ForEach(filteredCollections) { collection in
                                 NavigationLink(destination: CollectionDetailView(collection: collection)) {
-                                    CollectionCard(collection: collection)
+                                    CollectionCard(
+                                        collection: collection,
+                                        previewImage: previewImages[collection.id]
+                                    )
                                 }
                                 .buttonStyle(PlainButtonStyle())
                             }
                         }
-                        .padding()
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                     }
                 }
             }
@@ -133,16 +143,46 @@ struct CollectionsView: View {
 
         do {
             collections = try await civitaiService.getAllUserCollections()
+
+            // Load preview images for collections that need them
+            await loadPreviewImages()
         } catch {
             errorMessage = error.localizedDescription
         }
 
         isLoading = false
     }
+
+    private func loadPreviewImages() async {
+        await withTaskGroup(of: (Int, CivitaiImage?).self) { group in
+            for collection in filteredCollections {
+                // Skip if collection already has a cover image
+                if collection.image?.fullImageURL != nil {
+                    continue
+                }
+
+                group.addTask {
+                    guard let type = collection.type else { return (collection.id, nil) }
+                    let image = try? await self.civitaiService.fetchCollectionPreviewImage(
+                        collectionId: collection.id,
+                        collectionType: type
+                    )
+                    return (collection.id, image)
+                }
+            }
+
+            for await (collectionId, image) in group {
+                if let image = image {
+                    previewImages[collectionId] = image
+                }
+            }
+        }
+    }
 }
 
 struct CollectionCard: View {
     let collection: CivitaiCollection
+    var previewImage: CivitaiImage?
 
     private var typeIcon: String {
         switch collection.type {
@@ -166,71 +206,93 @@ struct CollectionCard: View {
         }
     }
 
-    var body: some View {
-        HStack(spacing: 16) {
-            // Icon
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(typeColor.opacity(0.15))
-                    .frame(width: 60, height: 60)
-
-                Image(systemName: typeIcon)
-                    .font(.system(size: 26))
-                    .foregroundColor(typeColor)
-            }
-
-            // Content
-            VStack(alignment: .leading, spacing: 6) {
-                Text(collection.name)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.primary)
-
-                if let description = collection.description, !description.isEmpty {
-                    Text(description)
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                }
-
-                HStack(spacing: 12) {
-                    if let type = collection.type {
-                        HStack(spacing: 4) {
-                            Image(systemName: typeIcon)
-                                .font(.system(size: 11))
-                            Text(type)
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(typeColor)
-                    }
-
-                    if let imageCount = collection.imageCount, imageCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.grid.2x2")
-                                .font(.system(size: 11))
-                            Text("\(imageCount)")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(.secondary)
-                    }
-                }
-            }
-
-            Spacer()
-
-            // Chevron
-            Image(systemName: "chevron.right")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.secondary.opacity(0.5))
+    /// Returns the URL to display: collection cover, preview image, or nil
+    private var displayImageURL: String? {
+        // First try the collection's explicit cover image
+        if let coverURL = collection.image?.fullImageURL {
+            return coverURL
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
-                .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
-        )
+        // Fall back to fetched preview image
+        if let preview = previewImage {
+            return preview.detailURL
+        }
+        return nil
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // Background image or placeholder
+            GeometryReader { geometry in
+                if let imageURL = displayImageURL {
+                    CachedAsyncImage(url: imageURL)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } else {
+                    // Gradient placeholder when no cover image
+                    LinearGradient(
+                        colors: [typeColor.opacity(0.3), typeColor.opacity(0.6)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .overlay(
+                        Image(systemName: typeIcon)
+                            .font(.system(size: 40))
+                            .foregroundColor(.white.opacity(0.5))
+                    )
+                }
+            }
+
+            // Bottom gradient overlay for text readability
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.7), .black.opacity(0.85)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 100)
+
+            // Content overlay
+            VStack(alignment: .leading, spacing: 4) {
+                Spacer()
+
+                Text(collection.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                HStack(spacing: 8) {
+                    // Type badge
+                    HStack(spacing: 3) {
+                        Image(systemName: typeIcon)
+                            .font(.system(size: 9))
+                        Text(collection.type ?? "")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(typeColor.opacity(0.9))
+                    .foregroundColor(.white)
+                    .cornerRadius(4)
+
+                    // Image count
+                    if let imageCount = collection.imageCount, imageCount > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 9))
+                            Text("\(imageCount)")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(.white.opacity(0.8))
+                    }
+
+                    Spacer()
+                }
+            }
+            .padding(10)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 3)
     }
 }

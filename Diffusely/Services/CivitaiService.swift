@@ -721,4 +721,83 @@ class CivitaiService: ObservableObject {
         let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
         return tRPCResponse[0].result.data.json
     }
+
+    /// Fetches a single preview image for a collection
+    func fetchCollectionPreviewImage(collectionId: Int, collectionType: String) async throws -> CivitaiImage? {
+        if collectionType == "Image" {
+            // Fetch directly from images
+            var components = URLComponents(string: "\(baseURL)/image.getInfinite")!
+
+            let inputParams: [String: Any] = [
+                "limit": 1,
+                "collectionId": collectionId,
+                "sort": "Newest"
+            ]
+
+            let tRPCInput = [
+                "0": [
+                    "json": inputParams
+                ]
+            ]
+
+            let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+            let inputString = String(data: inputData, encoding: .utf8)!
+
+            components.queryItems = [
+                URLQueryItem(name: "batch", value: "1"),
+                URLQueryItem(name: "input", value: inputString)
+            ]
+
+            guard let url = components.url else {
+                throw URLError(.badURL)
+            }
+
+            var request = URLRequest(url: url)
+            if let apiKey = APIKeyManager.shared.apiKey {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+
+            let (data, _) = try await session.data(for: request)
+            let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
+            return tRPCResponse[0].result.data.json.items.first
+        } else if collectionType == "Post" {
+            // Fetch from posts and get first image
+            var components = URLComponents(string: "\(baseURL)/post.getInfinite")!
+
+            let inputParams: [String: Any] = [
+                "limit": 1,
+                "collectionId": collectionId,
+                "sort": "Newest"
+            ]
+
+            let tRPCInput = [
+                "0": [
+                    "json": inputParams
+                ]
+            ]
+
+            let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+            let inputString = String(data: inputData, encoding: .utf8)!
+
+            components.queryItems = [
+                URLQueryItem(name: "batch", value: "1"),
+                URLQueryItem(name: "input", value: inputString)
+            ]
+
+            guard let url = components.url else {
+                throw URLError(.badURL)
+            }
+
+            var request = URLRequest(url: url)
+            if let apiKey = APIKeyManager.shared.apiKey {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+
+            let (data, _) = try await session.data(for: request)
+            let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
+            return tRPCResponse[0].result.data.json.items.first?.images?.first
+        }
+
+        return nil
+    }
 }

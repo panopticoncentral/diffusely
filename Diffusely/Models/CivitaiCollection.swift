@@ -7,6 +7,11 @@ struct CollectionCoverImage: Codable, Hashable {
     let width: Int?
     let height: Int?
     let hash: String?
+
+    var fullImageURL: String? {
+        guard let url = url, let id = id else { return nil }
+        return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,width=450,optimized=true/\(id).jpeg"
+    }
 }
 
 struct CivitaiCollection: Codable, Identifiable, Hashable {
