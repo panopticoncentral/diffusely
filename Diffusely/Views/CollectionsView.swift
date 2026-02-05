@@ -212,9 +212,9 @@ struct CollectionCard: View {
         if let coverURL = collection.image?.fullImageURL {
             return coverURL
         }
-        // Fall back to fetched preview image
+        // Fall back to fetched preview image (use thumbnailURL for static image even if it's a video)
         if let preview = previewImage {
-            return preview.detailURL
+            return preview.thumbnailURL
         }
         return nil
     }

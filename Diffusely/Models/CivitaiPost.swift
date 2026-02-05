@@ -17,6 +17,24 @@ struct CivitaiPost: Codable, Identifiable, Hashable {
     var safeImages: [CivitaiImage] {
         images ?? []
     }
+
+    init(
+        id: Int,
+        nsfwLevel: Int,
+        title: String?,
+        imageCount: Int,
+        user: CivitaiUser,
+        stats: PostStats?,
+        images: [CivitaiImage]?
+    ) {
+        self.id = id
+        self.nsfwLevel = nsfwLevel
+        self.title = title
+        self.imageCount = imageCount
+        self.user = user
+        self.stats = stats
+        self.images = images
+    }
 }
 
 struct PostStats: Codable, Hashable {

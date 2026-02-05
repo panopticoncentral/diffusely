@@ -722,6 +722,103 @@ class CivitaiService: ObservableObject {
         return tRPCResponse[0].result.data.json
     }
 
+    // MARK: - Paginated Fetch Methods for Sync Service
+
+    /// Fetches a page of images for a collection, returning the raw results
+    func fetchImagesPage(collectionId: Int, cursor: String? = nil, limit: Int = 100) async throws -> (images: [CivitaiImage], nextCursor: String?) {
+        var components = URLComponents(string: "\(baseURL)/image.getInfinite")!
+
+        var inputParams: [String: Any] = [
+            "limit": limit,
+            "collectionId": collectionId,
+            "sort": "Newest"
+        ]
+
+        if let cursor = cursor {
+            inputParams["cursor"] = cursor
+        }
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, _) = try await session.data(for: request)
+        let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
+        let response = tRPCResponse[0].result.data.json
+
+        return (images: response.items, nextCursor: response.nextCursor?.stringValue)
+    }
+
+    /// Fetches a page of posts for a collection, returning the raw results
+    /// Note: Post cursors can be Int or String ("value|id" format) - we normalize to String
+    func fetchPostsPage(collectionId: Int, cursor: String? = nil, limit: Int = 100) async throws -> (posts: [CivitaiPost], nextCursor: String?) {
+        var components = URLComponents(string: "\(baseURL)/post.getInfinite")!
+
+        var inputParams: [String: Any] = [
+            "limit": limit,
+            "collectionId": collectionId,
+            "sort": "Newest"
+        ]
+
+        if let cursor = cursor {
+            // Try to parse as Int first (API may expect Int), otherwise use as String
+            if let intCursor = Int(cursor) {
+                inputParams["cursor"] = intCursor
+            } else {
+                inputParams["cursor"] = cursor
+            }
+        }
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, _) = try await session.data(for: request)
+        let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
+        let response = tRPCResponse[0].result.data.json
+
+        // Handle both Int and String cursor formats by using stringValue
+        return (posts: response.items, nextCursor: response.nextCursor?.stringValue)
+    }
+
     /// Fetches a single preview image for a collection
     func fetchCollectionPreviewImage(collectionId: Int, collectionType: String) async throws -> CivitaiImage? {
         if collectionType == "Image" {
