@@ -62,75 +62,72 @@ struct PostDetailView: View {
                 }
                 .background(Color.black.opacity(0.3))
 
-                // Main content - scrollable
-                ScrollView {
-                    VStack(spacing: 0) {
-                        // Image/Video carousel
-                        if !post.safeImages.isEmpty {
-                            GeometryReader { geometry in
-                                TabView(selection: $currentImageIndex) {
-                                    ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
-                                        if image.isVideo {
-                                            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                                            CachedVideoPlayer(
-                                                url: image.detailURL,
-                                                autoPlay: true,
-                                                isMuted: false
-                                            )
-                                            .aspectRatio(aspectRatio, contentMode: .fit)
-                                            .frame(maxWidth: .infinity)
-                                            .tag(index)
-                                        } else {
-                                            CachedAsyncImage(url: image.detailURL)
-                                                .aspectRatio(contentMode: .fit)
-                                                .frame(maxWidth: .infinity)
-                                                .tag(index)
-                                        }
-                                    }
+                // Image/Video carousel - outside ScrollView to prevent gesture conflicts
+                if !post.safeImages.isEmpty {
+                    GeometryReader { geometry in
+                        TabView(selection: $currentImageIndex) {
+                            ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
+                                if image.isVideo {
+                                    let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+                                    CachedVideoPlayer(
+                                        url: image.detailURL,
+                                        autoPlay: true,
+                                        isMuted: false
+                                    )
+                                    .aspectRatio(aspectRatio, contentMode: .fit)
+                                    .frame(maxWidth: .infinity)
+                                    .tag(index)
+                                } else {
+                                    CachedAsyncImage(url: image.detailURL)
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxWidth: .infinity)
+                                        .tag(index)
                                 }
-                                .tabViewStyle(.page(indexDisplayMode: .never))
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                            }
-                            .frame(height: UIScreen.main.bounds.height * 0.6)
-
-                            // Image counter
-                            if post.safeImages.count > 1 {
-                                HStack {
-                                    ForEach(0..<post.safeImages.count, id: \.self) { index in
-                                        Circle()
-                                            .fill(currentImageIndex == index ? Color.white : Color.white.opacity(0.4))
-                                            .frame(width: 6, height: 6)
-                                    }
-                                }
-                                .padding(.vertical, 12)
                             }
                         }
-
-                        // Stats section
-                        VStack(alignment: .leading, spacing: 12) {
-                            FeedItemStats(
-                                likeCount: post.safeStats.likeCount,
-                                heartCount: post.safeStats.heartCount,
-                                laughCount: post.safeStats.laughCount,
-                                cryCount: post.safeStats.cryCount,
-                                commentCount: post.safeStats.commentCount,
-                                dislikeCount: post.safeStats.dislikeCount
-                            )
-
-                            Divider()
-                                .background(Color.white.opacity(0.2))
-
-                            // Generation data section
-                            if isLoadingGenData {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .padding()
-                            } else if let genData = generationData {
-                                GenerationDataView(data: genData)
-                            }
-                        }
-                        .padding()
+                        .tabViewStyle(.page(indexDisplayMode: .never))
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                     }
+                    .frame(height: UIScreen.main.bounds.height * 0.6)
+
+                    // Image counter
+                    if post.safeImages.count > 1 {
+                        HStack {
+                            ForEach(0..<post.safeImages.count, id: \.self) { index in
+                                Circle()
+                                    .fill(currentImageIndex == index ? Color.white : Color.white.opacity(0.4))
+                                    .frame(width: 6, height: 6)
+                            }
+                        }
+                        .padding(.vertical, 12)
+                    }
+                }
+
+                // Stats and generation data - scrollable content
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        FeedItemStats(
+                            likeCount: post.safeStats.likeCount,
+                            heartCount: post.safeStats.heartCount,
+                            laughCount: post.safeStats.laughCount,
+                            cryCount: post.safeStats.cryCount,
+                            commentCount: post.safeStats.commentCount,
+                            dislikeCount: post.safeStats.dislikeCount
+                        )
+
+                        Divider()
+                            .background(Color.white.opacity(0.2))
+
+                        // Generation data section
+                        if isLoadingGenData {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .padding()
+                        } else if let genData = generationData {
+                            GenerationDataView(data: genData)
+                        }
+                    }
+                    .padding()
                 }
                 .background(Color.black)
             }
