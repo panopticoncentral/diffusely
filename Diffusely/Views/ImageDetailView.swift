@@ -10,6 +10,7 @@ struct ImageDetailView: View {
     @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
     @State private var showingCollectionPicker = false
+    @State private var showingUserContent = false
 
     var body: some View {
         NavigationStack {
@@ -29,10 +30,18 @@ struct ImageDetailView: View {
                             .padding()
                     }
 
-                    if let username = image.user?.username {
-                        Text(username)
-                            .font(.headline)
-                            .foregroundColor(.white)
+                    if let user = image.user, let username = user.username {
+                        Button(action: { showingUserContent = true }) {
+                            HStack(spacing: 4) {
+                                Text(username)
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
 
                     Spacer()
@@ -122,6 +131,11 @@ struct ImageDetailView: View {
             .sheet(isPresented: $showingCollectionPicker) {
                 CollectionPickerView(itemType: .image(id: image.id)) {
                     showingCollectionPicker = false
+                }
+            }
+            .fullScreenCover(isPresented: $showingUserContent) {
+                if let user = image.user {
+                    UserContentView(user: user)
                 }
             }
         }

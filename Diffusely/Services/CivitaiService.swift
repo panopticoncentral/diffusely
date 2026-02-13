@@ -75,7 +75,7 @@ class CivitaiService: ObservableObject {
         nextPostCursor = nil
     }
     
-    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
+    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
         // Cancel any existing request
         currentTask?.cancel()
 
@@ -99,8 +99,10 @@ class CivitaiService: ObservableObject {
                 if let collectionId = collectionId {
                     inputParams["collectionId"] = collectionId
                 } else {
-                    // Only use index when not filtering by collection
                     inputParams["useIndex"] = true
+                    if let username = username {
+                        inputParams["username"] = username
+                    }
                 }
 
                 if let cursor = nextCursor {
@@ -164,9 +166,9 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
     
-    func loadMoreImages(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
+    func loadMoreImages(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
         guard nextCursor != nil else { return }
-        await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId)
+        await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId, username: username)
     }
 
     func fetchPosts(limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {

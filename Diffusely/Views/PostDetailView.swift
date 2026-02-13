@@ -10,6 +10,7 @@ struct PostDetailView: View {
     @State private var generationData: GenerationData?
     @State private var isLoadingGenData = false
     @State private var showingCollectionPicker = false
+    @State private var showingUserContent = false
 
     var body: some View {
         ZStack {
@@ -30,9 +31,17 @@ struct PostDetailView: View {
 
                     VStack(alignment: .leading, spacing: 2) {
                         if let username = post.user.username {
-                            Text(username)
-                                .font(.headline)
-                                .foregroundColor(.white)
+                            Button(action: { showingUserContent = true }) {
+                                HStack(spacing: 4) {
+                                    Text(username)
+                                        .font(.headline)
+                                        .foregroundColor(.white)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.white.opacity(0.7))
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
 
                         if let title = post.title {
@@ -145,6 +154,9 @@ struct PostDetailView: View {
             CollectionPickerView(itemType: .post(id: post.id)) {
                 showingCollectionPicker = false
             }
+        }
+        .fullScreenCover(isPresented: $showingUserContent) {
+            UserContentView(user: post.user)
         }
     }
 
