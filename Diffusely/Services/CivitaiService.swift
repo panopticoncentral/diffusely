@@ -724,6 +724,89 @@ class CivitaiService: ObservableObject {
         return tRPCResponse[0].result.data.json
     }
 
+    // MARK: - Follow/Unfollow
+
+    /// Fetches the list of users the authenticated user is following
+    func getFollowingUsers() async throws -> [CivitaiUser] {
+        var components = URLComponents(string: "\(baseURL)/user.getFollowingUsers")!
+
+        let tRPCInput = [
+            "0": [
+                "json": [String: Any]()
+            ]
+        ]
+
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, _) = try await session.data(for: request)
+
+        struct FollowingResponse: Codable {
+            let result: FollowingResult
+        }
+
+        struct FollowingResult: Codable {
+            let data: FollowingData
+        }
+
+        struct FollowingData: Codable {
+            let json: [CivitaiUser]
+        }
+
+        let tRPCResponse = try JSONDecoder().decode([FollowingResponse].self, from: data)
+        return tRPCResponse[0].result.data.json
+    }
+
+    /// Toggles follow state for a user. Throws on failure.
+    func toggleFollowUser(targetUserId: Int) async throws {
+        let url = URL(string: "\(baseURL)/user.toggleFollow?batch=1")!
+
+        let inputParams: [String: Any] = [
+            "targetUserId": targetUserId
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (_, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
     // MARK: - Paginated Fetch Methods for Sync Service
 
     /// Fetches a page of images for a collection, returning the raw results

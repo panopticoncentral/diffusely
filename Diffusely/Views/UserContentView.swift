@@ -15,6 +15,13 @@ struct UserContentView: View {
     @State private var selectedRating: ContentRating = .pg13
     @State private var selectedPeriod: Timeframe = .allTime
     @State private var selectedSort: FeedSort = .newest
+    @State private var isFollowing: Bool = false
+    @State private var isFollowLoading: Bool = false
+    @State private var hasCheckedFollowStatus: Bool = false
+
+    private var hasAPIKey: Bool {
+        APIKeyManager.shared.hasAPIKey
+    }
 
     private var isGridLayout: Bool {
         horizontalSizeClass == .regular
@@ -90,6 +97,7 @@ struct UserContentView: View {
         .background(Color(.systemBackground))
         .task {
             await loadContent()
+            await checkFollowStatus()
         }
         .onChange(of: selectedContentType) { _, _ in
             Task {
@@ -155,6 +163,29 @@ struct UserContentView: View {
                 Text(user.username ?? "Unknown")
                     .font(.headline)
                     .foregroundColor(.primary)
+
+                if hasAPIKey && hasCheckedFollowStatus {
+                    Button {
+                        Task {
+                            await toggleFollow()
+                        }
+                    } label: {
+                        if isFollowLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 24, height: 24)
+                        } else {
+                            Text(isFollowing ? "Following" : "Follow")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(isFollowing ? .secondary : .white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(isFollowing ? Color(.tertiarySystemBackground) : Color.blue)
+                                .cornerRadius(14)
+                        }
+                    }
+                    .disabled(isFollowLoading)
+                }
             }
 
             Spacer()
@@ -276,5 +307,30 @@ struct UserContentView: View {
     private func refreshContent() async {
         civitaiService.clear()
         await loadContent()
+    }
+
+    private func checkFollowStatus() async {
+        guard hasAPIKey else { return }
+
+        do {
+            let followingUsers = try await civitaiService.getFollowingUsers()
+            isFollowing = followingUsers.contains { $0.id == user.id }
+            hasCheckedFollowStatus = true
+        } catch {
+            // Silently fail - button just won't show
+        }
+    }
+
+    private func toggleFollow() async {
+        guard !isFollowLoading else { return }
+
+        isFollowLoading = true
+        do {
+            try await civitaiService.toggleFollowUser(targetUserId: user.id)
+            isFollowing.toggle()
+        } catch {
+            // Request failed - state unchanged
+        }
+        isFollowLoading = false
     }
 }
