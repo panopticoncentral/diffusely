@@ -15,7 +15,7 @@ struct ImageDetailView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black
+                Color(.systemBackground)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
@@ -26,7 +26,7 @@ struct ImageDetailView: View {
                     }) {
                         Image(systemName: "xmark")
                             .font(.title3)
-                            .foregroundColor(.white)
+                            .foregroundColor(.primary)
                             .padding()
                     }
 
@@ -35,10 +35,10 @@ struct ImageDetailView: View {
                             HStack(spacing: 4) {
                                 Text(username)
                                     .font(.headline)
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.primary)
                                 Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundColor(.white.opacity(0.7))
+                                    .foregroundColor(.secondary)
                             }
                         }
                         .buttonStyle(.plain)
@@ -67,11 +67,11 @@ struct ImageDetailView: View {
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.title3)
-                            .foregroundColor(.white)
+                            .foregroundColor(.primary)
                             .padding()
                     }
                 }
-                .background(Color.black.opacity(0.3))
+                .background(Color(.systemBackground))
 
                 // Main content - scrollable
                 ScrollView {
@@ -104,12 +104,11 @@ struct ImageDetailView: View {
                             )
 
                             Divider()
-                                .background(Color.white.opacity(0.2))
 
                             // Generation data section
                             if isLoadingGenData {
                                 ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .padding()
                                     .padding()
                             } else if let genData = generationData {
                                 GenerationDataView(data: genData)
@@ -118,7 +117,7 @@ struct ImageDetailView: View {
                         .padding()
                     }
                 }
-                .background(Color.black)
+                .background(Color(.systemBackground))
                 }
             }
             .navigationBarHidden(true)
@@ -172,17 +171,17 @@ struct GenerationDataView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Generation Info")
                 .font(.headline)
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
 
             if let meta = data.meta {
                 if let prompt = meta.prompt, !prompt.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Prompt")
                             .font(.subheadline)
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.secondary)
                         Text(prompt)
                             .font(.caption)
-                            .foregroundColor(.white)
+                            .foregroundColor(.primary)
                     }
                 }
 
@@ -190,10 +189,10 @@ struct GenerationDataView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Negative Prompt")
                             .font(.subheadline)
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.secondary)
                         Text(negativePrompt)
                             .font(.caption)
-                            .foregroundColor(.white)
+                            .foregroundColor(.primary)
                     }
                 }
 
@@ -202,10 +201,10 @@ struct GenerationDataView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Steps")
                                 .font(.caption2)
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.secondary)
                             Text("\(steps)")
                                 .font(.caption)
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                         }
                     }
 
@@ -213,10 +212,10 @@ struct GenerationDataView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("CFG Scale")
                                 .font(.caption2)
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.secondary)
                             Text(String(format: "%.1f", cfgScale))
                                 .font(.caption)
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                         }
                     }
 
@@ -224,10 +223,10 @@ struct GenerationDataView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Sampler")
                                 .font(.caption2)
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.secondary)
                             Text(sampler)
                                 .font(.caption)
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                         }
                     }
 
@@ -235,10 +234,10 @@ struct GenerationDataView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Seed")
                                 .font(.caption2)
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.secondary)
                             Text("\(seed)")
                                 .font(.caption)
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                         }
                     }
                 }
@@ -248,24 +247,24 @@ struct GenerationDataView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Models")
                         .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.7))
+                        .foregroundColor(.secondary)
 
                     ForEach(Array(resources.enumerated()), id: \.offset) { _, resource in
                         HStack(spacing: 8) {
                             if let modelName = resource.modelName {
                                 Text(modelName)
                                     .font(.caption)
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.primary)
                             }
                             if let modelType = resource.modelType {
                                 Text("(\(modelType))")
                                     .font(.caption2)
-                                    .foregroundColor(.white.opacity(0.7))
+                                    .foregroundColor(.secondary)
                             }
                             if let strength = resource.strength {
                                 Text(String(format: "%.2f", strength))
                                     .font(.caption2)
-                                    .foregroundColor(.white.opacity(0.7))
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }

@@ -12,7 +12,7 @@ struct UserContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var civitaiService = CivitaiService()
     @State private var selectedContentType: UserContentType = .images
-    @State private var selectedRating: ContentRating = .pg13
+    @State private var selectedRating: ContentRating = .g
     @State private var selectedPeriod: Timeframe = .allTime
     @State private var selectedSort: FeedSort = .newest
     @State private var isFollowing: Bool = false

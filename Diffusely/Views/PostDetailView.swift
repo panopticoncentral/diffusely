@@ -14,7 +14,7 @@ struct PostDetailView: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            Color(.systemBackground)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -25,7 +25,7 @@ struct PostDetailView: View {
                     }) {
                         Image(systemName: "xmark")
                             .font(.title3)
-                            .foregroundColor(.white)
+                            .foregroundColor(.primary)
                             .padding()
                     }
 
@@ -35,10 +35,10 @@ struct PostDetailView: View {
                                 HStack(spacing: 4) {
                                     Text(username)
                                         .font(.headline)
-                                        .foregroundColor(.white)
+                                        .foregroundColor(.primary)
                                     Image(systemName: "chevron.right")
                                         .font(.caption)
-                                        .foregroundColor(.white.opacity(0.7))
+                                        .foregroundColor(.secondary)
                                 }
                             }
                             .buttonStyle(.plain)
@@ -47,7 +47,7 @@ struct PostDetailView: View {
                         if let title = post.title {
                             Text(title)
                                 .font(.subheadline)
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.secondary)
                                 .lineLimit(1)
                         }
                     }
@@ -64,12 +64,12 @@ struct PostDetailView: View {
                         } label: {
                             Image(systemName: "ellipsis")
                                 .font(.title3)
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                                 .padding()
                         }
                     }
                 }
-                .background(Color.black.opacity(0.3))
+                .background(Color(.systemBackground))
 
                 // Image/Video carousel - outside ScrollView to prevent gesture conflicts
                 if !post.safeImages.isEmpty {
@@ -104,7 +104,7 @@ struct PostDetailView: View {
                         HStack {
                             ForEach(0..<post.safeImages.count, id: \.self) { index in
                                 Circle()
-                                    .fill(currentImageIndex == index ? Color.white : Color.white.opacity(0.4))
+                                    .fill(currentImageIndex == index ? Color.primary : Color.primary.opacity(0.3))
                                     .frame(width: 6, height: 6)
                             }
                         }
@@ -125,12 +125,10 @@ struct PostDetailView: View {
                         )
 
                         Divider()
-                            .background(Color.white.opacity(0.2))
 
                         // Generation data section
                         if isLoadingGenData {
                             ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                 .padding()
                         } else if let genData = generationData {
                             GenerationDataView(data: genData)
@@ -138,7 +136,7 @@ struct PostDetailView: View {
                     }
                     .padding()
                 }
-                .background(Color.black)
+                .background(Color(.systemBackground))
             }
         }
         .navigationBarHidden(true)
