@@ -7,9 +7,28 @@ struct PostsFeedItemView: View {
     @State private var currentHeight: CGFloat = UIScreen.main.bounds.width
     @State private var showingDetail = false
     @State private var showingCollectionPicker = false
+    @State private var showingUserContent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let username = post.user.username {
+                Button(action: { showingUserContent = true }) {
+                    HStack(spacing: 4) {
+                        Text(username)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+
             if !post.safeImages.isEmpty {
                 ZStack(alignment: .topTrailing) {
                     GeometryReader { geometry in
@@ -105,6 +124,9 @@ struct PostsFeedItemView: View {
             CollectionPickerView(itemType: .post(id: post.id)) {
                 showingCollectionPicker = false
             }
+        }
+        .fullScreenCover(isPresented: $showingUserContent) {
+            UserContentView(user: post.user)
         }
     }
 

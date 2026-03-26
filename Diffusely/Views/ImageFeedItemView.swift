@@ -8,6 +8,7 @@ struct ImageFeedItemView: View {
     @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
     @State private var showingCollectionPicker = false
+    @State private var showingUserContent = false
     @StateObject private var civitaiService = CivitaiService()
 
     var body: some View {
@@ -28,6 +29,11 @@ struct ImageFeedItemView: View {
         .sheet(isPresented: $showingCollectionPicker) {
             CollectionPickerView(itemType: .image(id: image.id)) {
                 showingCollectionPicker = false
+            }
+        }
+        .fullScreenCover(isPresented: $showingUserContent) {
+            if let user = image.user {
+                UserContentView(user: user)
             }
         }
     }
@@ -108,7 +114,7 @@ struct ImageFeedItemView: View {
                         showingDetail = true
                     }
 
-                // Top-right overlays (video indicator and ellipsis menu)
+                // Overlays
                 VStack {
                     HStack {
                         Spacer()
@@ -125,6 +131,21 @@ struct ImageFeedItemView: View {
                     }
                     .padding(8)
                     Spacer()
+                    if let user = image.user, let username = user.username {
+                        HStack {
+                            Button(action: { showingUserContent = true }) {
+                                Text(username)
+                                    .font(.caption2)
+                                    .foregroundColor(.white)
+                                    .shadow(color: .black, radius: 2)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 4)
+                    }
                 }
             }
         }
@@ -133,6 +154,24 @@ struct ImageFeedItemView: View {
 
     @ViewBuilder
     private var listContent: some View {
+        if let user = image.user, let username = user.username {
+            Button(action: { showingUserContent = true }) {
+                HStack(spacing: 4) {
+                    Text(username)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+        }
+
         ZStack(alignment: .topTrailing) {
             if image.isVideo {
                 let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
