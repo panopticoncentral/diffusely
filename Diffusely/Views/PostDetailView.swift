@@ -87,7 +87,10 @@ struct PostDetailView: View {
                                     .frame(maxWidth: .infinity)
                                     .tag(index)
                                 } else {
-                                    CachedAsyncImage(url: image.detailURL)
+                                    CachedAsyncImage(
+                                        url: image.detailURL,
+                                        expectedAspectRatio: CGFloat(image.width) / CGFloat(image.height)
+                                    )
                                         .aspectRatio(contentMode: .fit)
                                         .frame(maxWidth: .infinity)
                                         .tag(index)
@@ -146,6 +149,7 @@ struct PostDetailView: View {
             }
         }
         .task {
+            MediaCacheService.shared.preloadImages(post.safeImages)
             await loadGenerationData(for: currentImageIndex)
         }
         .sheet(isPresented: $showingCollectionPicker) {

@@ -53,7 +53,10 @@ struct PostsFeedItemView: View {
                                     .aspectRatio(aspectRatio, contentMode: .fit)
                                     .tag(index)
                                 } else {
-                                    CachedAsyncImage(url: image.detailURL)
+                                    CachedAsyncImage(
+                                        url: image.detailURL,
+                                        expectedAspectRatio: CGFloat(image.width) / CGFloat(image.height)
+                                    )
                                         .aspectRatio(contentMode: .fit)
                                         .frame(width: geometry.size.width)
                                         .tag(index)

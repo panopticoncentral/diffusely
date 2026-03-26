@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CachedAsyncImage: View {
     let url: String
+    var expectedAspectRatio: CGFloat?
 
     @State private var state: MediaLoadingState = .idle
     private let mediaCache = MediaCacheService.shared
@@ -10,18 +11,14 @@ struct CachedAsyncImage: View {
         Group {
             switch state {
             case .idle:
-                Rectangle()
-                    .fill(Color.gray.opacity(0.1))
-                    .overlay(ProgressView())
+                placeholder
                     .onAppear {
                         state = mediaCache.getMediaState(for: url)
                         mediaCache.loadMedia(url: url, isVideo: false)
                     }
 
             case .loading:
-                Rectangle()
-                    .fill(Color.gray.opacity(0.1))
-                    .overlay(ProgressView())
+                placeholder
 
             case .loaded(let content):
                 if let uiImage = content.image {
@@ -30,8 +27,7 @@ struct CachedAsyncImage: View {
                 }
 
             case .failed:
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
+                placeholder
                     .overlay(
                         VStack {
                             Image(systemName: "exclamationmark.triangle")
@@ -48,6 +44,20 @@ struct CachedAsyncImage: View {
         }
         .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
             state = newState
+        }
+    }
+
+    @ViewBuilder
+    private var placeholder: some View {
+        if let ratio = expectedAspectRatio {
+            Rectangle()
+                .fill(Color.gray.opacity(0.1))
+                .aspectRatio(ratio, contentMode: .fit)
+                .overlay(state.isFailed ? nil : ProgressView())
+        } else {
+            Rectangle()
+                .fill(Color.gray.opacity(0.1))
+                .overlay(state.isFailed ? nil : ProgressView())
         }
     }
 }
