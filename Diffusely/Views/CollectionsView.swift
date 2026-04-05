@@ -25,8 +25,23 @@ struct CollectionsView: View {
     ]
 
     var body: some View {
+        collectionsContent
+    }
+
+    @ViewBuilder
+    private var collectionsContent: some View {
+        #if os(iOS)
         NavigationStack {
-            Group {
+            collectionsInner
+        }
+        #else
+        collectionsInner
+        #endif
+    }
+
+    @ViewBuilder
+    private var collectionsInner: some View {
+        Group {
                 if !apiKeyManager.hasAPIKey {
                     // Show prompt to add API key
                     VStack(spacing: 20) {
@@ -118,7 +133,7 @@ struct CollectionsView: View {
             }
             .navigationTitle("Collections")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .automatic) {
                     Button(action: {
                         showingSettings = true
                     }) {
@@ -134,7 +149,6 @@ struct CollectionsView: View {
                     await loadCollections()
                 }
             }
-        }
     }
 
     private func loadCollections() async {

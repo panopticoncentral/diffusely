@@ -97,10 +97,12 @@ struct PostDetailView: View {
                                 }
                             }
                         }
+                        #if os(iOS)
                         .tabViewStyle(.page(indexDisplayMode: .never))
+                        #endif
                         .frame(width: geometry.size.width, height: geometry.size.height)
                     }
-                    .frame(height: UIScreen.main.bounds.height * 0.6)
+                    .frame(minHeight: 400, idealHeight: 500)
 
                     // Image counter
                     if post.safeImages.count > 1 {
@@ -142,7 +144,9 @@ struct PostDetailView: View {
                 .background(Color(.systemBackground))
             }
         }
+        #if os(iOS)
         .navigationBarHidden(true)
+        #endif
         .onChange(of: currentImageIndex) { _, newIndex in
             Task {
                 await loadGenerationData(for: newIndex)
@@ -157,9 +161,15 @@ struct PostDetailView: View {
                 showingCollectionPicker = false
             }
         }
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
             UserContentView(user: post.user)
         }
+        #else
+        .sheet(isPresented: $showingUserContent) {
+            UserContentView(user: post.user)
+        }
+        #endif
     }
 
     private func loadGenerationData(for index: Int) async {

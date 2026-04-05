@@ -4,7 +4,7 @@ struct PostsFeedItemView: View {
     let post: CivitaiPost
 
     @State private var currentImageIndex = 0
-    @State private var currentHeight: CGFloat = UIScreen.main.bounds.width
+    @State private var currentHeight: CGFloat = 400
     @State private var showingDetail = false
     @State private var showingCollectionPicker = false
     @State private var showingUserContent = false
@@ -63,7 +63,9 @@ struct PostsFeedItemView: View {
                                 }
                             }
                         }
+                        #if os(iOS)
                         .tabViewStyle(.page(indexDisplayMode: .never))
+                        #endif
                         .onChange(of: currentImageIndex) { oldValue, newIndex in
                             if newIndex < post.safeImages.count {
                                 let image = post.safeImages[newIndex]
@@ -75,11 +77,13 @@ struct PostsFeedItemView: View {
                         }
                     }
                     .frame(height: currentHeight)
-                    .onAppear {
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
                         if !post.safeImages.isEmpty {
                             let image = post.safeImages[0]
                             let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                            currentHeight = UIScreen.main.bounds.width / aspectRatio
+                            currentHeight = width / aspectRatio
                         }
                     }
                     .onTapGesture {
@@ -120,17 +124,29 @@ struct PostsFeedItemView: View {
             )
         }
         .background(Color(.systemBackground))
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingDetail) {
             PostDetailView(post: post)
         }
+        #else
+        .sheet(isPresented: $showingDetail) {
+            PostDetailView(post: post)
+        }
+        #endif
         .sheet(isPresented: $showingCollectionPicker) {
             CollectionPickerView(itemType: .post(id: post.id)) {
                 showingCollectionPicker = false
             }
         }
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
             UserContentView(user: post.user)
         }
+        #else
+        .sheet(isPresented: $showingUserContent) {
+            UserContentView(user: post.user)
+        }
+        #endif
     }
 
     @ViewBuilder

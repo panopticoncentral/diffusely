@@ -85,7 +85,9 @@ struct CollectionPickerView: View {
                 }
             }
             .navigationTitle("Add to Collection")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {

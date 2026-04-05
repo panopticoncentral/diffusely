@@ -21,8 +21,8 @@ struct CachedAsyncImage: View {
                 placeholder
 
             case .loaded(let content):
-                if let uiImage = content.image {
-                    Image(uiImage: uiImage)
+                if let platformImage = content.image {
+                    Image(platformImage: platformImage)
                         .resizable()
                 }
 

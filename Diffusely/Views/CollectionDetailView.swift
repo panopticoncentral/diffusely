@@ -55,10 +55,14 @@ struct CollectionDetailView: View {
                         authorGroupedContent
                     }
                 }
+                #if os(iOS)
                 .padding(.top, 100)
+                #endif
                 .padding(.bottom, 20)
             }
+            #if os(iOS)
             .ignoresSafeArea(.all)
+            #endif
             .refreshable {
                 await refreshContent()
             }
@@ -73,7 +77,9 @@ struct CollectionDetailView: View {
                 }
             }
         }
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     // MARK: - Views

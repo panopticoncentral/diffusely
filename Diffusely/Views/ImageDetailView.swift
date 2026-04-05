@@ -120,7 +120,9 @@ struct ImageDetailView: View {
                 .background(Color(.systemBackground))
                 }
             }
+            #if os(iOS)
             .navigationBarHidden(true)
+            #endif
             .task {
                 await loadGenerationData()
             }
@@ -132,11 +134,19 @@ struct ImageDetailView: View {
                     showingCollectionPicker = false
                 }
             }
+            #if os(iOS)
             .fullScreenCover(isPresented: $showingUserContent) {
                 if let user = image.user {
                     UserContentView(user: user)
                 }
             }
+            #else
+            .sheet(isPresented: $showingUserContent) {
+                if let user = image.user {
+                    UserContentView(user: user)
+                }
+            }
+            #endif
         }
     }
 

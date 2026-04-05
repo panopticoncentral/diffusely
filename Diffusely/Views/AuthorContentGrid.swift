@@ -74,8 +74,14 @@ struct PostThumbnailView: View {
             }
         }
         .aspectRatio(1, contentMode: .fit)
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingDetail) {
             PostDetailView(post: post)
         }
+        #else
+        .sheet(isPresented: $showingDetail) {
+            PostDetailView(post: post)
+        }
+        #endif
     }
 }

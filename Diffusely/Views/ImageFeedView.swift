@@ -41,34 +41,7 @@ struct ImageFeedView: View {
             .background(Color(.systemBackground))
 
             ScrollView {
-                if isGridLayout {
-                    LazyVGrid(columns: columns, spacing: 2) {
-                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                            ImageFeedItemView(image: image, isGridMode: true)
-                                .onAppear {
-                                    if image.id == civitaiService.images.last?.id {
-                                        Task {
-                                            await loadMoreImages()
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                    .padding(.horizontal, 2)
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
-                            ImageFeedItemView(image: image, isGridMode: false)
-                                .onAppear {
-                                    if image.id == civitaiService.images.last?.id {
-                                        Task {
-                                            await loadMoreImages()
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                }
+                feedContent
 
                 if civitaiService.isLoading {
                     ProgressView()
@@ -93,6 +66,44 @@ struct ImageFeedView: View {
             .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
             .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
         }
+    }
+
+    @ViewBuilder
+    private var feedContent: some View {
+        #if os(macOS)
+        WaterfallGrid(images: civitaiService.images) {
+            Task { await loadMoreImages() }
+        }
+        #else
+        if isGridLayout {
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                    ImageFeedItemView(image: image, isGridMode: true)
+                        .onAppear {
+                            if image.id == civitaiService.images.last?.id {
+                                Task {
+                                    await loadMoreImages()
+                                }
+                            }
+                        }
+                }
+            }
+            .padding(.horizontal, 2)
+        } else {
+            LazyVStack(spacing: 0) {
+                ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                    ImageFeedItemView(image: image, isGridMode: false)
+                        .onAppear {
+                            if image.id == civitaiService.images.last?.id {
+                                Task {
+                                    await loadMoreImages()
+                                }
+                            }
+                        }
+                }
+            }
+        }
+        #endif
     }
 
     private func loadImages() async {

@@ -2,6 +2,9 @@ import SwiftUI
 import AVKit
 import Combine
 import ImageIO
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 class MediaCacheService: ObservableObject {
@@ -32,13 +35,24 @@ class MediaCacheService: ObservableObject {
 
     // Maximum pixel dimension for downsampled images (screens are ~400pt wide, 3 columns = ~133pt per image, @3x = ~400px)
     // Using 600px gives some headroom for detail view and retina displays
-    private let maxImageDimension: CGFloat = 600
+    private let maxImageDimension: CGFloat = {
+        #if os(macOS)
+        return 1200
+        #else
+        return 600
+        #endif
+    }()
+
+    #if !canImport(UIKit)
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    #endif
 
     private init() {
         setupMemoryPressureHandling()
     }
 
     private func setupMemoryPressureHandling() {
+        #if canImport(UIKit)
         NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
@@ -48,6 +62,16 @@ class MediaCacheService: ObservableObject {
                 self?.handleMemoryPressure()
             }
         }
+        #else
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.handleMemoryPressure()
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
+        #endif
     }
 
     private func handleMemoryPressure() {
@@ -81,7 +105,7 @@ class MediaCacheService: ObservableObject {
         return entries[url]?.state ?? .idle
     }
 
-    func getImage(for url: String) -> UIImage? {
+    func getImage(for url: String) -> PlatformImage? {
         if let entry = entries[url] {
             entry.lastAccessTime = Date()
             return entry.content?.image
@@ -236,7 +260,7 @@ class MediaCacheService: ObservableObject {
             }
 
             // Downsample the image to reduce memory usage
-            guard let uiImage = downsampleImage(data: data, maxDimension: maxImageDimension) else {
+            guard let image = downsampleImage(data: data, maxDimension: maxImageDimension) else {
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     if let entry = entries[url] {
@@ -249,7 +273,7 @@ class MediaCacheService: ObservableObject {
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-                let content = MediaContent.image(uiImage)
+                let content = MediaContent.image(image)
                 if let entry = entries[url] {
                     entry.content = content
                     entry.state = .loaded(content)
@@ -270,7 +294,7 @@ class MediaCacheService: ObservableObject {
 
     /// Downsamples an image to the specified maximum dimension while preserving aspect ratio.
     /// Uses ImageIO for memory-efficient decoding - the full image is never loaded into memory.
-    private func downsampleImage(data: Data, maxDimension: CGFloat) -> UIImage? {
+    private func downsampleImage(data: Data, maxDimension: CGFloat) -> PlatformImage? {
         let options: [CFString: Any] = [
             kCGImageSourceShouldCache: false
         ]
@@ -290,7 +314,11 @@ class MediaCacheService: ObservableObject {
             return nil
         }
 
-        return UIImage(cgImage: downsampledImage)
+        #if canImport(UIKit)
+        return PlatformImage(cgImage: downsampledImage)
+        #elseif canImport(AppKit)
+        return PlatformImage(cgImage: downsampledImage, size: NSSize(width: downsampledImage.width, height: downsampledImage.height))
+        #endif
     }
 
     private func loadVideoAsync(url: String) async {

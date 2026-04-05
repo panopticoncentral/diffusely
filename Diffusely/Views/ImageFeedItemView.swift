@@ -3,6 +3,7 @@ import SwiftUI
 struct ImageFeedItemView: View {
     let image: CivitaiImage
     var isGridMode: Bool = false
+    var preserveAspectRatio: Bool = false
 
     @State private var showingDetail = false
     @State private var navigateToPost: CivitaiPost?
@@ -20,22 +21,39 @@ struct ImageFeedItemView: View {
             }
         }
         .background(Color(.systemBackground))
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingDetail) {
             ImageDetailView(image: image)
         }
         .fullScreenCover(item: $navigateToPost) { post in
             PostDetailView(post: post)
         }
+        #else
+        .sheet(isPresented: $showingDetail) {
+            ImageDetailView(image: image)
+        }
+        .sheet(item: $navigateToPost) { post in
+            PostDetailView(post: post)
+        }
+        #endif
         .sheet(isPresented: $showingCollectionPicker) {
             CollectionPickerView(itemType: .image(id: image.id)) {
                 showingCollectionPicker = false
             }
         }
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
             if let user = image.user {
                 UserContentView(user: user)
             }
         }
+        #else
+        .sheet(isPresented: $showingUserContent) {
+            if let user = image.user {
+                UserContentView(user: user)
+            }
+        }
+        #endif
     }
 
     private func loadPost() async {
@@ -90,7 +108,11 @@ struct ImageFeedItemView: View {
     @ViewBuilder
     private var gridContent: some View {
         let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+        let displayRatio: CGFloat = preserveAspectRatio ? aspectRatio : 1
         GeometryReader { geometry in
+            let displayHeight = preserveAspectRatio
+                ? geometry.size.width / aspectRatio
+                : geometry.size.width
             ZStack {
                 if image.isVideo {
                     CachedVideoPlayer(
@@ -98,13 +120,13 @@ struct ImageFeedItemView: View {
                         autoPlay: true,
                         isMuted: true
                     )
-                    .frame(width: geometry.size.width, height: geometry.size.width)
+                    .frame(width: geometry.size.width, height: displayHeight)
                     .clipped()
                     .allowsHitTesting(false)
                 } else {
                     CachedAsyncImage(url: image.detailURL)
                         .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.width)
+                        .frame(width: geometry.size.width, height: displayHeight)
                         .clipped()
                 }
 
@@ -149,7 +171,8 @@ struct ImageFeedItemView: View {
                 }
             }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .aspectRatio(displayRatio, contentMode: .fit)
+        .clipShape(preserveAspectRatio ? AnyShape(RoundedRectangle(cornerRadius: 8)) : AnyShape(Rectangle()))
     }
 
     @ViewBuilder

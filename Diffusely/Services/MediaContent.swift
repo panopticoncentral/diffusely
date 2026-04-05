@@ -2,7 +2,7 @@ import SwiftUI
 import AVKit
 
 enum MediaContent: Equatable {
-    case image(UIImage)
+    case image(PlatformImage)
     case video(AVPlayer)
 
     static func == (lhs: MediaContent, rhs: MediaContent) -> Bool {
@@ -16,7 +16,7 @@ enum MediaContent: Equatable {
         }
     }
 
-    var image: UIImage? {
+    var image: PlatformImage? {
         if case .image(let img) = self { return img }
         return nil
     }
