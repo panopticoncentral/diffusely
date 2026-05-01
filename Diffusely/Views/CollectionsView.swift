@@ -132,15 +132,6 @@ struct CollectionsView: View {
                 }
             }
             .navigationTitle("Collections")
-            .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    Button(action: {
-                        showingSettings = true
-                    }) {
-                        Image(systemName: "gear")
-                    }
-                }
-            }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }

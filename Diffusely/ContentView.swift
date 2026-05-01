@@ -19,7 +19,6 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 #endif
 
 struct ContentView: View {
-    @State private var selectedRating: ContentRating = .g
     @State private var selectedPeriod: Timeframe = .week
     @State private var selectedSort: FeedSort = .mostReactions
 
@@ -41,14 +40,12 @@ struct ContentView: View {
             switch selectedSection ?? .images {
             case .images:
                 ImageFeedView(
-                    selectedRating: $selectedRating,
                     selectedPeriod: $selectedPeriod,
                     selectedSort: $selectedSort,
                     videos: false
                 )
             case .videos:
                 ImageFeedView(
-                    selectedRating: $selectedRating,
                     selectedPeriod: $selectedPeriod,
                     selectedSort: $selectedSort,
                     videos: true
@@ -61,7 +58,6 @@ struct ContentView: View {
         #else
         TabView(selection: $selectedTab) {
             ImageFeedView(
-                selectedRating: $selectedRating,
                 selectedPeriod: $selectedPeriod,
                 selectedSort: $selectedSort,
                 videos: false
@@ -73,7 +69,6 @@ struct ContentView: View {
                 .tag(0)
 
             ImageFeedView(
-                selectedRating: $selectedRating,
                 selectedPeriod: $selectedPeriod,
                 selectedSort: $selectedSort,
                 videos: true
@@ -90,6 +85,13 @@ struct ContentView: View {
                     Text("Collections")
                 }
                 .tag(2)
+
+            SettingsView()
+                .tabItem {
+                    Image(systemName: "gear")
+                    Text("Settings")
+                }
+                .tag(3)
         }
         #endif
     }

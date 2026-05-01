@@ -1,28 +1,11 @@
 import SwiftUI
 
 struct FeedFilterMenu: View {
-    @Binding var selectedRating: ContentRating
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: FeedSort
 
     var body: some View {
         Menu {
-            Menu("Content") {
-                ForEach(ContentRating.allCases) { rating in
-                    Button {
-                        selectedRating = rating
-                    } label: {
-                        HStack {
-                            Text(rating.displayName)
-                            if rating == selectedRating {
-                                Spacer()
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                    }
-                }
-            }
-
             Menu("Time") {
                 ForEach(Timeframe.allCases) { period in
                     Button {

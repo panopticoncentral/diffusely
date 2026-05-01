@@ -11,8 +11,8 @@ struct UserContentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var civitaiService = CivitaiService()
+    @ObservedObject private var domainManager = DomainManager.shared
     @State private var selectedContentType: UserContentType = .images
-    @State private var selectedRating: ContentRating = .g
     @State private var selectedPeriod: Timeframe = .allTime
     @State private var selectedSort: FeedSort = .newest
     @State private var isFollowing: Bool = false
@@ -104,17 +104,17 @@ struct UserContentView: View {
                 await refreshContent()
             }
         }
-        .onChange(of: selectedRating) { _, _ in
-            Task {
-                await refreshContent()
-            }
-        }
         .onChange(of: selectedPeriod) { _, _ in
             Task {
                 await refreshContent()
             }
         }
         .onChange(of: selectedSort) { _, _ in
+            Task {
+                await refreshContent()
+            }
+        }
+        .onChange(of: domainManager.domain) { _, _ in
             Task {
                 await refreshContent()
             }
@@ -192,22 +192,6 @@ struct UserContentView: View {
 
             // Filter menu
             Menu {
-                Menu("Content") {
-                    ForEach(ContentRating.allCases) { rating in
-                        Button {
-                            selectedRating = rating
-                        } label: {
-                            HStack {
-                                Text(rating.displayName)
-                                if rating == selectedRating {
-                                    Spacer()
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                }
-
                 Menu("Time") {
                     ForEach(Timeframe.allCases) { period in
                         Button {
@@ -284,7 +268,6 @@ struct UserContentView: View {
         let isVideos = selectedContentType == .videos
         await civitaiService.fetchImages(
             videos: isVideos,
-            browsingLevel: selectedRating.browsingLevelValue,
             period: selectedPeriod,
             sort: selectedSort,
             username: username
@@ -297,7 +280,6 @@ struct UserContentView: View {
         let isVideos = selectedContentType == .videos
         await civitaiService.loadMoreImages(
             videos: isVideos,
-            browsingLevel: selectedRating.browsingLevelValue,
             period: selectedPeriod,
             sort: selectedSort,
             username: username

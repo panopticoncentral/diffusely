@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @StateObject private var apiKeyManager = APIKeyManager.shared
+    @ObservedObject private var domainManager = DomainManager.shared
     @State private var apiKeyInput = ""
     @State private var showingAPIKeyInfo = false
 
@@ -10,7 +11,7 @@ struct SettingsView: View {
             .alert("Get API Key", isPresented: $showingAPIKeyInfo) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text("To get your Civitai API Key:\n\n1. Go to civitai.com\n2. Sign in to your account\n3. Go to Account Settings\n4. Navigate to the API Keys section\n5. Generate a new API key\n6. Copy and paste it here")
+                Text("To get your Civitai API Key:\n\n1. Go to \(domainManager.domain.rawValue)\n2. Sign in to your account\n3. Go to Account Settings\n4. Navigate to the API Keys section\n5. Generate a new API key\n6. Copy and paste it here")
             }
     }
 
@@ -21,7 +22,7 @@ struct SettingsView: View {
             formSections
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 200)
+        .frame(width: 450, height: 280)
         #else
         NavigationStack {
             Form {
@@ -34,6 +35,19 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var formSections: some View {
+        Section {
+            Picker("Source", selection: $domainManager.domain) {
+                ForEach(CivitaiDomain.allCases) { domain in
+                    Text(domain.displayName).tag(domain)
+                }
+            }
+        } header: {
+            Text("Content Source")
+        } footer: {
+            Text("civitai.com shows SFW content only (up to PG-13). civitai.red shows mature content (R, X, XXX).")
+                .font(.caption)
+        }
+
         Section {
             if apiKeyManager.hasAPIKey {
                 HStack {

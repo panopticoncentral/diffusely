@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ImageFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
-    @Binding var selectedRating: ContentRating
+    @ObservedObject private var domainManager = DomainManager.shared
     @Binding var selectedPeriod: Timeframe
     @Binding var selectedSort: FeedSort
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -33,7 +33,6 @@ struct ImageFeedView: View {
                 Spacer()
 
                 FeedFilterMenu(
-                    selectedRating: $selectedRating,
                     selectedPeriod: $selectedPeriod,
                     selectedSort: $selectedSort
                 )
@@ -62,9 +61,9 @@ struct ImageFeedView: View {
                     await loadImages()
                 }
             }
-            .onChange(of: selectedRating) { _, _ in Task { await refreshImages() } }
             .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
             .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
+            .onChange(of: domainManager.domain) { _, _ in Task { await refreshImages() } }
         }
     }
 
@@ -107,11 +106,11 @@ struct ImageFeedView: View {
     }
 
     private func loadImages() async {
-        await civitaiService.fetchImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+        await civitaiService.fetchImages(videos: videos, period: selectedPeriod, sort: selectedSort)
     }
 
     private func loadMoreImages() async {
-        await civitaiService.loadMoreImages(videos: videos, browsingLevel: selectedRating.browsingLevelValue, period: selectedPeriod, sort: selectedSort)
+        await civitaiService.loadMoreImages(videos: videos, period: selectedPeriod, sort: selectedSort)
     }
 
     private func refreshImages() async {

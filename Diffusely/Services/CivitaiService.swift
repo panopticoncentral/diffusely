@@ -60,7 +60,12 @@ class CivitaiService: ObservableObject {
     @Published var isLoading = false
     @Published var error: Error?
 
-    private let baseURL = "https://civitai.com/api/trpc"
+    // Bit flags PG|PG13|R|X|XXX. Server caps per-domain (civitai.com → PG+PG13,
+    // civitai.red → uncapped), so always requesting all levels yields the right
+    // content for whichever source the user picked.
+    private let browsingLevel = 31
+
+    private var baseURL: String { DomainManager.shared.baseURL }
     private var nextCursor: String?
     private var nextPostCursor: Int?
     private let session = URLSession.shared
@@ -75,7 +80,7 @@ class CivitaiService: ObservableObject {
         nextPostCursor = nil
     }
     
-    func fetchImages(videos: Bool, limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
+    func fetchImages(videos: Bool, limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
         // Cancel any existing request
         currentTask?.cancel()
 
@@ -166,12 +171,12 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
     
-    func loadMoreImages(videos: Bool, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
+    func loadMoreImages(videos: Bool, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
         guard nextCursor != nil else { return }
-        await fetchImages(videos: videos, browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId, username: username)
+        await fetchImages(videos: videos, period: period, sort: sort, collectionId: collectionId, username: username)
     }
 
-    func fetchPosts(limit: Int = 20, browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
+    func fetchPosts(limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         // Cancel any existing request
         currentTask?.cancel()
 
@@ -252,9 +257,9 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
 
-    func loadMorePosts(browsingLevel: Int = 3, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
+    func loadMorePosts(period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
         guard nextPostCursor != nil else { return }
-        await fetchPosts(browsingLevel: browsingLevel, period: period, sort: sort, collectionId: collectionId)
+        await fetchPosts(period: period, sort: sort, collectionId: collectionId)
     }
 
     func fetchGenerationData(imageId: Int) async throws -> GenerationData {
@@ -282,7 +287,11 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        let (data, _) = try await session.data(from: url)
+        var request = URLRequest(url: url)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, _) = try await session.data(for: request)
 
         // The response structure for getGenerationData is different - it returns a single object not an array
         struct SingleResponse: Codable {
@@ -327,7 +336,11 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        let (data, _) = try await session.data(from: url)
+        var request = URLRequest(url: url)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, _) = try await session.data(for: request)
 
         // post.get returns a single object without images or stats
         struct PostDetail: Codable {
@@ -357,6 +370,7 @@ class CivitaiService: ObservableObject {
 
         let imageInputParams: [String: Any] = [
             "postId": postId,
+            "browsingLevel": browsingLevel,
             "include": []
         ]
 
@@ -378,7 +392,11 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        let (imageData, _) = try await session.data(from: imageUrl)
+        var imageRequest = URLRequest(url: imageUrl)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            imageRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let (imageData, _) = try await session.data(for: imageRequest)
 
         let imageTRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: imageData)
         let imageResponse = imageTRPCResponse[0].result.data.json

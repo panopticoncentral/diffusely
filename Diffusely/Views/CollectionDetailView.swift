@@ -15,7 +15,6 @@ struct CollectionDetailView: View {
     @State private var isInitialLoad = true
 
     // Filter controls
-    @State private var selectedRating: ContentRating = .xxx
     @State private var selectedPeriod: Timeframe = .allTime
     @State private var selectedSort: FeedSort = .newest
 
@@ -96,7 +95,6 @@ struct CollectionDetailView: View {
             Spacer()
 
             FeedFilterMenu(
-                selectedRating: $selectedRating,
                 selectedPeriod: $selectedPeriod,
                 selectedSort: $selectedSort
             )
