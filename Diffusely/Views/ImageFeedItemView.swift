@@ -5,13 +5,36 @@ struct ImageFeedItemView: View {
     var isGridMode: Bool = false
     var preserveAspectRatio: Bool = false
 
+    #if os(iOS)
     @State private var showingDetail = false
     @State private var navigateToPost: CivitaiPost?
+    @State private var showingUserContent = false
+    #endif
     @State private var isLoadingPost = false
     @State private var showingCollectionPicker = false
-    @State private var showingUserContent = false
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
+
+    #if os(macOS)
+    @Environment(\.feedNavigator) private var feedNavigator
+    #endif
+
+    private func openImageDetail() {
+        #if os(macOS)
+        feedNavigator.push(image)
+        #else
+        showingDetail = true
+        #endif
+    }
+
+    private func openUserContent() {
+        guard let user = image.user else { return }
+        #if os(macOS)
+        feedNavigator.push(user)
+        #else
+        showingUserContent = true
+        #endif
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,13 +52,6 @@ struct ImageFeedItemView: View {
         .fullScreenCover(item: $navigateToPost) { post in
             PostDetailView(post: post)
         }
-        #else
-        .sheet(isPresented: $showingDetail) {
-            ImageDetailView(image: image)
-        }
-        .sheet(item: $navigateToPost) { post in
-            PostDetailView(post: post)
-        }
         #endif
         .sheet(isPresented: $showingCollectionPicker) {
             CollectionPickerView(itemType: .image(id: image.id)) {
@@ -44,12 +60,6 @@ struct ImageFeedItemView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
-            if let user = image.user {
-                UserContentView(user: user)
-            }
-        }
-        #else
-        .sheet(isPresented: $showingUserContent) {
             if let user = image.user {
                 UserContentView(user: user)
             }
@@ -63,7 +73,11 @@ struct ImageFeedItemView: View {
         isLoadingPost = true
         do {
             let post = try await civitaiService.getPost(postId: postId)
+            #if os(macOS)
+            feedNavigator.push(post)
+            #else
             navigateToPost = post
+            #endif
         } catch {
             // Silently fail
         }
@@ -145,7 +159,7 @@ struct ImageFeedItemView: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        showingDetail = true
+                        openImageDetail()
                     }
 
                 // Overlays
@@ -167,7 +181,7 @@ struct ImageFeedItemView: View {
                     Spacer()
                     if let user = image.user, let username = user.username {
                         HStack {
-                            Button(action: { showingUserContent = true }) {
+                            Button(action: { openUserContent() }) {
                                 Text(username)
                                     .font(.caption2)
                                     .foregroundColor(.white)
@@ -190,7 +204,7 @@ struct ImageFeedItemView: View {
     @ViewBuilder
     private var listContent: some View {
         if let user = image.user, let username = user.username {
-            Button(action: { showingUserContent = true }) {
+            Button(action: { openUserContent() }) {
                 HStack(spacing: 4) {
                     Text(username)
                         .font(.subheadline)
@@ -223,7 +237,7 @@ struct ImageFeedItemView: View {
                         Color.clear
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                showingDetail = true
+                                openImageDetail()
                             }
                     }
                 }
@@ -232,7 +246,7 @@ struct ImageFeedItemView: View {
                 CachedAsyncImage(url: image.detailURL)
                     .aspectRatio(contentMode: .fit)
                     .onTapGesture {
-                        showingDetail = true
+                        openImageDetail()
                     }
             }
 

@@ -1,5 +1,23 @@
 import SwiftUI
 
+#if os(macOS)
+struct RefreshFeedAction {
+    let perform: () -> Void
+    func callAsFunction() { perform() }
+}
+
+struct RefreshFeedActionKey: FocusedValueKey {
+    typealias Value = RefreshFeedAction
+}
+
+extension FocusedValues {
+    var refreshFeed: RefreshFeedAction? {
+        get { self[RefreshFeedActionKey.self] }
+        set { self[RefreshFeedActionKey.self] = newValue }
+    }
+}
+#endif
+
 struct ImageFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var domainManager = DomainManager.shared
@@ -22,6 +40,28 @@ struct ImageFeedView: View {
     }
 
     var body: some View {
+        #if os(macOS)
+        feedScroll
+            .navigationTitle(videos ? "Videos" : "Images")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    FeedFilterMenu(
+                        selectedPeriod: $selectedPeriod,
+                        selectedSort: $selectedSort
+                    )
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task { await refreshImages() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                }
+            }
+            .focusedSceneValue(\.refreshFeed, RefreshFeedAction {
+                Task { await refreshImages() }
+            })
+        #else
         VStack(spacing: 0) {
             HStack {
                 Text(videos ? "Videos" : "Images")
@@ -39,32 +79,37 @@ struct ImageFeedView: View {
             }
             .background(Color(.systemBackground))
 
-            ScrollView {
-                feedContent
-
-                if civitaiService.isLoading {
-                    ProgressView()
-                        .padding()
-                }
-
-                if let error = civitaiService.error {
-                    Text("Error: \(error.localizedDescription)")
-                        .foregroundColor(.red)
-                        .padding()
-                }
-            }
-            .refreshable {
-                await refreshImages()
-            }
-            .task {
-                if civitaiService.images.isEmpty {
-                    await loadImages()
-                }
-            }
-            .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
-            .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
-            .onChange(of: domainManager.domain) { _, _ in Task { await refreshImages() } }
+            feedScroll
         }
+        #endif
+    }
+
+    private var feedScroll: some View {
+        ScrollView {
+            feedContent
+
+            if civitaiService.isLoading {
+                ProgressView()
+                    .padding()
+            }
+
+            if let error = civitaiService.error {
+                Text("Error: \(error.localizedDescription)")
+                    .foregroundColor(.red)
+                    .padding()
+            }
+        }
+        .refreshable {
+            await refreshImages()
+        }
+        .task {
+            if civitaiService.images.isEmpty {
+                await loadImages()
+            }
+        }
+        .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
+        .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
+        .onChange(of: domainManager.domain) { _, _ in Task { await refreshImages() } }
     }
 
     @ViewBuilder

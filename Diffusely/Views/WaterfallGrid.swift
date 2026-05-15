@@ -3,7 +3,7 @@ import SwiftUI
 
 struct WaterfallGrid: View {
     let images: [CivitaiImage]
-    let columnCount: Int
+    let targetColumnWidth: CGFloat
     let spacing: CGFloat
     let onLastAppeared: () -> Void
 
@@ -11,14 +11,20 @@ struct WaterfallGrid: View {
 
     init(
         images: [CivitaiImage],
-        columnCount: Int = 3,
+        targetColumnWidth: CGFloat = 240,
         spacing: CGFloat = 8,
         onLastAppeared: @escaping () -> Void
     ) {
         self.images = images
-        self.columnCount = columnCount
+        self.targetColumnWidth = targetColumnWidth
         self.spacing = spacing
         self.onLastAppeared = onLastAppeared
+    }
+
+    /// Number of columns that fit the current window width, scaling with resize.
+    private var columnCount: Int {
+        guard containerWidth > 0 else { return 3 }
+        return max(2, Int(containerWidth / targetColumnWidth))
     }
 
     var body: some View {

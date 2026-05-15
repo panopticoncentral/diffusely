@@ -26,7 +26,7 @@ struct SettingsView: View {
             formSections
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 280)
+        .frame(minWidth: 460, idealWidth: 520)
         #else
         NavigationStack {
             Form {

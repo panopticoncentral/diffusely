@@ -1,6 +1,25 @@
 import SwiftUI
 
 #if os(macOS)
+struct FeedNavigator {
+    var path: Binding<NavigationPath>?
+
+    func push<V: Hashable>(_ value: V) {
+        path?.wrappedValue.append(value)
+    }
+}
+
+private struct FeedNavigatorKey: EnvironmentKey {
+    static let defaultValue = FeedNavigator()
+}
+
+extension EnvironmentValues {
+    var feedNavigator: FeedNavigator {
+        get { self[FeedNavigatorKey.self] }
+        set { self[FeedNavigatorKey.self] = newValue }
+    }
+}
+
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case images = "Images"
     case videos = "Videos"
@@ -26,6 +45,7 @@ struct ContentView: View {
 
     #if os(macOS)
     @State private var selectedSection: SidebarSection? = .images
+    @State private var feedPath = NavigationPath()
     #else
     @State private var selectedTab = 0
     #endif
@@ -38,25 +58,40 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
         } detail: {
-            NavigationStack {
-            switch selectedSection ?? .images {
-            case .images:
-                ImageFeedView(
-                    selectedPeriod: $selectedPeriod,
-                    selectedSort: $selectedSort,
-                    videos: false
-                )
-            case .videos:
-                ImageFeedView(
-                    selectedPeriod: $selectedPeriod,
-                    selectedSort: $selectedSort,
-                    videos: true
-                )
-            case .collections:
-                CollectionsView()
-            case .library:
-                LibraryView()
+            NavigationStack(path: $feedPath) {
+                Group {
+                    switch selectedSection ?? .images {
+                    case .images:
+                        ImageFeedView(
+                            selectedPeriod: $selectedPeriod,
+                            selectedSort: $selectedSort,
+                            videos: false
+                        )
+                    case .videos:
+                        ImageFeedView(
+                            selectedPeriod: $selectedPeriod,
+                            selectedSort: $selectedSort,
+                            videos: true
+                        )
+                    case .collections:
+                        CollectionsView()
+                    case .library:
+                        LibraryView()
+                    }
+                }
+                .navigationDestination(for: CivitaiImage.self) { image in
+                    ImageDetailView(image: image)
+                }
+                .navigationDestination(for: CivitaiPost.self) { post in
+                    PostDetailView(post: post)
+                }
+                .navigationDestination(for: CivitaiUser.self) { user in
+                    UserContentView(user: user)
+                }
             }
+            .environment(\.feedNavigator, FeedNavigator(path: $feedPath))
+            .onChange(of: selectedSection) { _, _ in
+                feedPath = NavigationPath()
             }
         }
         #else

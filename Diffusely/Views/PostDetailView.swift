@@ -10,8 +10,22 @@ struct PostDetailView: View {
     @State private var generationData: GenerationData?
     @State private var isLoadingGenData = false
     @State private var showingCollectionPicker = false
+    #if os(iOS)
     @State private var showingUserContent = false
+    #endif
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
+
+    #if os(macOS)
+    @Environment(\.feedNavigator) private var feedNavigator
+    #endif
+
+    private func openUserContent() {
+        #if os(macOS)
+        feedNavigator.push(post.user)
+        #else
+        showingUserContent = true
+        #endif
+    }
 
     var body: some View {
         ZStack {
@@ -21,6 +35,7 @@ struct PostDetailView: View {
             VStack(spacing: 0) {
                 // Header
                 HStack {
+                    #if os(iOS)
                     Button(action: {
                         dismiss()
                     }) {
@@ -29,10 +44,11 @@ struct PostDetailView: View {
                             .foregroundColor(.primary)
                             .padding()
                     }
+                    #endif
 
                     VStack(alignment: .leading, spacing: 2) {
                         if let username = post.user.username {
-                            Button(action: { showingUserContent = true }) {
+                            Button(action: { openUserContent() }) {
                                 HStack(spacing: 4) {
                                     Text(username)
                                         .font(.headline)
@@ -174,10 +190,6 @@ struct PostDetailView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
-            UserContentView(user: post.user)
-        }
-        #else
-        .sheet(isPresented: $showingUserContent) {
             UserContentView(user: post.user)
         }
         #endif

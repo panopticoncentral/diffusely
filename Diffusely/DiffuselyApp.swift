@@ -1,6 +1,22 @@
 import SwiftUI
 import SwiftData
 
+#if os(macOS)
+struct FeedCommands: Commands {
+    @FocusedValue(\.refreshFeed) private var refreshFeed
+
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            Button("Refresh") {
+                refreshFeed?()
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(refreshFeed == nil)
+        }
+    }
+}
+#endif
+
 @main
 struct DiffuselyApp: App {
     let sharedModelContainer: ModelContainer
@@ -89,6 +105,9 @@ struct DiffuselyApp: App {
         .modelContainer(sharedModelContainer)
         #if os(macOS)
         .defaultSize(width: 1000, height: 700)
+        .commands {
+            FeedCommands()
+        }
         #endif
 
         #if os(macOS)

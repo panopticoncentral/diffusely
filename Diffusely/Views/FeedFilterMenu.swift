@@ -40,12 +40,18 @@ struct FeedFilterMenu: View {
                 }
             }
         } label: {
+            #if os(macOS)
+            Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+            #else
             Image(systemName: "line.3.horizontal.decrease.circle")
                 .font(.system(size: 24, weight: .medium))
                 .foregroundColor(.primary)
+            #endif
         }
+        #if os(iOS)
         .frame(width: 44, height: 44)
         .padding(.trailing, 16)
         .padding(.top, 8)
+        #endif
     }
 }
