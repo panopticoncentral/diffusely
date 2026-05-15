@@ -14,10 +14,6 @@ struct CollectionDetailView: View {
     @State private var expandedAuthors: Set<Int> = []
     @State private var isInitialLoad = true
 
-    // Filter controls
-    @State private var selectedPeriod: Timeframe = .allTime
-    @State private var selectedSort: FeedSort = .newest
-
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var isGridLayout: Bool {
@@ -93,11 +89,6 @@ struct CollectionDetailView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 16)
             Spacer()
-
-            FeedFilterMenu(
-                selectedPeriod: $selectedPeriod,
-                selectedSort: $selectedSort
-            )
         }
         .background(Color(.systemBackground))
     }
