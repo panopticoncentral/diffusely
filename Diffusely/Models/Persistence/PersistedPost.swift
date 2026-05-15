@@ -18,6 +18,9 @@ final class PersistedPost {
     var collection: PersistedCollection?
     var author: PersistedAuthor?
 
+    // Generation of the most recent sync pass that observed this item; used for mark-and-sweep cleanup.
+    var lastSeenGeneration: Int = 0
+
     @Relationship(deleteRule: .cascade, inverse: \PersistedPostImage.post)
     var images: [PersistedPostImage] = []
 

@@ -51,6 +51,7 @@ class CollectionPersistenceService: ObservableObject {
     // MARK: - Image Operations
 
     func addImages(_ images: [CivitaiImage], to collection: PersistedCollection) {
+        let generation = collection.syncGeneration
         for image in images {
             // Check if image already exists in this collection
             let imageId = image.id
@@ -65,11 +66,13 @@ class CollectionPersistenceService: ObservableObject {
                     existing.heartCount = stats.heartCountAllTime
                     existing.commentCount = stats.commentCountAllTime
                 }
+                existing.lastSeenGeneration = generation
                 continue
             }
 
             let persisted = PersistedImage(from: image)
             persisted.collection = collection
+            persisted.lastSeenGeneration = generation
 
             if let user = image.user {
                 persisted.author = getOrCreateAuthor(from: user)
@@ -84,6 +87,7 @@ class CollectionPersistenceService: ObservableObject {
     // MARK: - Post Operations
 
     func addPosts(_ posts: [CivitaiPost], to collection: PersistedCollection) {
+        let generation = collection.syncGeneration
         for post in posts {
             // Check if post already exists in this collection
             let postId = post.id
@@ -98,11 +102,13 @@ class CollectionPersistenceService: ObservableObject {
                     existing.heartCount = stats.heartCount
                     existing.commentCount = stats.commentCount
                 }
+                existing.lastSeenGeneration = generation
                 continue
             }
 
             let persisted = PersistedPost(from: post)
             persisted.collection = collection
+            persisted.lastSeenGeneration = generation
             persisted.author = getOrCreateAuthor(from: post.user)
 
             // Add post images
@@ -200,12 +206,45 @@ class CollectionPersistenceService: ObservableObject {
         try? modelContext.save()
     }
 
+    /// Bumps the collection's sync generation so the next add/update cycle stamps items with a new value.
+    /// Call this at the start of a fresh full pass (i.e. when syncCursor is nil), not on resume.
+    func beginFreshSyncPass(for collectionId: Int) {
+        guard let collection = getPersistedCollection(id: collectionId) else { return }
+        collection.syncGeneration &+= 1
+        try? modelContext.save()
+    }
+
     func markSyncCompleted(for collectionId: Int) {
         guard let collection = getPersistedCollection(id: collectionId) else { return }
+        sweepStaleItems(in: collection)
         collection.lastSyncCompleted = Date()
         collection.isSyncing = false
         collection.syncCursor = nil
         try? modelContext.save()
+    }
+
+    /// Deletes items in the collection that were not observed in the current sync generation.
+    /// Safe to call only after a complete pass — partial passes will not have stamped later items yet.
+    private func sweepStaleItems(in collection: PersistedCollection) {
+        let generation = collection.syncGeneration
+        var deletedImages = 0
+        var deletedPosts = 0
+
+        if collection.collectionType == "Image" {
+            for image in collection.images where image.lastSeenGeneration < generation {
+                modelContext.delete(image)
+                deletedImages += 1
+            }
+        } else {
+            for post in collection.posts where post.lastSeenGeneration < generation {
+                modelContext.delete(post)
+                deletedPosts += 1
+            }
+        }
+
+        if deletedImages > 0 || deletedPosts > 0 {
+            print("[Sync] Swept stale items for collection \(collection.id): \(deletedImages) images, \(deletedPosts) posts (generation \(generation))")
+        }
     }
 
     /// Returns true if sync is needed (never synced, or last sync was more than `staleAfter` seconds ago)

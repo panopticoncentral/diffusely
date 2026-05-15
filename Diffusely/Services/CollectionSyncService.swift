@@ -41,6 +41,15 @@ class CollectionSyncService: ObservableObject {
 
     private func performSync(for collection: CivitaiCollection) async {
         let persisted = persistenceService.getOrCreateCollection(from: collection)
+
+        // A nil cursor means this is the start of a fresh full pass — bump the generation
+        // so the upcoming sweep will delete items no longer present on the server.
+        // On resume (non-nil cursor), keep the existing generation so items stamped
+        // during the initial run still count as observed.
+        if persisted.syncCursor == nil {
+            persistenceService.beginFreshSyncPass(for: collection.id)
+        }
+
         persistenceService.markSyncStarted(for: collection.id)
 
         // Initialize progress

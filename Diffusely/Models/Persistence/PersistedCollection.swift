@@ -10,6 +10,7 @@ final class PersistedCollection {
     var lastSyncCompleted: Date?
     var syncCursor: String?  // nil means sync complete or not started
     var isSyncing: Bool = false
+    var syncGeneration: Int = 0  // bumped at the start of each fresh full pass; items not stamped with the current value are swept on completion
 
     @Relationship(deleteRule: .cascade, inverse: \PersistedImage.collection)
     var images: [PersistedImage] = []

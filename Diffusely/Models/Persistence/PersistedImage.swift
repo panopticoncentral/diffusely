@@ -22,6 +22,9 @@ final class PersistedImage {
     var collection: PersistedCollection?
     var author: PersistedAuthor?
 
+    // Generation of the most recent sync pass that observed this item; used for mark-and-sweep cleanup.
+    var lastSeenGeneration: Int = 0
+
     init(
         id: Int,
         url: String,
