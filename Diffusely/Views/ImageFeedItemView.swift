@@ -11,6 +11,7 @@ struct ImageFeedItemView: View {
     @State private var showingCollectionPicker = false
     @State private var showingUserContent = false
     @StateObject private var civitaiService = CivitaiService()
+    @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -70,13 +71,24 @@ struct ImageFeedItemView: View {
     }
 
     private var hasMenuItems: Bool {
-        image.postId != nil || APIKeyManager.shared.hasAPIKey
+        // "Save to Library" is always available, so the menu always renders.
+        true
     }
 
     @ViewBuilder
     private var ellipsisMenu: some View {
         if hasMenuItems {
             Menu {
+                Button(action: {
+                    librarySaveService.save(image)
+                }) {
+                    Label(
+                        librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
+                        systemImage: "square.and.arrow.down"
+                    )
+                }
+                .disabled(librarySaveService.isSaving(itemID: image.id))
+
                 if image.postId != nil {
                     Button(action: {
                         Task {

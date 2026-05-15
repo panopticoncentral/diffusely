@@ -292,33 +292,8 @@ class MediaCacheService: ObservableObject {
         }
     }
 
-    /// Downsamples an image to the specified maximum dimension while preserving aspect ratio.
-    /// Uses ImageIO for memory-efficient decoding - the full image is never loaded into memory.
     private func downsampleImage(data: Data, maxDimension: CGFloat) -> PlatformImage? {
-        let options: [CFString: Any] = [
-            kCGImageSourceShouldCache: false
-        ]
-
-        guard let imageSource = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
-            return nil
-        }
-
-        let downsampleOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxDimension
-        ]
-
-        guard let downsampledImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, downsampleOptions as CFDictionary) else {
-            return nil
-        }
-
-        #if canImport(UIKit)
-        return PlatformImage(cgImage: downsampledImage)
-        #elseif canImport(AppKit)
-        return PlatformImage(cgImage: downsampledImage, size: NSSize(width: downsampledImage.width, height: downsampledImage.height))
-        #endif
+        ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
     }
 
     private func loadVideoAsync(url: String) async {

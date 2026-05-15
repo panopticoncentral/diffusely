@@ -11,6 +11,7 @@ struct ImageDetailView: View {
     @State private var isLoadingPost = false
     @State private var showingCollectionPicker = false
     @State private var showingUserContent = false
+    @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     var body: some View {
         NavigationStack {
@@ -47,6 +48,16 @@ struct ImageDetailView: View {
                     Spacer()
 
                     Menu {
+                        Button(action: {
+                            librarySaveService.save(image)
+                        }) {
+                            Label(
+                                librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
+                                systemImage: "square.and.arrow.down"
+                            )
+                        }
+                        .disabled(librarySaveService.isSaving(itemID: image.id))
+
                         if image.postId != nil {
                             Button(action: {
                                 Task {

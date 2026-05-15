@@ -29,6 +29,13 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
         return type == "video"
     }
 
+    /// Full-resolution original media URL on the Civitai CDN (no downsampling/optimization).
+    /// Used by the personal library to archive a pristine copy.
+    var originalURL: String {
+        let ext = isVideo ? "mp4" : "jpeg"
+        return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(imageUUID)/original=true/\(id).\(ext)"
+    }
+
     /// Extracts the UUID from the url field (handles both raw UUID and full URLs from persistence)
     private var imageUUID: String {
         // If url is already a full URL (from persistence), extract the UUID

@@ -3,8 +3,12 @@ import SwiftUI
 struct SettingsView: View {
     @StateObject private var apiKeyManager = APIKeyManager.shared
     @ObservedObject private var domainManager = DomainManager.shared
+    @EnvironmentObject private var libraryStore: LibraryStore
     @State private var apiKeyInput = ""
     @State private var showingAPIKeyInfo = false
+    @State private var cacheLimitGB: Int = 2
+
+    private static let cacheLimitOptions = [1, 2, 5, 10, 20]
 
     var body: some View {
         settingsContent
@@ -86,6 +90,47 @@ struct SettingsView: View {
                 showingAPIKeyInfo = true
             }
             .font(.caption)
+        }
+
+        Section {
+            HStack {
+                Text("iCloud Sync")
+                Spacer()
+                Text(libraryStore.isICloudBacked ? "On" : "Local only")
+                    .foregroundColor(libraryStore.isICloudBacked ? .green : .orange)
+            }
+
+            HStack {
+                Text("Downloaded on This Device")
+                Spacer()
+                Text(ByteCountFormatter.string(fromByteCount: Int64(libraryStore.downloadedBytes), countStyle: .file))
+                    .foregroundColor(.secondary)
+            }
+
+            Picker("Keep Up To", selection: $cacheLimitGB) {
+                ForEach(Self.cacheLimitOptions, id: \.self) { gb in
+                    Text("\(gb) GB").tag(gb)
+                }
+            }
+            .onChange(of: cacheLimitGB) { _, newValue in
+                libraryStore.cacheLimitBytes = newValue * 1024 * 1024 * 1024
+            }
+
+            Button("Free Up Space Now") {
+                Task { await libraryStore.freeUpSpaceNow() }
+            }
+
+            Button("Rebuild Index") {
+                Task { await libraryStore.rebuildIndex() }
+            }
+        } header: {
+            Text("Personal Library")
+        } footer: {
+            Text("Originals are stored in iCloud Drive. This device keeps roughly the selected amount downloaded for fast viewing; iCloud may keep more or less.")
+                .font(.caption)
+        }
+        .onAppear {
+            cacheLimitGB = max(1, libraryStore.cacheLimitBytes / (1024 * 1024 * 1024))
         }
 
         Section("About") {

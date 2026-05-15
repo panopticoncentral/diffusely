@@ -11,6 +11,7 @@ struct PostDetailView: View {
     @State private var isLoadingGenData = false
     @State private var showingCollectionPicker = false
     @State private var showingUserContent = false
+    @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     var body: some View {
         ZStack {
@@ -54,19 +55,29 @@ struct PostDetailView: View {
 
                     Spacer()
 
-                    if APIKeyManager.shared.hasAPIKey {
-                        Menu {
+                    Menu {
+                        Button(action: {
+                            librarySaveService.savePost(post)
+                        }) {
+                            Label(
+                                librarySaveService.isSavingPost(post) ? "Saving Post…" : "Save Post to Library",
+                                systemImage: "square.and.arrow.down.on.square"
+                            )
+                        }
+                        .disabled(librarySaveService.isSavingPost(post))
+
+                        if APIKeyManager.shared.hasAPIKey {
                             Button(action: {
                                 showingCollectionPicker = true
                             }) {
                                 Label("Add to Collection", systemImage: "folder.badge.plus")
                             }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.title3)
-                                .foregroundColor(.primary)
-                                .padding()
                         }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.title3)
+                            .foregroundColor(.primary)
+                            .padding()
                     }
                 }
                 .background(Color(.systemBackground))
