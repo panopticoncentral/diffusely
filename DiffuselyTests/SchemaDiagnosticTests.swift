@@ -20,7 +20,7 @@ import SwiftData
                 try? FileManager.default.removeItem(atPath: url.path + s)
             }
         }
-        let config = ModelConfiguration(schema: schema, url: url)
+        let config = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         _ = try ModelContainer(for: schema, configurations: [config])
     }
 
@@ -33,7 +33,7 @@ import SwiftData
                 try? FileManager.default.removeItem(atPath: url.path + s)
             }
         }
-        let config = ModelConfiguration(schema: schema, url: url)
+        let config = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         _ = try ModelContainer(for: schema, configurations: [config])
     }
 }
