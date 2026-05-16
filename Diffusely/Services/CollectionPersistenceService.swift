@@ -125,6 +125,28 @@ class CollectionPersistenceService: ObservableObject {
         try? modelContext.save()
     }
 
+    // MARK: - Removal
+
+    func removeImage(imageId: Int, fromCollectionId collectionId: Int) {
+        let descriptor = FetchDescriptor<PersistedImage>(
+            predicate: #Predicate { $0.id == imageId && $0.collection?.id == collectionId }
+        )
+        if let existing = try? modelContext.fetch(descriptor).first {
+            modelContext.delete(existing)
+            try? modelContext.save()
+        }
+    }
+
+    func removePost(postId: Int, fromCollectionId collectionId: Int) {
+        let descriptor = FetchDescriptor<PersistedPost>(
+            predicate: #Predicate { $0.id == postId && $0.collection?.id == collectionId }
+        )
+        if let existing = try? modelContext.fetch(descriptor).first {
+            modelContext.delete(existing)
+            try? modelContext.save()
+        }
+    }
+
     // MARK: - Grouped Queries
 
     struct AuthorGroup: Identifiable {

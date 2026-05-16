@@ -4,6 +4,7 @@ struct AuthorContentGrid: View {
     let images: [CivitaiImage]
     let posts: [CivitaiPost]
     let collectionType: String
+    var onRequestRemove: ((CollectionItemType) -> Void)? = nil
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -16,10 +17,28 @@ struct AuthorContentGrid: View {
             if collectionType == "Image" {
                 ForEach(images) { image in
                     ImageFeedItemView(image: image, isGridMode: true)
+                        .contextMenu {
+                            if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
+                                Button(role: .destructive) {
+                                    onRequestRemove(.image(id: image.id))
+                                } label: {
+                                    Label("Remove from Collection", systemImage: "trash")
+                                }
+                            }
+                        }
                 }
             } else {
                 ForEach(posts) { post in
                     PostThumbnailView(post: post)
+                        .contextMenu {
+                            if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
+                                Button(role: .destructive) {
+                                    onRequestRemove(.post(id: post.id))
+                                } label: {
+                                    Label("Remove from Collection", systemImage: "trash")
+                                }
+                            }
+                        }
                 }
             }
         }

@@ -589,6 +589,57 @@ class CivitaiService: ObservableObject {
         }
     }
 
+    func removeImageFromCollection(imageId: Int, collectionId: Int) async throws {
+        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
+
+        let inputParams: [String: Any] = [
+            "imageId": imageId,
+            "type": "Image",
+            "removeFromCollectionIds": [collectionId]
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
+
+        print("Removing image \(imageId) from collection \(collectionId)")
+        print("Request URL: \(url)")
+        if let bodyString = String(data: bodyData, encoding: .utf8) {
+            print("Request body: \(bodyString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        // API key is required for this endpoint
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Response body: \(responseString)")
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        print("Response status code: \(httpResponse.statusCode)")
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
     func getUserImageCollections() async throws -> [CivitaiCollection] {
         var components = URLComponents(string: "\(baseURL)/collection.getAllUser")!
 
@@ -660,6 +711,56 @@ class CivitaiService: ObservableObject {
         let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
 
         print("Adding post \(postId) to collection \(collectionId)")
+        print("Request URL: \(url)")
+        if let bodyString = String(data: bodyData, encoding: .utf8) {
+            print("Request body: \(bodyString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Response body: \(responseString)")
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        print("Response status code: \(httpResponse.statusCode)")
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
+    func removePostFromCollection(postId: Int, collectionId: Int) async throws {
+        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
+
+        let inputParams: [String: Any] = [
+            "postId": postId,
+            "type": "Post",
+            "removeFromCollectionIds": [collectionId]
+        ]
+
+        let tRPCInput = [
+            "0": [
+                "json": inputParams
+            ]
+        ]
+
+        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
+
+        print("Removing post \(postId) from collection \(collectionId)")
         print("Request URL: \(url)")
         if let bodyString = String(data: bodyData, encoding: .utf8) {
             print("Request body: \(bodyString)")

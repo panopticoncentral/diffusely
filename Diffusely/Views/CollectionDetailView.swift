@@ -14,6 +14,11 @@ struct CollectionDetailView: View {
     @State private var expandedAuthors: Set<Int> = []
     @State private var isInitialLoad = true
 
+    // Removal state
+    @State private var pendingRemoval: CollectionItemType?
+    @State private var isRemoving = false
+    @State private var removalError: String?
+
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var isGridLayout: Bool {
@@ -75,6 +80,35 @@ struct CollectionDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .confirmationDialog(
+            "Remove from \"\(collection.name)\"?",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let item = pendingRemoval {
+                    pendingRemoval = nil
+                    Task { await performRemoval(item) }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRemoval = nil
+            }
+        }
+        .alert(
+            "Couldn't Remove Item",
+            isPresented: Binding(
+                get: { removalError != nil },
+                set: { if !$0 { removalError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { removalError = nil }
+        } message: {
+            Text(removalError ?? "")
+        }
     }
 
     // MARK: - Views
@@ -128,7 +162,8 @@ struct CollectionDetailView: View {
                         AuthorContentGrid(
                             images: group.images,
                             posts: group.posts,
-                            collectionType: collection.type ?? "Image"
+                            collectionType: collection.type ?? "Image",
+                            onRequestRemove: { pendingRemoval = $0 }
                         )
                         .padding(.bottom, 8)
                     }
@@ -228,6 +263,27 @@ struct CollectionDetailView: View {
         persistenceService.updateSyncCursor(for: collection.id, cursor: nil)
 
         startSync(force: true)
+    }
+
+    private func performRemoval(_ item: CollectionItemType) async {
+        guard let persistenceService = persistenceService else { return }
+
+        isRemoving = true
+        defer { isRemoving = false }
+
+        do {
+            switch item {
+            case .image(let imageId):
+                try await civitaiService.removeImageFromCollection(imageId: imageId, collectionId: collection.id)
+                persistenceService.removeImage(imageId: imageId, fromCollectionId: collection.id)
+            case .post(let postId):
+                try await civitaiService.removePostFromCollection(postId: postId, collectionId: collection.id)
+                persistenceService.removePost(postId: postId, fromCollectionId: collection.id)
+            }
+            await refreshAuthorGroups()
+        } catch {
+            removalError = "Failed to remove from collection: \(error.localizedDescription)"
+        }
     }
 
     private func toggleAuthor(_ authorId: Int) {
