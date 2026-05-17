@@ -319,8 +319,8 @@ struct UserContentView: View {
         guard hasAPIKey else { return }
 
         do {
-            let followingUsers = try await civitaiService.getFollowingUsers()
-            isFollowing = followingUsers.contains { $0.id == user.id }
+            let followingIds = try await civitaiService.getFollowingUserIds()
+            isFollowing = followingIds.contains(user.id)
         } catch {
             // Status unknown - button still shows, defaulting to "Follow".
             print("checkFollowStatus failed: \(error)")

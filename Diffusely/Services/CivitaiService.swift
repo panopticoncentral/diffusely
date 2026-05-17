@@ -850,8 +850,8 @@ class CivitaiService: ObservableObject {
 
     // MARK: - Follow/Unfollow
 
-    /// Fetches the list of users the authenticated user is following
-    func getFollowingUsers() async throws -> [CivitaiUser] {
+    /// Fetches the IDs of the users the authenticated user is following
+    func getFollowingUserIds() async throws -> [Int] {
         var components = URLComponents(string: "\(accountBaseURL)/user.getFollowingUsers")!
 
         let tRPCInput = [
@@ -890,7 +890,7 @@ class CivitaiService: ObservableObject {
         }
 
         struct FollowingData: Codable {
-            let json: [CivitaiUser]
+            let json: [Int]
         }
 
         let tRPCResponse = try JSONDecoder().decode([FollowingResponse].self, from: data)
