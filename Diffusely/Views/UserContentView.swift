@@ -17,7 +17,7 @@ struct UserContentView: View {
     @State private var selectedSort: FeedSort = .newest
     @State private var isFollowing: Bool = false
     @State private var isFollowLoading: Bool = false
-    @State private var hasCheckedFollowStatus: Bool = false
+    @State private var followError: String?
 
     private var hasAPIKey: Bool {
         APIKeyManager.shared.hasAPIKey
@@ -39,6 +39,11 @@ struct UserContentView: View {
         VStack(spacing: 0) {
             // Header
             headerView
+
+            // Follow / Unfollow
+            if hasAPIKey {
+                followButton
+            }
 
             // Segmented Picker
             Picker("Content Type", selection: $selectedContentType) {
@@ -95,6 +100,17 @@ struct UserContentView: View {
             }
         }
         .background(Color(.systemBackground))
+        .alert(
+            "Couldn't update follow",
+            isPresented: Binding(
+                get: { followError != nil },
+                set: { if !$0 { followError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { followError = nil }
+        } message: {
+            Text(followError ?? "")
+        }
         .task {
             await loadContent()
             await checkFollowStatus()
@@ -163,29 +179,6 @@ struct UserContentView: View {
                 Text(user.username ?? "Unknown")
                     .font(.headline)
                     .foregroundColor(.primary)
-
-                if hasAPIKey && hasCheckedFollowStatus {
-                    Button {
-                        Task {
-                            await toggleFollow()
-                        }
-                    } label: {
-                        if isFollowLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 24, height: 24)
-                        } else {
-                            Text(isFollowing ? "Following" : "Follow")
-                                .font(.caption.weight(.semibold))
-                                .foregroundColor(isFollowing ? .secondary : .white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(isFollowing ? Color(.tertiarySystemBackground) : Color.blue)
-                                .cornerRadius(14)
-                        }
-                    }
-                    .disabled(isFollowLoading)
-                }
             }
 
             Spacer()
@@ -235,6 +228,37 @@ struct UserContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color(.systemBackground))
+    }
+
+    @ViewBuilder
+    private var followButton: some View {
+        Button {
+            Task {
+                await toggleFollow()
+            }
+        } label: {
+            Group {
+                if isFollowLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: isFollowing ? "checkmark" : "plus")
+                        Text(isFollowing ? "Following" : "Follow")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 22)
+            .padding(.vertical, 10)
+            .foregroundColor(isFollowing ? .primary : .white)
+            .background(isFollowing ? Color(.secondarySystemBackground) : Color.blue)
+            .cornerRadius(12)
+        }
+        .disabled(isFollowLoading)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
     }
 
     @ViewBuilder
@@ -297,9 +321,9 @@ struct UserContentView: View {
         do {
             let followingUsers = try await civitaiService.getFollowingUsers()
             isFollowing = followingUsers.contains { $0.id == user.id }
-            hasCheckedFollowStatus = true
         } catch {
-            // Silently fail - button just won't show
+            // Status unknown - button still shows, defaulting to "Follow".
+            print("checkFollowStatus failed: \(error)")
         }
     }
 
@@ -311,7 +335,8 @@ struct UserContentView: View {
             try await civitaiService.toggleFollowUser(targetUserId: user.id)
             isFollowing.toggle()
         } catch {
-            // Request failed - state unchanged
+            print("toggleFollow failed: \(error)")
+            followError = "The request didn't go through. Check your connection and that your API key is set in Settings, then try again."
         }
         isFollowLoading = false
     }

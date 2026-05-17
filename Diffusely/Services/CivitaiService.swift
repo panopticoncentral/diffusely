@@ -66,6 +66,9 @@ class CivitaiService: ObservableObject {
     private let browsingLevel = 31
 
     private var baseURL: String { DomainManager.shared.baseURL }
+    // Account-level operations (follow graph, etc.) belong to the user's
+    // civitai.com account and must not follow the content-browsing domain.
+    private var accountBaseURL: String { CivitaiDomain.safe.baseURL }
     private var nextCursor: String?
     private var nextPostCursor: Int?
     private let session = URLSession.shared
@@ -849,7 +852,7 @@ class CivitaiService: ObservableObject {
 
     /// Fetches the list of users the authenticated user is following
     func getFollowingUsers() async throws -> [CivitaiUser] {
-        var components = URLComponents(string: "\(baseURL)/user.getFollowingUsers")!
+        var components = URLComponents(string: "\(accountBaseURL)/user.getFollowingUsers")!
 
         let tRPCInput = [
             "0": [
@@ -896,7 +899,7 @@ class CivitaiService: ObservableObject {
 
     /// Toggles follow state for a user. Throws on failure.
     func toggleFollowUser(targetUserId: Int) async throws {
-        let url = URL(string: "\(baseURL)/user.toggleFollow?batch=1")!
+        let url = URL(string: "\(accountBaseURL)/user.toggleFollow?batch=1")!
 
         let inputParams: [String: Any] = [
             "targetUserId": targetUserId
