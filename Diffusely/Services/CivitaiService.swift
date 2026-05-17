@@ -595,6 +595,7 @@ class CivitaiService: ObservableObject {
         let inputParams: [String: Any] = [
             "imageId": imageId,
             "type": "Image",
+            "collections": [],
             "removeFromCollectionIds": [collectionId]
         ]
 
@@ -749,6 +750,7 @@ class CivitaiService: ObservableObject {
         let inputParams: [String: Any] = [
             "postId": postId,
             "type": "Post",
+            "collections": [],
             "removeFromCollectionIds": [collectionId]
         ]
 
