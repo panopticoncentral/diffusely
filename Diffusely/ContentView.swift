@@ -1,22 +1,20 @@
 import SwiftUI
 
 #if os(macOS)
-struct FeedNavigator {
-    var path: Binding<NavigationPath>?
+@MainActor
+final class FeedNavigator: ObservableObject {
+    @Published var image: CivitaiImage?
+    @Published var user: CivitaiUser?
+    @Published var post: CivitaiPost?
 
-    func push<V: Hashable>(_ value: V) {
-        path?.wrappedValue.append(value)
-    }
-}
+    func push(_ image: CivitaiImage) { self.image = image }
+    func push(_ user: CivitaiUser) { self.user = user }
+    func push(_ post: CivitaiPost) { self.post = post }
 
-private struct FeedNavigatorKey: EnvironmentKey {
-    static let defaultValue = FeedNavigator()
-}
-
-extension EnvironmentValues {
-    var feedNavigator: FeedNavigator {
-        get { self[FeedNavigatorKey.self] }
-        set { self[FeedNavigatorKey.self] = newValue }
+    func reset() {
+        image = nil
+        user = nil
+        post = nil
     }
 }
 
@@ -45,7 +43,7 @@ struct ContentView: View {
 
     #if os(macOS)
     @State private var selectedSection: SidebarSection? = .images
-    @State private var feedPath = NavigationPath()
+    @StateObject private var feedNavigator = FeedNavigator()
     #else
     @State private var selectedTab = 0
     #endif
@@ -58,8 +56,8 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
         } detail: {
-            NavigationStack(path: $feedPath) {
-                Group {
+            NavigationStack {
+                ZStack {
                     switch selectedSection ?? .images {
                     case .images:
                         ImageFeedView(
@@ -79,19 +77,19 @@ struct ContentView: View {
                         LibraryView()
                     }
                 }
-                .navigationDestination(for: CivitaiImage.self) { image in
+                .navigationDestination(item: $feedNavigator.image) { image in
                     ImageDetailView(image: image)
                 }
-                .navigationDestination(for: CivitaiPost.self) { post in
+                .navigationDestination(item: $feedNavigator.post) { post in
                     PostDetailView(post: post)
                 }
-                .navigationDestination(for: CivitaiUser.self) { user in
+                .navigationDestination(item: $feedNavigator.user) { user in
                     UserContentView(user: user)
                 }
             }
-            .environment(\.feedNavigator, FeedNavigator(path: $feedPath))
+            .environmentObject(feedNavigator)
             .onChange(of: selectedSection) { _, _ in
-                feedPath = NavigationPath()
+                feedNavigator.reset()
             }
         }
         #else

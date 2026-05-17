@@ -16,7 +16,7 @@ struct ImageFeedItemView: View {
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     #if os(macOS)
-    @Environment(\.feedNavigator) private var feedNavigator
+    @EnvironmentObject private var feedNavigator: FeedNavigator
     #endif
 
     private func openImageDetail() {
