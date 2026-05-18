@@ -10,6 +10,7 @@ import Combine
 final class LibraryStore: ObservableObject {
     @Published private(set) var isICloudBacked = false
     @Published private(set) var downloadedBytes = 0
+    @Published private(set) var itemCount = 0
     @Published private(set) var isReady = false
     /// itemID -> download progress (0...1) while a media file is materializing.
     @Published private(set) var downloadProgress: [Int: Double] = [:]
@@ -89,8 +90,25 @@ final class LibraryStore: ObservableObject {
         await refreshTotals()
     }
 
+    func resetLibrary() async {
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        let coordinator = NSFileCoordinator()
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)) ?? []
+        for url in contents {
+            var err: NSError?
+            coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
+                try? FileManager.default.removeItem(at: u)
+            }
+        }
+        await indexService.wipe()
+        downloadProgress = [:]
+        await refreshTotals()
+    }
+
     private func refreshTotals() async {
         downloadedBytes = await indexService.totalDownloadedBytes()
+        itemCount = await indexService.itemCount()
     }
 
     // MARK: - NSMetadataQuery

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var libraryStore: LibraryStore
     @State private var apiKeyInput = ""
     @State private var showingAPIKeyInfo = false
+    @State private var showingResetConfirmation = false
     @State private var cacheLimitGB: Int = 2
 
     private static let cacheLimitOptions = [1, 2, 5, 10, 20]
@@ -16,6 +17,14 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text("To get your Civitai API Key:\n\n1. Go to \(domainManager.domain.rawValue)\n2. Sign in to your account\n3. Go to Account Settings\n4. Navigate to the API Keys section\n5. Generate a new API key\n6. Copy and paste it here")
+            }
+            .alert("Reset Library", isPresented: $showingResetConfirmation) {
+                Button("Delete Everything", role: .destructive) {
+                    Task { await libraryStore.resetLibrary() }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This permanently deletes all \(libraryStore.itemCount) items from your library, including originals in iCloud on all your devices. This cannot be undone.")
             }
     }
 
@@ -123,6 +132,11 @@ struct SettingsView: View {
             Button("Rebuild Index") {
                 Task { await libraryStore.rebuildIndex() }
             }
+
+            Button("Reset Library", role: .destructive) {
+                showingResetConfirmation = true
+            }
+            .disabled(libraryStore.itemCount == 0)
         } header: {
             Text("Personal Library")
         } footer: {

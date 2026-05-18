@@ -92,6 +92,18 @@ actor LibraryIndexService {
         reconcile(itemsDirectory: itemsDirectory)
     }
 
+    /// Deletes every index row without reconciling. Used by Reset Library after
+    /// the container files themselves have been deleted.
+    func wipe() {
+        let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        for item in existing { modelContext.delete(item) }
+        try? modelContext.save()
+    }
+
+    func itemCount() -> Int {
+        (try? modelContext.fetchCount(FetchDescriptor<PersistedLibraryItem>())) ?? 0
+    }
+
     // MARK: - LRU eviction
 
     func totalDownloadedBytes() -> Int {

@@ -225,6 +225,26 @@ private func makeMetadata(
         #expect(items.isEmpty)
     }
 
+    @Test func wipeDeletesAllRowsAndItemCountTracksThem() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+
+        #expect(await index.itemCount() == 0)
+        await index.ingest(metadata: makeMetadata(itemID: 1), downloadStatus: .downloaded)
+        await index.ingest(metadata: makeMetadata(itemID: 2), downloadStatus: .downloaded)
+        #expect(await index.itemCount() == 2)
+
+        await index.wipe()
+
+        #expect(await index.itemCount() == 0)
+        let items = try await MainActor.run {
+            try container.mainContext.fetch(FetchDescriptor<PersistedLibraryItem>())
+        }
+        #expect(items.isEmpty)
+    }
+
     @Test func enforceCacheLimitEvictsLeastRecentlyAccessedFirst() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
