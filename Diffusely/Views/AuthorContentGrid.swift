@@ -6,28 +6,31 @@ struct AuthorContentGrid: View {
     let collectionType: String
     var onRequestRemove: ((CollectionItemType) -> Void)? = nil
 
-    private let columns = [
+    private let postColumns = [
         GridItem(.flexible(), spacing: 2),
         GridItem(.flexible(), spacing: 2),
         GridItem(.flexible(), spacing: 2)
     ]
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 2) {
-            if collectionType == "Image" {
-                ForEach(images) { image in
-                    ImageFeedItemView(image: image, isGridMode: true)
-                        .contextMenu {
-                            if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
-                                Button(role: .destructive) {
-                                    onRequestRemove(.image(id: image.id))
-                                } label: {
-                                    Label("Remove from Collection", systemImage: "trash")
-                                }
+        if collectionType == "Image" {
+            MasonryGrid(
+                items: images,
+                aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+            ) { image in
+                ImageFeedItemView(image: image, isGridMode: true, preserveAspectRatio: true)
+                    .contextMenu {
+                        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
+                            Button(role: .destructive) {
+                                onRequestRemove(.image(id: image.id))
+                            } label: {
+                                Label("Remove from Collection", systemImage: "trash")
                             }
                         }
-                }
-            } else {
+                    }
+            }
+        } else {
+            LazyVGrid(columns: postColumns, spacing: 2) {
                 ForEach(posts) { post in
                     PostThumbnailView(post: post)
                         .contextMenu {
@@ -41,8 +44,8 @@ struct AuthorContentGrid: View {
                         }
                 }
             }
+            .padding(.horizontal, 2)
         }
-        .padding(.horizontal, 2)
     }
 }
 

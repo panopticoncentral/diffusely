@@ -115,8 +115,16 @@ struct ImageFeedView: View {
     @ViewBuilder
     private var feedContent: some View {
         #if os(macOS)
-        WaterfallGrid(images: civitaiService.images) {
-            Task { await loadMoreImages() }
+        MasonryGrid(
+            items: civitaiService.images,
+            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+        ) { image in
+            ImageFeedItemView(image: image, isGridMode: true, preserveAspectRatio: true)
+                .onAppear {
+                    if image.id == civitaiService.images.last?.id {
+                        Task { await loadMoreImages() }
+                    }
+                }
         }
         #else
         if isGridLayout {
