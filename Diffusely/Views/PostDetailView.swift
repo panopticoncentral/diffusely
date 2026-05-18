@@ -98,77 +98,85 @@ struct PostDetailView: View {
                 }
                 .background(Color(.systemBackground))
 
-                // Image/Video carousel - outside ScrollView to prevent gesture conflicts
-                if !post.safeImages.isEmpty {
-                    GeometryReader { geometry in
-                        TabView(selection: $currentImageIndex) {
-                            ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
-                                if image.isVideo {
-                                    let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                                    CachedVideoPlayer(
-                                        url: image.detailURL,
-                                        autoPlay: true,
-                                        isMuted: false
-                                    )
-                                    .aspectRatio(aspectRatio, contentMode: .fit)
-                                    .frame(maxWidth: .infinity)
-                                    .tag(index)
-                                } else {
-                                    CachedAsyncImage(
-                                        url: image.detailURL,
-                                        expectedAspectRatio: CGFloat(image.width) / CGFloat(image.height)
-                                    )
-                                        .aspectRatio(contentMode: .fit)
-                                        .frame(maxWidth: .infinity)
-                                        .tag(index)
-                                }
-                            }
-                        }
-                        #if os(iOS)
-                        .tabViewStyle(.page(indexDisplayMode: .never))
-                        #endif
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                    }
-                    .frame(minHeight: 400, idealHeight: 500)
-
-                    // Image counter
-                    if post.safeImages.count > 1 {
-                        HStack {
-                            ForEach(0..<post.safeImages.count, id: \.self) { index in
-                                Circle()
-                                    .fill(currentImageIndex == index ? Color.primary : Color.primary.opacity(0.3))
-                                    .frame(width: 6, height: 6)
-                            }
-                        }
-                        .padding(.vertical, 12)
-                    }
-                }
-
-                // Stats and generation data - scrollable content
+                // Carousel + stats - scrollable; media fits the window on macOS
+                GeometryReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        FeedItemStats(
-                            likeCount: post.safeStats.likeCount,
-                            heartCount: post.safeStats.heartCount,
-                            laughCount: post.safeStats.laughCount,
-                            cryCount: post.safeStats.cryCount,
-                            commentCount: post.safeStats.commentCount,
-                            dislikeCount: post.safeStats.dislikeCount
-                        )
+                    VStack(spacing: 0) {
+                        if !post.safeImages.isEmpty {
+                            GeometryReader { geometry in
+                                TabView(selection: $currentImageIndex) {
+                                    ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
+                                        if image.isVideo {
+                                            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+                                            CachedVideoPlayer(
+                                                url: image.detailURL,
+                                                autoPlay: true,
+                                                isMuted: false
+                                            )
+                                            .aspectRatio(aspectRatio, contentMode: .fit)
+                                            .detailMediaFrame(maxHeight: geometry.size.height)
+                                            .tag(index)
+                                        } else {
+                                            CachedAsyncImage(
+                                                url: image.detailURL,
+                                                expectedAspectRatio: CGFloat(image.width) / CGFloat(image.height)
+                                            )
+                                                .aspectRatio(contentMode: .fit)
+                                                .detailMediaFrame(maxHeight: geometry.size.height)
+                                                .tag(index)
+                                        }
+                                    }
+                                }
+                                #if os(iOS)
+                                .tabViewStyle(.page(indexDisplayMode: .never))
+                                #endif
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                            }
+                            #if os(macOS)
+                            .frame(height: proxy.size.height)
+                            #else
+                            .frame(minHeight: 400, idealHeight: 500)
+                            #endif
 
-                        Divider()
-
-                        // Generation data section
-                        if isLoadingGenData {
-                            ProgressView()
-                                .padding()
-                        } else if let genData = generationData {
-                            GenerationDataView(data: genData)
+                            // Image counter
+                            if post.safeImages.count > 1 {
+                                HStack {
+                                    ForEach(0..<post.safeImages.count, id: \.self) { index in
+                                        Circle()
+                                            .fill(currentImageIndex == index ? Color.primary : Color.primary.opacity(0.3))
+                                            .frame(width: 6, height: 6)
+                                    }
+                                }
+                                .padding(.vertical, 12)
+                            }
                         }
+
+                        // Stats and generation data
+                        VStack(alignment: .leading, spacing: 12) {
+                            FeedItemStats(
+                                likeCount: post.safeStats.likeCount,
+                                heartCount: post.safeStats.heartCount,
+                                laughCount: post.safeStats.laughCount,
+                                cryCount: post.safeStats.cryCount,
+                                commentCount: post.safeStats.commentCount,
+                                dislikeCount: post.safeStats.dislikeCount
+                            )
+
+                            Divider()
+
+                            // Generation data section
+                            if isLoadingGenData {
+                                ProgressView()
+                                    .padding()
+                            } else if let genData = generationData {
+                                GenerationDataView(data: genData)
+                            }
+                        }
+                        .padding()
                     }
-                    .padding()
                 }
                 .background(Color(.systemBackground))
+                }
             }
         }
         #if os(iOS)

@@ -12,10 +12,11 @@ struct LibraryDetailView: View {
     @State private var showingRemoveConfirm = false
 
     var body: some View {
+        GeometryReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if let metadata {
-                    media(for: metadata)
+                    media(for: metadata, maxHeight: proxy.size.height)
 
                     VStack(alignment: .leading, spacing: 12) {
                         if let username = metadata.author.username {
@@ -30,19 +31,33 @@ struct LibraryDetailView: View {
                         }
 
                         if let url = URL(string: metadata.canonicalPageURL) {
-                            Button {
-                                openURL(url)
-                            } label: {
-                                Label("Open Image on Civitai", systemImage: "safari")
+                            HStack(spacing: 12) {
+                                Button {
+                                    openURL(url)
+                                } label: {
+                                    Label("Open Image on Civitai", systemImage: "safari")
+                                }
+                                Button {
+                                    Clipboard.copy(metadata.canonicalPageURL)
+                                } label: {
+                                    Label("Copy Link", systemImage: "doc.on.doc")
+                                }
                             }
                         }
 
                         if let postURLString = metadata.canonicalPostURL,
                            let postURL = URL(string: postURLString) {
-                            Button {
-                                openURL(postURL)
-                            } label: {
-                                Label("Open Post on Civitai", systemImage: "photo.stack")
+                            HStack(spacing: 12) {
+                                Button {
+                                    openURL(postURL)
+                                } label: {
+                                    Label("Open Post on Civitai", systemImage: "photo.stack")
+                                }
+                                Button {
+                                    Clipboard.copy(postURLString)
+                                } label: {
+                                    Label("Copy Link", systemImage: "doc.on.doc")
+                                }
                             }
                         }
 
@@ -93,10 +108,11 @@ struct LibraryDetailView: View {
             Text("This deletes your saved copy and its metadata from iCloud.")
         }
         .task { await loadMetadata() }
+        }
     }
 
     @ViewBuilder
-    private func media(for metadata: LibraryItemMetadata) -> some View {
+    private func media(for metadata: LibraryItemMetadata, maxHeight: CGFloat) -> some View {
         let aspect = metadata.height > 0 ? CGFloat(metadata.width) / CGFloat(metadata.height) : 1
         if metadata.mediaType == .video {
             LibraryVideoPlayer(
@@ -106,6 +122,7 @@ struct LibraryDetailView: View {
                 isMuted: false
             )
             .aspectRatio(aspect, contentMode: .fit)
+            .detailMediaFrame(maxHeight: maxHeight)
         } else {
             LibraryAsyncImage(
                 itemID: metadata.itemID,
@@ -114,6 +131,7 @@ struct LibraryDetailView: View {
                 contentMode: .fit
             )
             .aspectRatio(aspect, contentMode: .fit)
+            .detailMediaFrame(maxHeight: maxHeight)
         }
     }
 

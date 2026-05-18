@@ -85,6 +85,7 @@ struct ImageDetailView: View {
                 .background(Color(.systemBackground))
 
                 // Main content - scrollable
+                GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
                         // Image/Video
@@ -96,11 +97,11 @@ struct ImageDetailView: View {
                                 isMuted: false
                             )
                             .aspectRatio(aspectRatio, contentMode: .fit)
-                            .frame(maxWidth: .infinity)
+                            .detailMediaFrame(maxHeight: proxy.size.height)
                         } else {
                             CachedAsyncImage(url: image.detailURL)
                                 .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: .infinity)
+                                .detailMediaFrame(maxHeight: proxy.size.height)
                         }
 
                         // Stats section
@@ -129,6 +130,7 @@ struct ImageDetailView: View {
                     }
                 }
                 .background(Color(.systemBackground))
+                }
                 }
             }
             #if os(iOS)
