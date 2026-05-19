@@ -336,6 +336,15 @@ class CollectionPersistenceService: ObservableObject {
         try? modelContext.save()
     }
 
+    /// Stops the persisted "is syncing" flag without clearing the resume
+    /// cursor, so an interrupted pass resumes from the last good page.
+    func markSyncInterrupted(for collectionId: Int) {
+        guard let collection = getPersistedCollection(id: collectionId) else { return }
+        collection.isSyncing = false
+        // Intentionally keep collection.syncCursor for resume.
+        try? modelContext.save()
+    }
+
     /// Deletes items in the collection that were not observed in the current sync generation.
     /// Safe to call only after a complete pass — partial passes will not have stamped later items yet.
     private func sweepStaleItems(in collection: PersistedCollection) {
@@ -369,6 +378,14 @@ class CollectionPersistenceService: ObservableObject {
         // If currently syncing, don't start another
         if collection.isSyncing {
             return false
+        }
+
+        // An interrupted pass left a resume cursor — resume it regardless of
+        // staleness. (isSyncing is false here, and markSyncInterrupted/
+        // markSyncCompleted both reset it, so this only fires for a genuinely
+        // interrupted pass.)
+        if collection.syncCursor != nil {
+            return true
         }
 
         // If never completed a sync, need to sync
