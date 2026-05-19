@@ -41,7 +41,11 @@ class CollectionSyncService: ObservableObject {
 
     /// Check if a sync is currently running for a collection
     func isSyncing(collectionId: Int) -> Bool {
-        guard let progress = syncProgress[collectionId] else { return false }
+        // Require a live task so the UI polling loop terminates after a
+        // cancellation removes the task. A non-nil retryState still counts
+        // as syncing (the task is alive, just sleeping between retries).
+        guard syncTasks[collectionId] != nil,
+              let progress = syncProgress[collectionId] else { return false }
         return !progress.isComplete && progress.lastError == nil
     }
 
@@ -81,6 +85,9 @@ class CollectionSyncService: ObservableObject {
             if !(error is CancellationError) {
                 syncProgress[collection.id]?.lastError = error
             }
+            // Reset the persisted "is syncing" flag (cursor preserved) so
+            // needsSync allows a resume on reopen.
+            persistenceService.markSyncInterrupted(for: collection.id)
         }
     }
 
@@ -95,11 +102,13 @@ class CollectionSyncService: ObservableObject {
             pageCount += 1
             print("[Sync] Fetching page \(pageCount) with cursor: \(cursor ?? "nil")")
 
-            let (images, nextCursor) = try await civitaiService.fetchImagesPage(
-                collectionId: collection.id,
-                cursor: cursor,
-                limit: 100
-            )
+            let (images, nextCursor) = try await fetchPageWithRetry(collectionId: collection.id) {
+                try await self.civitaiService.fetchImagesPage(
+                    collectionId: collection.id,
+                    cursor: cursor,
+                    limit: 100
+                )
+            }
 
             print("[Sync] Page \(pageCount): fetched \(images.count) images, nextCursor: \(nextCursor ?? "nil")")
 
@@ -141,11 +150,13 @@ class CollectionSyncService: ObservableObject {
             pageCount += 1
             print("[Sync] Fetching page \(pageCount) with cursor: \(cursor ?? "nil")")
 
-            let (posts, nextCursor) = try await civitaiService.fetchPostsPage(
-                collectionId: collection.id,
-                cursor: cursor,
-                limit: 100
-            )
+            let (posts, nextCursor) = try await fetchPageWithRetry(collectionId: collection.id) {
+                try await self.civitaiService.fetchPostsPage(
+                    collectionId: collection.id,
+                    cursor: cursor,
+                    limit: 100
+                )
+            }
 
             print("[Sync] Page \(pageCount): fetched \(posts.count) posts, nextCursor: \(nextCursor ?? "nil")")
 
@@ -174,6 +185,42 @@ class CollectionSyncService: ObservableObject {
         }
 
         print("[Sync] Post sync finished for collection \(collection.id). Pages: \(pageCount), Total items: \(persisted.posts.count)")
+    }
+
+    /// Runs `fetch`, retrying the same call on transient errors with backoff.
+    /// Sets `retryState` while paused; clears it on success. Fatal errors and
+    /// cancellation propagate (the sync loop / performSync handle them).
+    private func fetchPageWithRetry<T>(
+        collectionId: Int,
+        _ fetch: () async throws -> T
+    ) async throws -> T {
+        var attempt = 0
+        while true {
+            do {
+                let result = try await fetch()
+                if syncProgress[collectionId]?.retryState != nil {
+                    syncProgress[collectionId]?.retryState = nil
+                }
+                return result
+            } catch {
+                try Task.checkCancellation()
+                switch classifySyncError(error) {
+                case .cancellation:
+                    throw error
+                case .fatal:
+                    throw error
+                case .transient:
+                    attempt += 1
+                    let delay = syncRetryDelay(forAttempt: attempt)
+                    syncProgress[collectionId]?.retryState = RetryState(
+                        attempt: attempt,
+                        nextAttemptAt: Date().addingTimeInterval(delay)
+                    )
+                    try await Task.sleep(for: .seconds(delay))
+                    // loop: retry the same fetch (same cursor)
+                }
+            }
+        }
     }
 
     func cancelSync(for collectionId: Int) {
