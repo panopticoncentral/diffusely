@@ -360,7 +360,7 @@ class CollectionPersistenceService: ObservableObject {
         }
     }
 
-    /// Returns true if sync is needed (never synced, or last sync was more than `staleAfter` seconds ago)
+    /// Returns true if sync is needed: never synced, an interrupted pass is pending (resume cursor present), or the last sync was more than `staleAfter` seconds ago.
     func needsSync(for collectionId: Int, staleAfter: TimeInterval = 300) -> Bool {
         guard let collection = getPersistedCollection(id: collectionId) else {
             return true  // No persisted collection, definitely need to sync
