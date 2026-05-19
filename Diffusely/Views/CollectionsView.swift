@@ -1,13 +1,15 @@
 import SwiftUI
+import SwiftData
 
 struct CollectionsView: View {
     @StateObject private var apiKeyManager = APIKeyManager.shared
     @StateObject private var civitaiService = CivitaiService()
+    @Environment(\.modelContext) private var modelContext
+    @State private var persistenceService: CollectionPersistenceService?
+    @State private var listSyncService: CollectionListSyncService?
     @State private var showingSettings = false
-    @State private var collections: [CivitaiCollection] = []
+    @State private var collections: [CivitaiCollection] = []  // from local cache
     @State private var previewImages: [Int: CivitaiImage] = [:]  // collectionId -> preview image
-    @State private var isLoading = false
-    @State private var errorMessage: String?
 
     // Filter to only show Image and Post collections
     var filteredCollections: [CivitaiCollection] {
@@ -70,9 +72,35 @@ struct CollectionsView: View {
                         }
                     }
                     .padding()
-                } else if isLoading {
-                    ProgressView("Loading collections...")
-                } else if let errorMessage = errorMessage {
+                } else if !filteredCollections.isEmpty {
+                    // Cache-first: render the cached list instantly. A
+                    // background/pull refresh shows a subtle inline indicator
+                    // but never replaces the grid or shows an error screen.
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            if let progress = listSyncService?.progress,
+                               !progress.isComplete {
+                                SyncProgressView(progress: progress)
+                            }
+
+                            LazyVGrid(columns: columns, spacing: 12) {
+                                ForEach(filteredCollections) { collection in
+                                    NavigationLink(destination: CollectionDetailView(collection: collection)) {
+                                        CollectionCard(
+                                            collection: collection,
+                                            previewImage: previewImages[collection.id]
+                                        )
+                                    }
+                                    .buttonStyle(PlainButtonStyle())
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                        }
+                    }
+                } else if let error = listSyncService?.progress?.lastError {
+                    // Empty cache AND the fetch failed — only now is a full
+                    // error screen warranted.
                     VStack(spacing: 20) {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 60))
@@ -82,21 +110,19 @@ struct CollectionsView: View {
                             .font(.title2)
                             .fontWeight(.semibold)
 
-                        Text(errorMessage)
+                        Text(error.localizedDescription)
                             .font(.body)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
 
                         Button("Retry") {
-                            Task {
-                                await loadCollections()
-                            }
+                            forceListRefresh()
                         }
                         .buttonStyle(.borderedProminent)
                     }
                     .padding()
-                } else if filteredCollections.isEmpty {
+                } else if listSyncService?.progress?.isComplete == true {
                     VStack(spacing: 20) {
                         Image(systemName: "square.stack.3d.up")
                             .font(.system(size: 60))
@@ -114,48 +140,89 @@ struct CollectionsView: View {
                     }
                     .padding()
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            ForEach(filteredCollections) { collection in
-                                NavigationLink(destination: CollectionDetailView(collection: collection)) {
-                                    CollectionCard(
-                                        collection: collection,
-                                        previewImage: previewImages[collection.id]
-                                    )
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                    }
+                    ProgressView("Loading collections...")
                 }
             }
             .navigationTitle("Collections")
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
-            .task {
-                if apiKeyManager.hasAPIKey && collections.isEmpty {
-                    await loadCollections()
+            .toolbar {
+                if apiKeyManager.hasAPIKey {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            forceListRefresh()
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .keyboardShortcut("r")  // ⌘R; also reachable on Mac where pull-to-refresh doesn't exist
+                        .disabled(listSyncService?.isSyncing == true)
+                        .help("Refresh collections")
+                    }
                 }
+            }
+            .refreshable {
+                forceListRefresh()
+            }
+            .task {
+                guard apiKeyManager.hasAPIKey else { return }
+                initializeServices()
+                loadFromCache()
+                await loadPreviewImages()
+                startListSyncIfNeeded()
+            }
+            .onDisappear {
+                // Stop the retry/backoff loop when leaving the screen.
+                listSyncService?.cancelSync()
             }
     }
 
-    private func loadCollections() async {
-        isLoading = true
-        errorMessage = nil
+    private func initializeServices() {
+        guard persistenceService == nil else { return }
+        let persistence = CollectionPersistenceService(modelContext: modelContext)
+        persistenceService = persistence
+        listSyncService = CollectionListSyncService(
+            civitaiService: civitaiService,
+            persistenceService: persistence
+        )
+    }
 
-        do {
-            collections = try await civitaiService.getAllUserCollections()
+    /// Loads the cached collection list (instant — no network).
+    private func loadFromCache() {
+        guard let persistenceService = persistenceService else { return }
+        collections = persistenceService.getUserListCollections().map { $0.toCivitaiCollection() }
+    }
 
-            // Load preview images for collections that need them
-            await loadPreviewImages()
-        } catch {
-            errorMessage = error.localizedDescription
+    /// Background-refreshes only when the cached list is stale (>5 min) or empty.
+    private func startListSyncIfNeeded() {
+        guard let persistenceService = persistenceService else { return }
+        guard persistenceService.listNeedsSync(staleAfter: 300) else {
+            print("[ListSync] Skipping — cached collection list is recent")
+            return
         }
+        startListSync()
+    }
 
-        isLoading = false
+    /// Pull-to-refresh / Retry: refresh regardless of staleness.
+    private func forceListRefresh() {
+        startListSync()
+    }
+
+    private func startListSync() {
+        guard let listSyncService = listSyncService else { return }
+        listSyncService.startSync()
+
+        // Live-refresh the grid from cache as the sync writes rows, then a
+        // final reload on completion. Mirrors CollectionDetailView.startSync.
+        Task {
+            while listSyncService.isSyncing {
+                try? await Task.sleep(for: .seconds(1))
+                loadFromCache()
+                await loadPreviewImages()
+            }
+            loadFromCache()
+            await loadPreviewImages()
+        }
     }
 
     private func loadPreviewImages() async {

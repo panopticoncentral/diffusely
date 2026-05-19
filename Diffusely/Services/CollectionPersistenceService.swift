@@ -401,4 +401,109 @@ class CollectionPersistenceService: ObservableObject {
     func lastSyncTime(for collectionId: Int) -> Date? {
         getPersistedCollection(id: collectionId)?.lastSyncCompleted
     }
+
+    // MARK: - User List Cache
+
+    private func allCollections() -> [PersistedCollection] {
+        (try? modelContext.fetch(FetchDescriptor<PersistedCollection>())) ?? []
+    }
+
+    /// The user's cached collection list, ordered as the server returned it.
+    func getUserListCollections() -> [PersistedCollection] {
+        let descriptor = FetchDescriptor<PersistedCollection>(
+            predicate: #Predicate { $0.isInUserList == true },
+            sortBy: [SortDescriptor(\.listOrder, order: .forward)]
+        )
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    /// Returns the generation number for a fresh list pass: one greater than
+    /// the highest generation any row has been stamped with.
+    func beginFreshListSyncPass() -> Int {
+        let maxGen = allCollections().map(\.listSyncGeneration).max() ?? 0
+        return maxGen + 1
+    }
+
+    func markListSyncStarted() {
+        for collection in allCollections() {
+            collection.lastListSyncStarted = Date()
+            collection.isListSyncing = true
+        }
+        try? modelContext.save()
+    }
+
+    /// Inserts or updates the row for `apiCollection`, marking it part of the
+    /// user's list for `generation`. Never touches contents-sync fields.
+    @discardableResult
+    func upsertUserListCollection(
+        from apiCollection: CivitaiCollection,
+        order: Int,
+        generation: Int
+    ) -> PersistedCollection {
+        let row: PersistedCollection
+        if let existing = getPersistedCollection(id: apiCollection.id) {
+            row = existing
+        } else {
+            row = PersistedCollection(
+                id: apiCollection.id,
+                name: apiCollection.name,
+                collectionType: apiCollection.type ?? "Image"
+            )
+            modelContext.insert(row)
+        }
+        row.applyListMetadata(from: apiCollection, order: order, generation: generation)
+        try? modelContext.save()
+        return row
+    }
+
+    func markListSyncCompleted(generation: Int) {
+        sweepCollectionsNotInList(generation: generation)
+        let now = Date()
+        for collection in allCollections() {
+            collection.lastListSyncCompleted = now
+            collection.isListSyncing = false
+        }
+        try? modelContext.save()
+    }
+
+    /// Clears the persisted "list syncing" flag without sweeping, so an
+    /// interrupted pass never blanks the list and a reopen retries.
+    func markListSyncInterrupted() {
+        for collection in allCollections() {
+            collection.isListSyncing = false
+        }
+        try? modelContext.save()
+    }
+
+    /// Drops collections from the user's list when they were not observed in
+    /// the latest pass. Only clears the flag — never deletes the row, so any
+    /// cached contents (images/posts) survive a server-side deletion.
+    private func sweepCollectionsNotInList(generation: Int) {
+        for collection in allCollections()
+        where collection.isInUserList && collection.lastSeenListGeneration < generation {
+            collection.isInUserList = false
+        }
+    }
+
+    /// True if the list should be (re)synced: nothing cached yet, never
+    /// completed, or the last completed list sync is older than `staleAfter`.
+    /// False while a list sync is in flight.
+    func listNeedsSync(staleAfter: TimeInterval = 300) -> Bool {
+        let rows = allCollections()
+        if rows.contains(where: { $0.isListSyncing }) {
+            return false
+        }
+        if rows.isEmpty {
+            return true
+        }
+        guard let lastCompleted = rows.compactMap(\.lastListSyncCompleted).max() else {
+            return true
+        }
+        return Date().timeIntervalSince(lastCompleted) > staleAfter
+    }
+
+    /// Most recent completed list sync, for display purposes.
+    func lastListSyncTime() -> Date? {
+        allCollections().compactMap(\.lastListSyncCompleted).max()
+    }
 }

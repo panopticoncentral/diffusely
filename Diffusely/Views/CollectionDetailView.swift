@@ -94,6 +94,16 @@ struct CollectionDetailView: View {
         #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await refreshContent() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .keyboardShortcut("r")  // ⌘R; also reachable on Mac where pull-to-refresh doesn't exist
+                .disabled(syncService?.isSyncing(collectionId: collection.id) == true)
+                .help("Refresh collection contents")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 CollectionSortMenu(selectedSort: $selectedSort)
             }
         }

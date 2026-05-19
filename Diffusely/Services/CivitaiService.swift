@@ -71,9 +71,13 @@ class CivitaiService: ObservableObject {
     private var accountBaseURL: String { CivitaiDomain.safe.baseURL }
     private var nextCursor: String?
     private var nextPostCursor: Int?
-    private let session = URLSession.shared
+    private let session: URLSession
     private var currentTask: Task<Void, Never>?
     private let mediaCacheService = MediaCacheService.shared
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
 
     func clear() {
         currentTask?.cancel()
@@ -470,19 +474,45 @@ class CivitaiService: ObservableObject {
         let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
         let basicCollections = tRPCResponse[0].result.data.json
 
-        // Fetch full details for each collection to get the type field
-        var detailedCollections: [CivitaiCollection] = []
-        for collection in basicCollections {
-            do {
-                let detailedCollection = try await getCollectionById(id: collection.id)
-                detailedCollections.append(detailedCollection)
-            } catch {
-                // If we fail to get details for one collection, skip it
-                print("Failed to fetch details for collection \(collection.id): \(error)")
+        // The basic list lacks the `type` field, so enrich each collection with
+        // a `collection.getById` call. These run with bounded concurrency (the
+        // old code did them serially, which made a slow API unbearable). A
+        // detail fetch that fails degrades gracefully to the basic collection
+        // rather than dropping it — the row is still cached and the next list
+        // sync retries it. Resilience/backoff for the whole operation lives in
+        // CollectionListSyncService (mirroring the contents-sync pattern), so
+        // this method intentionally does not retry.
+        let maxConcurrent = 6
+        var detailed = [CivitaiCollection?](repeating: nil, count: basicCollections.count)
+
+        try await withThrowingTaskGroup(of: (Int, CivitaiCollection).self) { group in
+            var nextIndex = 0
+
+            func addTask(_ index: Int) {
+                let basic = basicCollections[index]
+                group.addTask {
+                    let resolved = (try? await self.getCollectionById(id: basic.id)) ?? basic
+                    return (index, resolved)
+                }
+            }
+
+            while nextIndex < min(maxConcurrent, basicCollections.count) {
+                addTask(nextIndex)
+                nextIndex += 1
+            }
+
+            while let (index, collection) = try await group.next() {
+                detailed[index] = collection
+                if nextIndex < basicCollections.count {
+                    try Task.checkCancellation()
+                    addTask(nextIndex)
+                    nextIndex += 1
+                }
             }
         }
 
-        return detailedCollections
+        // Reassemble in the server's original order.
+        return detailed.compactMap { $0 }
     }
 
     func getCollectionById(id: Int) async throws -> CivitaiCollection {
