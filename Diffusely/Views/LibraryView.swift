@@ -21,7 +21,7 @@ struct LibraryView: View {
             emptyState
         } else {
             ScrollView {
-                if !store.isICloudBacked {
+                if store.iCloudStatus == .unavailable {
                     localOnlyBanner
                 }
                 MasonryGrid(
@@ -100,7 +100,7 @@ struct LibraryView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            if !store.isICloudBacked {
+            if store.iCloudStatus == .unavailable {
                 Text("iCloud is unavailable - items are saved on this device only.")
                     .font(.caption)
                     .foregroundColor(.orange)

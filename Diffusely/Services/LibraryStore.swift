@@ -6,9 +6,11 @@ import Combine
 /// `NSMetadataQuery` (which needs a run loop), drives reconcile on launch and on
 /// every iCloud change, surfaces iCloud availability / storage totals / per-item
 /// download progress to the UI, and exposes Settings actions.
+enum ICloudStatus { case checking, available, unavailable }
+
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published private(set) var isICloudBacked = false
+    @Published private(set) var iCloudStatus: ICloudStatus = .checking
     @Published private(set) var downloadedBytes = 0
     @Published private(set) var itemCount = 0
     @Published private(set) var isReady = false
@@ -52,7 +54,7 @@ final class LibraryStore: ObservableObject {
 
     func reconcileNow() async {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        isICloudBacked = await LibraryContainer.shared.isICloudBacked
+        iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
         await indexService.reconcile(itemsDirectory: dir)
         await refreshTotals()
     }

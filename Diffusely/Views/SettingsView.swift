@@ -105,8 +105,14 @@ struct SettingsView: View {
             HStack {
                 Text("iCloud Sync")
                 Spacer()
-                Text(libraryStore.isICloudBacked ? "On" : "Local only")
-                    .foregroundColor(libraryStore.isICloudBacked ? .green : .orange)
+                switch libraryStore.iCloudStatus {
+                case .checking:
+                    Text("Checking…").foregroundColor(.secondary)
+                case .available:
+                    Text("On").foregroundColor(.green)
+                case .unavailable:
+                    Text("Local only").foregroundColor(.orange)
+                }
             }
 
             HStack {
