@@ -83,6 +83,11 @@ struct CollectionDetailView: View {
             .onChange(of: selectedSort) {
                 Task { await reloadContent() }
             }
+            .onDisappear {
+                // Stop the retry/backoff loop when leaving the screen; the
+                // saved cursor lets it resume on reopen.
+                syncService?.cancelSync(for: collection.id)
+            }
         }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
