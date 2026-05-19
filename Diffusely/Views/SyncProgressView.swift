@@ -5,7 +5,11 @@ struct SyncProgressView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if !progress.isComplete && progress.lastError == nil {
+            if progress.retryState != nil {
+                Image(systemName: "clock.arrow.circlepath")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 14))
+            } else if !progress.isComplete && progress.lastError == nil {
                 ProgressView()
                     .scaleEffect(0.8)
             } else if progress.isComplete {
@@ -18,7 +22,11 @@ struct SyncProgressView: View {
                     .font(.system(size: 14))
             }
 
-            if let error = progress.lastError {
+            if progress.retryState != nil {
+                Text("Sync paused — retrying…")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else if progress.lastError != nil {
                 Text("Sync error")
                     .font(.caption)
                     .foregroundColor(.orange)
