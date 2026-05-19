@@ -8,6 +8,12 @@ struct CivitaiPost: Codable, Identifiable, Hashable {
     let user: CivitaiUser
     let stats: PostStats?
     let images: [CivitaiImage]?
+    let publishedAt: String?  // ISO 8601 publish timestamp (nullable)
+
+    /// Parsed publish date, or nil if absent/unparseable.
+    var publishedAtDate: Date? {
+        parseCivitaiDate(publishedAt)
+    }
 
     // Provide defaults for optional fields
     var safeStats: PostStats {
@@ -25,7 +31,8 @@ struct CivitaiPost: Codable, Identifiable, Hashable {
         imageCount: Int,
         user: CivitaiUser,
         stats: PostStats?,
-        images: [CivitaiImage]?
+        images: [CivitaiImage]?,
+        publishedAt: String? = nil
     ) {
         self.id = id
         self.nsfwLevel = nsfwLevel
@@ -34,6 +41,7 @@ struct CivitaiPost: Codable, Identifiable, Hashable {
         self.user = user
         self.stats = stats
         self.images = images
+        self.publishedAt = publishedAt
     }
 }
 

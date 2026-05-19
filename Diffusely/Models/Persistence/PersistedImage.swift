@@ -19,6 +19,8 @@ final class PersistedImage {
     var commentCount: Int = 0
     var collectedCount: Int = 0
 
+    var publishedAt: Date?
+
     var collection: PersistedCollection?
     var author: PersistedAuthor?
 
@@ -62,6 +64,8 @@ final class PersistedImage {
             self.commentCount = stats.commentCountAllTime
             self.collectedCount = stats.collectedCountAllTime
         }
+
+        self.publishedAt = image.publishedAtDate
     }
 
     func toCivitaiImage() -> CivitaiImage {
@@ -84,7 +88,8 @@ final class PersistedImage {
                 tippedAmountCountAllTime: 0,
                 dislikeCountAllTime: 0,
                 viewCountAllTime: 0
-            )
+            ),
+            publishedAt: formatCivitaiDate(publishedAt)
         )
     }
 

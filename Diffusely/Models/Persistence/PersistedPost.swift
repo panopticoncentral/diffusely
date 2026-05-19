@@ -15,6 +15,8 @@ final class PersistedPost {
     var cryCount: Int = 0
     var commentCount: Int = 0
 
+    var publishedAt: Date?
+
     var collection: PersistedCollection?
     var author: PersistedAuthor?
 
@@ -51,6 +53,8 @@ final class PersistedPost {
             self.cryCount = stats.cryCount
             self.commentCount = stats.commentCount
         }
+
+        self.publishedAt = post.publishedAtDate
     }
 
     func toCivitaiPost() -> CivitaiPost {
@@ -68,7 +72,8 @@ final class PersistedPost {
                 commentCount: commentCount,
                 dislikeCount: 0
             ),
-            images: images.map { $0.toCivitaiImage() }
+            images: images.map { $0.toCivitaiImage() },
+            publishedAt: formatCivitaiDate(publishedAt)
         )
     }
 }

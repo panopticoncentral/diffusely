@@ -11,6 +11,12 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
     let user: CivitaiUser?  // Made optional since it's not always present in posts
     let stats: ImageStats?  // Made optional since it's not always present in posts
     let thumbnailUrl: String?  // API-provided thumbnail URL for videos
+    let publishedAt: String?  // ISO 8601 publish timestamp (nullable)
+
+    /// Parsed publish date, or nil if absent/unparseable.
+    var publishedAtDate: Date? {
+        parseCivitaiDate(publishedAt)
+    }
 
     var detailURL: String {
         // If url is already a full URL (from persistence), return it directly
@@ -76,7 +82,8 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
         postId: Int?,
         user: CivitaiUser?,
         stats: ImageStats?,
-        thumbnailUrl: String? = nil
+        thumbnailUrl: String? = nil,
+        publishedAt: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -88,6 +95,7 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
         self.user = user
         self.stats = stats
         self.thumbnailUrl = thumbnailUrl
+        self.publishedAt = publishedAt
     }
 }
 

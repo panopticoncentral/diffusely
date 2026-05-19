@@ -66,6 +66,8 @@ class CollectionPersistenceService: ObservableObject {
                     existing.heartCount = stats.heartCountAllTime
                     existing.commentCount = stats.commentCountAllTime
                 }
+                // Backfill publishedAt for items persisted before date sorting existed
+                existing.publishedAt = image.publishedAtDate
                 existing.lastSeenGeneration = generation
                 continue
             }
@@ -102,6 +104,8 @@ class CollectionPersistenceService: ObservableObject {
                     existing.heartCount = stats.heartCount
                     existing.commentCount = stats.commentCount
                 }
+                // Backfill publishedAt for items persisted before date sorting existed
+                existing.publishedAt = post.publishedAtDate
                 existing.lastSeenGeneration = generation
                 continue
             }
@@ -161,7 +165,86 @@ class CollectionPersistenceService: ObservableObject {
         }
     }
 
-    func getImagesGroupedByAuthor(for collectionId: Int) -> [AuthorGroup] {
+    /// Result of a sort: either author-grouped sections or a flat
+    /// chronologically-ordered list of items.
+    enum SortedCollectionContent {
+        case grouped([AuthorGroup])
+        case flatImages([CivitaiImage])
+        case flatPosts([CivitaiPost])
+
+        var isEmpty: Bool {
+            switch self {
+            case .grouped(let groups): return groups.isEmpty
+            case .flatImages(let images): return images.isEmpty
+            case .flatPosts(let posts): return posts.isEmpty
+            }
+        }
+    }
+
+    /// Single entry point honoring the selected sort.
+    func getSortedContent(
+        for collectionId: Int,
+        type: String,
+        sort: CollectionSort
+    ) -> SortedCollectionContent {
+        if sort.isAuthorGrouped {
+            let groups = type == "Post"
+                ? getPostsGroupedByAuthor(for: collectionId, ascending: sort.authorAscending)
+                : getImagesGroupedByAuthor(for: collectionId, ascending: sort.authorAscending)
+            return .grouped(groups)
+        } else {
+            if type == "Post" {
+                return .flatPosts(getPostsSortedByDate(for: collectionId, descending: sort.dateDescending))
+            } else {
+                return .flatImages(getImagesSortedByDate(for: collectionId, descending: sort.dateDescending))
+            }
+        }
+    }
+
+    /// Sorts so dated items come first (asc/desc as requested) and
+    /// items missing a publish date sort last in a stable `id` order.
+    private static func compareByDate(
+        _ aDate: Date?, _ aId: Int,
+        _ bDate: Date?, _ bId: Int,
+        descending: Bool
+    ) -> Bool {
+        switch (aDate, bDate) {
+        case let (x?, y?): return descending ? x > y : x < y
+        case (nil, _?):    return false
+        case (_?, nil):    return true
+        case (nil, nil):   return aId > bId
+        }
+    }
+
+    func getImagesSortedByDate(for collectionId: Int, descending: Bool) -> [CivitaiImage] {
+        guard let collection = getPersistedCollection(id: collectionId) else { return [] }
+        return collection.images
+            .map { (date: $0.publishedAt, id: $0.id, image: $0.toCivitaiImage()) }
+            .sorted { Self.compareByDate($0.date, $0.id, $1.date, $1.id, descending: descending) }
+            .map { $0.image }
+    }
+
+    func getPostsSortedByDate(for collectionId: Int, descending: Bool) -> [CivitaiPost] {
+        guard let collection = getPersistedCollection(id: collectionId) else { return [] }
+        return collection.posts
+            .map { (date: $0.publishedAt, id: $0.id, post: $0.toCivitaiPost()) }
+            .sorted { Self.compareByDate($0.date, $0.id, $1.date, $1.id, descending: descending) }
+            .map { $0.post }
+    }
+
+    /// Number of cached items lacking a publish date. Non-zero means the
+    /// collection was cached before date sorting existed and needs a
+    /// one-time backfill sync before date sorting can work.
+    func countItemsMissingPublishedDate(for collectionId: Int, type: String) -> Int {
+        guard let collection = getPersistedCollection(id: collectionId) else { return 0 }
+        if type == "Post" {
+            return collection.posts.filter { $0.publishedAt == nil }.count
+        } else {
+            return collection.images.filter { $0.publishedAt == nil }.count
+        }
+    }
+
+    func getImagesGroupedByAuthor(for collectionId: Int, ascending: Bool = true) -> [AuthorGroup] {
         guard let collection = getPersistedCollection(id: collectionId) else { return [] }
 
         var groupedByAuthorId: [Int: (author: PersistedAuthor, images: [PersistedImage])] = [:]
@@ -184,10 +267,14 @@ class CollectionPersistenceService: ObservableObject {
                     posts: []
                 )
             }
-            .sorted { ($0.author.username ?? "zzz").lowercased() < ($1.author.username ?? "zzz").lowercased() }
+            .sorted { lhs, rhs in
+                let l = (lhs.author.username ?? "zzz").lowercased()
+                let r = (rhs.author.username ?? "zzz").lowercased()
+                return ascending ? l < r : l > r
+            }
     }
 
-    func getPostsGroupedByAuthor(for collectionId: Int) -> [AuthorGroup] {
+    func getPostsGroupedByAuthor(for collectionId: Int, ascending: Bool = true) -> [AuthorGroup] {
         guard let collection = getPersistedCollection(id: collectionId) else { return [] }
 
         var groupedByAuthorId: [Int: (author: PersistedAuthor, posts: [PersistedPost])] = [:]
@@ -210,7 +297,11 @@ class CollectionPersistenceService: ObservableObject {
                     posts: posts.map { $0.toCivitaiPost() }
                 )
             }
-            .sorted { ($0.author.username ?? "zzz").lowercased() < ($1.author.username ?? "zzz").lowercased() }
+            .sorted { lhs, rhs in
+                let l = (lhs.author.username ?? "zzz").lowercased()
+                let r = (rhs.author.username ?? "zzz").lowercased()
+                return ascending ? l < r : l > r
+            }
     }
 
     // MARK: - Sync State

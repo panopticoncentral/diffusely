@@ -9,8 +9,12 @@ struct CollectionDetailView: View {
     @State private var persistenceService: CollectionPersistenceService?
     @State private var syncService: CollectionSyncService?
 
-    // Author grouping state
-    @State private var authorGroups: [CollectionPersistenceService.AuthorGroup] = []
+    // Sorted content state
+    @State private var content: CollectionPersistenceService.SortedCollectionContent = .grouped([])
+    @State private var selectedSort: CollectionSort = .authorAscending
+    // Guards the one-time auto-sync that backfills publish dates for
+    // collections cached before date sorting existed.
+    @State private var didRequestDateBackfill = false
     @State private var expandedAuthors: Set<Int> = []
     @State private var isInitialLoad = true
 
@@ -46,13 +50,13 @@ struct CollectionDetailView: View {
                         SyncProgressView(progress: progress)
                     }
 
-                    // Content - grouped by author
-                    if authorGroups.isEmpty && isInitialLoad {
+                    // Content - sorted per selectedSort
+                    if content.isEmpty && isInitialLoad {
                         loadingView
-                    } else if authorGroups.isEmpty {
+                    } else if content.isEmpty {
                         emptyView
                     } else {
-                        authorGroupedContent
+                        sortedContent
                     }
                 }
                 #if os(iOS)
@@ -68,18 +72,26 @@ struct CollectionDetailView: View {
             }
             .task {
                 initializeServices()
-                await loadCachedContent()
+                await reloadContent()
                 startSyncIfNeeded()
             }
             .onReceive(NotificationCenter.default.publisher(for: .init("CollectionSyncProgressUpdated"))) { _ in
                 Task {
-                    await refreshAuthorGroups()
+                    await reloadContent()
                 }
+            }
+            .onChange(of: selectedSort) {
+                Task { await reloadContent() }
             }
         }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                CollectionSortMenu(selectedSort: $selectedSort)
+            }
+        }
         .confirmationDialog(
             "Remove from \"\(collection.name)\"?",
             isPresented: Binding(
@@ -154,9 +166,33 @@ struct CollectionDetailView: View {
     }
 
     @ViewBuilder
-    private var authorGroupedContent: some View {
+    private var sortedContent: some View {
+        switch content {
+        case .grouped(let groups):
+            authorGroupedContent(groups)
+        case .flatImages(let images):
+            AuthorContentGrid(
+                images: images,
+                posts: [],
+                collectionType: "Image",
+                onRequestRemove: { pendingRemoval = $0 }
+            )
+            .padding(.bottom, 8)
+        case .flatPosts(let posts):
+            AuthorContentGrid(
+                images: [],
+                posts: posts,
+                collectionType: "Post",
+                onRequestRemove: { pendingRemoval = $0 }
+            )
+            .padding(.bottom, 8)
+        }
+    }
+
+    @ViewBuilder
+    private func authorGroupedContent(_ groups: [CollectionPersistenceService.AuthorGroup]) -> some View {
         LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(authorGroups) { group in
+            ForEach(groups) { group in
                 Section {
                     if expandedAuthors.contains(group.id) {
                         AuthorContentGrid(
@@ -189,20 +225,53 @@ struct CollectionDetailView: View {
         )
     }
 
-    private func loadCachedContent() async {
+    /// Rebuilds `content` honoring the current `selectedSort`. Used for the
+    /// initial load, sync refreshes, sort changes, and after removals.
+    private func reloadContent() async {
         guard let persistenceService = persistenceService else { return }
 
-        // Load from persistence
-        if collection.type == "Image" {
-            authorGroups = persistenceService.getImagesGroupedByAuthor(for: collection.id)
-        } else if collection.type == "Post" {
-            authorGroups = persistenceService.getPostsGroupedByAuthor(for: collection.id)
+        let newContent = persistenceService.getSortedContent(
+            for: collection.id,
+            type: collection.type ?? "Image",
+            sort: selectedSort
+        )
+
+        await MainActor.run {
+            if case .grouped(let groups) = newContent {
+                if isInitialLoad {
+                    // Expand all authors by default on first load
+                    expandedAuthors = Set(groups.map { $0.id })
+                } else {
+                    // Preserve expansion state, expand newly-seen authors
+                    let existingIds: Set<Int>
+                    if case .grouped(let oldGroups) = content {
+                        existingIds = Set(oldGroups.map { $0.id })
+                    } else {
+                        existingIds = []
+                    }
+                    let newAuthorIds = Set(groups.map { $0.id }).subtracting(existingIds)
+                    expandedAuthors.formUnion(newAuthorIds)
+                }
+            }
+            content = newContent
+            isInitialLoad = false
         }
 
-        // Expand all authors by default
-        expandedAuthors = Set(authorGroups.map { $0.id })
-
-        isInitialLoad = false
+        // One-time auto-backfill: a date sort is active but some cached
+        // items predate date support (no publishedAt was ever stored).
+        // Force a full re-sync once to populate publish dates; the sync
+        // polling loop re-sorts the list live as dates arrive.
+        if !selectedSort.isAuthorGrouped,
+           !didRequestDateBackfill,
+           let syncService = syncService,
+           !syncService.isSyncing(collectionId: collection.id),
+           persistenceService.countItemsMissingPublishedDate(
+               for: collection.id,
+               type: collection.type ?? "Image"
+           ) > 0 {
+            didRequestDateBackfill = true
+            await refreshContent()
+        }
     }
 
     /// Only syncs if data is stale (>5 minutes since last sync) or never synced
@@ -228,30 +297,10 @@ struct CollectionDetailView: View {
             // Periodically refresh while syncing
             while syncService.isSyncing(collectionId: collection.id) {
                 try? await Task.sleep(for: .seconds(1))
-                await refreshAuthorGroups()
+                await reloadContent()
             }
             // Final refresh when sync completes
-            await refreshAuthorGroups()
-        }
-    }
-
-    private func refreshAuthorGroups() async {
-        guard let persistenceService = persistenceService else { return }
-
-        let newGroups: [CollectionPersistenceService.AuthorGroup]
-        if collection.type == "Image" {
-            newGroups = persistenceService.getImagesGroupedByAuthor(for: collection.id)
-        } else {
-            newGroups = persistenceService.getPostsGroupedByAuthor(for: collection.id)
-        }
-
-        // Preserve expansion state for existing authors, expand new ones
-        let existingIds = Set(authorGroups.map { $0.id })
-        let newAuthorIds = Set(newGroups.map { $0.id }).subtracting(existingIds)
-
-        await MainActor.run {
-            authorGroups = newGroups
-            expandedAuthors.formUnion(newAuthorIds)
+            await reloadContent()
         }
     }
 
@@ -280,7 +329,7 @@ struct CollectionDetailView: View {
                 try await civitaiService.removePostFromCollection(postId: postId, collectionId: collection.id)
                 persistenceService.removePost(postId: postId, fromCollectionId: collection.id)
             }
-            await refreshAuthorGroups()
+            await reloadContent()
         } catch {
             removalError = "Failed to remove from collection: \(error.localizedDescription)"
         }
