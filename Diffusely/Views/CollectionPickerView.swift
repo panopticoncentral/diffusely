@@ -109,6 +109,9 @@ struct CollectionPickerView: View {
                 }
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 420, idealWidth: 480, minHeight: 420, idealHeight: 560)
+        #endif
         .task {
             await loadCollections()
         }

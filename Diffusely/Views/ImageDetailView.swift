@@ -10,7 +10,11 @@ struct ImageDetailView: View {
     @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
     @State private var showingCollectionPicker = false
+    #if os(iOS)
     @State private var showingUserContent = false
+    #else
+    @EnvironmentObject private var feedNavigator: FeedNavigator
+    #endif
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     var body: some View {
@@ -32,7 +36,13 @@ struct ImageDetailView: View {
                     }
 
                     if let user = image.user, let username = user.username {
-                        Button(action: { showingUserContent = true }) {
+                        Button(action: {
+                            #if os(iOS)
+                            showingUserContent = true
+                            #else
+                            feedNavigator.push(user)
+                            #endif
+                        }) {
                             HStack(spacing: 4) {
                                 Text(username)
                                     .font(.headline)
@@ -149,12 +159,6 @@ struct ImageDetailView: View {
             }
             #if os(iOS)
             .fullScreenCover(isPresented: $showingUserContent) {
-                if let user = image.user {
-                    UserContentView(user: user)
-                }
-            }
-            #else
-            .sheet(isPresented: $showingUserContent) {
                 if let user = image.user {
                     UserContentView(user: user)
                 }

@@ -57,34 +57,7 @@ struct UserContentView: View {
 
             // Content Feed
             ScrollView {
-                if isGridLayout {
-                    LazyVGrid(columns: columns, spacing: 2) {
-                        ForEach(civitaiService.images) { image in
-                            ImageFeedItemView(image: image, isGridMode: true)
-                                .onAppear {
-                                    if image.id == civitaiService.images.last?.id {
-                                        Task {
-                                            await loadMore()
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                    .padding(.horizontal, 2)
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(civitaiService.images) { image in
-                            ImageFeedItemView(image: image, isGridMode: false)
-                                .onAppear {
-                                    if image.id == civitaiService.images.last?.id {
-                                        Task {
-                                            await loadMore()
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                }
+                feedContent
 
                 if civitaiService.isLoading {
                     ProgressView()
@@ -135,6 +108,48 @@ struct UserContentView: View {
                 await refreshContent()
             }
         }
+    }
+
+    @ViewBuilder
+    private var feedContent: some View {
+        #if os(macOS)
+        MasonryGrid(
+            items: civitaiService.images,
+            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+        ) { image in
+            ImageFeedItemView(image: image, isGridMode: true, preserveAspectRatio: true)
+                .onAppear {
+                    if image.id == civitaiService.images.last?.id {
+                        Task { await loadMore() }
+                    }
+                }
+        }
+        #else
+        if isGridLayout {
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(civitaiService.images) { image in
+                    ImageFeedItemView(image: image, isGridMode: true)
+                        .onAppear {
+                            if image.id == civitaiService.images.last?.id {
+                                Task { await loadMore() }
+                            }
+                        }
+                }
+            }
+            .padding(.horizontal, 2)
+        } else {
+            LazyVStack(spacing: 0) {
+                ForEach(civitaiService.images) { image in
+                    ImageFeedItemView(image: image, isGridMode: false)
+                        .onAppear {
+                            if image.id == civitaiService.images.last?.id {
+                                Task { await loadMore() }
+                            }
+                        }
+                }
+            }
+        }
+        #endif
     }
 
     @ViewBuilder

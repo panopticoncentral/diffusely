@@ -5,14 +5,26 @@ struct PostsFeedItemView: View {
 
     @State private var currentImageIndex = 0
     @State private var currentHeight: CGFloat = 400
+    #if os(iOS)
     @State private var showingDetail = false
+    #endif
     @State private var showingCollectionPicker = false
+    #if os(iOS)
     @State private var showingUserContent = false
+    #else
+    @EnvironmentObject private var feedNavigator: FeedNavigator
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let username = post.user.username {
-                Button(action: { showingUserContent = true }) {
+                Button(action: {
+                    #if os(iOS)
+                    showingUserContent = true
+                    #else
+                    feedNavigator.push(post.user)
+                    #endif
+                }) {
                     HStack(spacing: 4) {
                         Text(username)
                             .font(.subheadline)
@@ -87,7 +99,11 @@ struct PostsFeedItemView: View {
                         }
                     }
                     .onTapGesture {
+                        #if os(iOS)
                         showingDetail = true
+                        #else
+                        feedNavigator.push(post)
+                        #endif
                     }
 
                     // Ellipsis menu overlay
@@ -128,10 +144,6 @@ struct PostsFeedItemView: View {
         .fullScreenCover(isPresented: $showingDetail) {
             PostDetailView(post: post)
         }
-        #else
-        .sheet(isPresented: $showingDetail) {
-            PostDetailView(post: post)
-        }
         #endif
         .sheet(isPresented: $showingCollectionPicker) {
             CollectionPickerView(itemType: .post(id: post.id)) {
@@ -140,10 +152,6 @@ struct PostsFeedItemView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
-            UserContentView(user: post.user)
-        }
-        #else
-        .sheet(isPresented: $showingUserContent) {
             UserContentView(user: post.user)
         }
         #endif

@@ -87,11 +87,11 @@ struct ContentView: View {
                     UserContentView(user: user)
                 }
             }
-            .environmentObject(feedNavigator)
             .onChange(of: selectedSection) { _, _ in
                 feedNavigator.reset()
             }
         }
+        .environmentObject(feedNavigator)
         #else
         TabView(selection: $selectedTab) {
             ImageFeedView(
