@@ -71,6 +71,8 @@ class CollectionSyncService: ObservableObject {
             retryState: nil
         )
 
+        defer { syncTasks.removeValue(forKey: collection.id) }
+
         do {
             if collection.type == "Image" {
                 try await syncImages(for: collection, persisted: persisted)
