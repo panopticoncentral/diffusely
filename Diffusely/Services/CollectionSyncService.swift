@@ -7,7 +7,13 @@ class CollectionSyncService: ObservableObject {
     struct SyncProgress {
         var itemsFetched: Int
         var isComplete: Bool
-        var lastError: Error?
+        var lastError: Error?        // fatal only — unchanged meaning
+        var retryState: RetryState?  // non-nil ⇒ paused, waiting to retry
+    }
+
+    struct RetryState {
+        let attempt: Int
+        let nextAttemptAt: Date
     }
 
     @Published var syncProgress: [Int: SyncProgress] = [:]  // collectionId -> progress
@@ -57,7 +63,8 @@ class CollectionSyncService: ObservableObject {
         syncProgress[collection.id] = SyncProgress(
             itemsFetched: initialCount,
             isComplete: false,
-            lastError: nil
+            lastError: nil,
+            retryState: nil
         )
 
         do {
