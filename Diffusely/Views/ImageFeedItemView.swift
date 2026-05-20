@@ -4,6 +4,13 @@ struct ImageFeedItemView: View {
     let image: CivitaiImage
     var isGridMode: Bool = false
     var preserveAspectRatio: Bool = false
+    /// Optional override for the image-tap action. When provided, this runs
+    /// INSTEAD of the platform default. Lets a parent view (e.g.
+    /// `CollectionDetailView`) push the detail via a local
+    /// `.navigationDestination(item:)` it owns — needed because the root-level
+    /// `feedNavigator.push` clobbers any intermediate `NavigationLink`-pushed
+    /// view (like CollectionDetailView itself).
+    var onSelectImage: (() -> Void)? = nil
 
     #if os(iOS)
     @State private var showingDetail = false
@@ -20,6 +27,10 @@ struct ImageFeedItemView: View {
     #endif
 
     private func openImageDetail() {
+        if let onSelectImage = onSelectImage {
+            onSelectImage()
+            return
+        }
         #if os(macOS)
         feedNavigator.push(image)
         #else

@@ -23,6 +23,16 @@ struct CollectionDetailView: View {
     @State private var isRemoving = false
     @State private var removalError: String?
 
+    #if os(macOS)
+    // Locally-owned navigation pushes. By attaching `.navigationDestination(item:)`
+    // to this view (rather than at the NavigationStack root in ContentView),
+    // pushes stack on top of CollectionDetailView — back returns here instead
+    // of jumping past us to the collection list. The root-level
+    // `feedNavigator.push` was clobbering this view's stack slot.
+    @State private var pushedImage: CivitaiImage?
+    @State private var pushedPost: CivitaiPost?
+    #endif
+
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var isGridLayout: Bool {
@@ -91,6 +101,17 @@ struct CollectionDetailView: View {
         }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #else
+        // Push detail views ABOVE CollectionDetailView (not at the root of the
+        // NavigationStack). Attaching `.navigationDestination(item:)` here —
+        // not in ContentView — is what makes the back arrow return to the
+        // collection rather than to the collection list.
+        .navigationDestination(item: $pushedImage) { image in
+            ImageDetailView(image: image)
+        }
+        .navigationDestination(item: $pushedPost) { post in
+            PostDetailView(post: post)
+        }
         #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -190,7 +211,9 @@ struct CollectionDetailView: View {
                 images: images,
                 posts: [],
                 collectionType: "Image",
-                onRequestRemove: { pendingRemoval = $0 }
+                onRequestRemove: { pendingRemoval = $0 },
+                onSelectImage: macImageSelector,
+                onSelectPost: macPostSelector
             )
             .padding(.bottom, 8)
         case .flatPosts(let posts):
@@ -198,10 +221,31 @@ struct CollectionDetailView: View {
                 images: [],
                 posts: posts,
                 collectionType: "Post",
-                onRequestRemove: { pendingRemoval = $0 }
+                onRequestRemove: { pendingRemoval = $0 },
+                onSelectImage: macImageSelector,
+                onSelectPost: macPostSelector
             )
             .padding(.bottom, 8)
         }
+    }
+
+    /// Mac-only: set the local @State so the `.navigationDestination(item:)`
+    /// attached to this view pushes the detail above us. Nil on iOS, where
+    /// children fall back to their own `fullScreenCover`.
+    private var macImageSelector: ((CivitaiImage) -> Void)? {
+        #if os(macOS)
+        return { pushedImage = $0 }
+        #else
+        return nil
+        #endif
+    }
+
+    private var macPostSelector: ((CivitaiPost) -> Void)? {
+        #if os(macOS)
+        return { pushedPost = $0 }
+        #else
+        return nil
+        #endif
     }
 
     @ViewBuilder
@@ -214,7 +258,9 @@ struct CollectionDetailView: View {
                             images: group.images,
                             posts: group.posts,
                             collectionType: collection.type ?? "Image",
-                            onRequestRemove: { pendingRemoval = $0 }
+                            onRequestRemove: { pendingRemoval = $0 },
+                            onSelectImage: macImageSelector,
+                            onSelectPost: macPostSelector
                         )
                         .padding(.bottom, 8)
                     }
