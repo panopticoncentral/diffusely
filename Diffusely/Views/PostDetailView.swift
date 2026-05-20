@@ -13,11 +13,26 @@ struct PostDetailView: View {
     #if os(iOS)
     @State private var showingUserContent = false
     #endif
+    #if os(macOS)
+    // Tracks the paged ScrollView's snapped position so it stays in sync with
+    // currentImageIndex when arrow keys drive the change.
+    @State private var scrollPositionID: Int? = 0
+    #endif
+    @FocusState private var carouselFocused: Bool
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     #if os(macOS)
     @EnvironmentObject private var feedNavigator: FeedNavigator
     #endif
+
+    /// The image currently visible in the carousel, or nil if the post is empty
+    /// or the index is somehow out of range (currentImageIndex is unconstrained
+    /// @State and can outlive bounds during async post updates).
+    private var currentImage: CivitaiImage? {
+        post.safeImages.indices.contains(currentImageIndex)
+            ? post.safeImages[currentImageIndex]
+            : nil
+    }
 
     private func openUserContent() {
         #if os(macOS)
@@ -72,6 +87,19 @@ struct PostDetailView: View {
                     Spacer()
 
                     Menu {
+                        if let currentImage = currentImage {
+                            let isSavingCurrent = librarySaveService.isSaving(itemID: currentImage.id)
+                            Button(action: {
+                                librarySaveService.save(currentImage, knownPostTitle: post.title)
+                            }) {
+                                Label(
+                                    isSavingCurrent ? "Saving Image…" : "Save Image to Library",
+                                    systemImage: "square.and.arrow.down"
+                                )
+                            }
+                            .disabled(isSavingCurrent)
+                        }
+
                         Button(action: {
                             librarySaveService.savePost(post)
                         }) {
@@ -104,33 +132,56 @@ struct PostDetailView: View {
                     VStack(spacing: 0) {
                         if !post.safeImages.isEmpty {
                             GeometryReader { geometry in
-                                TabView(selection: $currentImageIndex) {
-                                    ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
-                                        if image.isVideo {
-                                            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                                            CachedVideoPlayer(
-                                                url: image.detailURL,
-                                                autoPlay: true,
-                                                isMuted: false
-                                            )
-                                            .aspectRatio(aspectRatio, contentMode: .fit)
-                                            .detailMediaFrame(maxHeight: geometry.size.height)
-                                            .tag(index)
-                                        } else {
-                                            CachedAsyncImage(
-                                                url: image.detailURL,
-                                                expectedAspectRatio: CGFloat(image.width) / CGFloat(image.height)
-                                            )
-                                                .aspectRatio(contentMode: .fit)
-                                                .detailMediaFrame(maxHeight: geometry.size.height)
-                                                .tag(index)
+                                #if os(macOS)
+                                // macOS gets a paged horizontal ScrollView. The default
+                                // TabView style on macOS renders one tab button per image
+                                // at the top, which clashes with the custom dot indicator
+                                // we render below; ScrollView paging gives a clean
+                                // trackpad/keyboard-driven carousel instead.
+                                ScrollView(.horizontal) {
+                                    LazyHStack(spacing: 0) {
+                                        ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
+                                            mediaCell(for: image, maxHeight: geometry.size.height)
+                                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                                .id(index)
                                         }
                                     }
+                                    .scrollTargetLayout()
                                 }
-                                #if os(iOS)
-                                .tabViewStyle(.page(indexDisplayMode: .never))
-                                #endif
+                                .scrollTargetBehavior(.paging)
+                                .scrollPosition(id: $scrollPositionID)
+                                .scrollIndicators(.hidden)
                                 .frame(width: geometry.size.width, height: geometry.size.height)
+                                .focusable()
+                                .focused($carouselFocused)
+                                .onKeyPress(.leftArrow) { advance(by: -1); return .handled }
+                                .onKeyPress(.rightArrow) { advance(by: 1); return .handled }
+                                .overlay(alignment: .bottom) {
+                                    // Float the indicator inside the carousel
+                                    // (which fills the window on macOS) so it's
+                                    // visible without scrolling. Capsule with a
+                                    // material backing keeps the dots legible
+                                    // over any image content beneath them.
+                                    pageIndicator
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(.thinMaterial, in: Capsule())
+                                        .padding(.bottom, 12)
+                                }
+                                #else
+                                TabView(selection: $currentImageIndex) {
+                                    ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
+                                        mediaCell(for: image, maxHeight: geometry.size.height)
+                                            .tag(index)
+                                    }
+                                }
+                                .tabViewStyle(.page(indexDisplayMode: .never))
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .focusable()
+                                .focused($carouselFocused)
+                                .onKeyPress(.leftArrow) { advance(by: -1); return .handled }
+                                .onKeyPress(.rightArrow) { advance(by: 1); return .handled }
+                                #endif
                             }
                             #if os(macOS)
                             .frame(height: proxy.size.height)
@@ -138,17 +189,16 @@ struct PostDetailView: View {
                             .frame(minHeight: 400, idealHeight: 500)
                             #endif
 
-                            // Image counter
-                            if post.safeImages.count > 1 {
-                                HStack {
-                                    ForEach(0..<post.safeImages.count, id: \.self) { index in
-                                        Circle()
-                                            .fill(currentImageIndex == index ? Color.primary : Color.primary.opacity(0.3))
-                                            .frame(width: 6, height: 6)
-                                    }
-                                }
+                            // iOS: dots sit below the carousel (the carousel has
+                            // a fixed idealHeight so there's room). On macOS the
+                            // carousel claims the full window height, so the
+                            // dots are rendered as an overlay inside the
+                            // ScrollView above instead — they'd otherwise be
+                            // pushed below the visible area.
+                            #if os(iOS)
+                            pageIndicator
                                 .padding(.vertical, 12)
-                            }
+                            #endif
                         }
 
                         // Stats and generation data
@@ -183,13 +233,32 @@ struct PostDetailView: View {
         .navigationBarHidden(true)
         #endif
         .onChange(of: currentImageIndex) { _, newIndex in
+            #if os(macOS)
+            // Keep the paged ScrollView in lockstep when arrow keys (or any
+            // future programmatic change) drive currentImageIndex.
+            if scrollPositionID != newIndex {
+                scrollPositionID = newIndex
+            }
+            #endif
             Task {
                 await loadGenerationData(for: newIndex)
             }
         }
+        #if os(macOS)
+        .onChange(of: scrollPositionID) { _, new in
+            // User-driven swipe/scroll: mirror back into currentImageIndex so
+            // the dot indicator and generation-data load follow the snap.
+            if let new, new != currentImageIndex {
+                currentImageIndex = new
+            }
+        }
+        #endif
         .task {
             MediaCacheService.shared.preloadImages(post.safeImages)
             await loadGenerationData(for: currentImageIndex)
+            // Seed keyboard focus so arrow keys work without a prior click.
+            // The post view fills the screen and has no competing focusables.
+            carouselFocused = true
         }
         .sheet(isPresented: $showingCollectionPicker) {
             CollectionPickerView(itemType: .post(id: post.id)) {
@@ -201,6 +270,57 @@ struct PostDetailView: View {
             UserContentView(user: post.user)
         }
         #endif
+    }
+
+    /// Row of small dots showing which image in the post is currently visible.
+    /// Used inline below the carousel on iOS and floated over the image on
+    /// macOS (where the carousel claims the full window height).
+    @ViewBuilder
+    private var pageIndicator: some View {
+        if post.safeImages.count > 1 {
+            HStack(spacing: 6) {
+                ForEach(0..<post.safeImages.count, id: \.self) { index in
+                    Circle()
+                        .fill(currentImageIndex == index ? Color.primary : Color.primary.opacity(0.3))
+                        .frame(width: 6, height: 6)
+                }
+            }
+        }
+    }
+
+    /// Renders a single carousel cell sized to the available height, picking
+    /// video vs image based on the media type. Extracted so the iOS TabView
+    /// branch and the macOS ScrollView branch can share identical media body.
+    @ViewBuilder
+    private func mediaCell(for image: CivitaiImage, maxHeight: CGFloat) -> some View {
+        let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+        if image.isVideo {
+            CachedVideoPlayer(
+                url: image.detailURL,
+                autoPlay: true,
+                isMuted: false
+            )
+            .aspectRatio(aspectRatio, contentMode: .fit)
+            .detailMediaFrame(maxHeight: maxHeight)
+        } else {
+            CachedAsyncImage(
+                url: image.detailURL,
+                expectedAspectRatio: aspectRatio
+            )
+            .aspectRatio(contentMode: .fit)
+            .detailMediaFrame(maxHeight: maxHeight)
+        }
+    }
+
+    /// Clamped step through the post's images. Used by left/right arrow keys on
+    /// both platforms; withAnimation ensures the iOS TabView page-curl and the
+    /// macOS paged ScrollView both transition smoothly instead of jumping.
+    private func advance(by delta: Int) {
+        let count = post.safeImages.count
+        guard count > 0 else { return }
+        let next = max(0, min(currentImageIndex + delta, count - 1))
+        guard next != currentImageIndex else { return }
+        withAnimation { currentImageIndex = next }
     }
 
     private func loadGenerationData(for index: Int) async {
