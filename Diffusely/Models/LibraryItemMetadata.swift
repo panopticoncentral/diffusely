@@ -23,7 +23,7 @@ struct LibraryAuthor: Codable, Hashable {
 /// cache rebuilt entirely from these files (including ones synced from other
 /// devices), so every field needed to render and re-link an item lives here.
 struct LibraryItemMetadata: Codable, Equatable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3   // was 2
 
     var schemaVersion: Int
     /// Civitai image id. Also the filename stem for both the media and this JSON.
@@ -50,6 +50,10 @@ struct LibraryItemMetadata: Codable, Equatable {
     let author: LibraryAuthor
     let stats: ImageStats?
     let generationData: GenerationData?
+    /// Original Civitai publish date. Nullable: absent in v2 sidecars and
+    /// when the source image is itself missing it. Backfilled on demand
+    /// via `LibraryDateBackfillService`.
+    let publishedAt: Date?
     let savedAt: Date
     let savedByAppVersion: String
 
@@ -59,6 +63,7 @@ struct LibraryItemMetadata: Codable, Equatable {
             && lhs.contentSHA256 == rhs.contentSHA256
             && lhs.mediaFileName == rhs.mediaFileName
             && lhs.savedAt == rhs.savedAt
+            && lhs.publishedAt == rhs.publishedAt
     }
 }
 

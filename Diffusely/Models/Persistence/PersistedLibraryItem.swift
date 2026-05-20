@@ -23,10 +23,20 @@ final class PersistedLibraryItem {
     var height: Int
     var nsfwLevel: Int
     var authorUsername: String?
+    /// Avatar URL denormalized from the sidecar's LibraryAuthor.avatarURL.
+    /// Drives author-grouped section headers; rebuilt by reconcile.
+    var authorAvatarURL: String?
     var sourcePostID: Int?
     var canonicalPageURL: String
     var fileByteSize: Int
     var savedAt: Date
+    /// Original Civitai publish date (denormalized from sidecar). Nullable
+    /// for items predating schema v3; backfilled on demand.
+    var publishedAt: Date?
+    /// First `Checkpoint`-typed resource in the sidecar's generationData.
+    /// Nullable when generation data is missing or has no checkpoint
+    /// (typical for videos and bare uploads).
+    var checkpointName: String?
     var lastAccessedAt: Date
     var downloadStatusRaw: String
 
@@ -38,10 +48,13 @@ final class PersistedLibraryItem {
         height: Int,
         nsfwLevel: Int,
         authorUsername: String?,
+        authorAvatarURL: String?,
         sourcePostID: Int?,
         canonicalPageURL: String,
         fileByteSize: Int,
         savedAt: Date,
+        publishedAt: Date?,
+        checkpointName: String?,
         lastAccessedAt: Date,
         downloadStatus: LibraryDownloadStatus
     ) {
@@ -52,15 +65,22 @@ final class PersistedLibraryItem {
         self.height = height
         self.nsfwLevel = nsfwLevel
         self.authorUsername = authorUsername
+        self.authorAvatarURL = authorAvatarURL
         self.sourcePostID = sourcePostID
         self.canonicalPageURL = canonicalPageURL
         self.fileByteSize = fileByteSize
         self.savedAt = savedAt
+        self.publishedAt = publishedAt
+        self.checkpointName = checkpointName
         self.lastAccessedAt = lastAccessedAt
         self.downloadStatusRaw = downloadStatus.rawValue
     }
 
     convenience init(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
+        let checkpoint = metadata.generationData?
+            .resources?
+            .first(where: { $0.modelType == "Checkpoint" })?
+            .modelName
         self.init(
             itemID: metadata.itemID,
             mediaType: metadata.mediaType.rawValue,
@@ -69,10 +89,13 @@ final class PersistedLibraryItem {
             height: metadata.height,
             nsfwLevel: metadata.nsfwLevel,
             authorUsername: metadata.author.username,
+            authorAvatarURL: metadata.author.avatarURL,
             sourcePostID: metadata.sourcePostID,
             canonicalPageURL: metadata.canonicalPageURL,
             fileByteSize: metadata.fileByteSize,
             savedAt: metadata.savedAt,
+            publishedAt: metadata.publishedAt,
+            checkpointName: checkpoint,
             lastAccessedAt: metadata.savedAt,
             downloadStatus: downloadStatus
         )

@@ -10,7 +10,7 @@
 
 **Source spec:** `docs/superpowers/specs/2026-05-20-library-sort-and-grouping-design.md`
 
-**Test execution:** `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16'` with `-only-testing:DiffuselyTests/<SuiteName>` to scope. Tests use Swift Testing (`#expect`, `@Test`, `@Suite`).
+**Test execution:** `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17'` with `-only-testing:DiffuselyTests/<SuiteName>` to scope. Tests use Swift Testing (`#expect`, `@Test`, `@Suite`).
 
 ---
 
@@ -95,7 +95,7 @@ import Foundation
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibrarySortEnumTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibrarySortEnumTests`
 Expected: build fails — `cannot find type 'LibrarySort' in scope`.
 
 - [ ] **Step 3: Create the enum**
@@ -158,7 +158,7 @@ enum LibrarySort: String, CaseIterable, Identifiable, Equatable {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibrarySortEnumTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibrarySortEnumTests`
 Expected: all 4 tests PASS.
 
 > **Adding the file to the Xcode project:** new `.swift` files under `Diffusely/Models/` and `Diffusely/Services/` and `Diffusely/Views/` are usually picked up automatically by SwiftPM-style folder references. If `xcodebuild` reports "Cannot find ... in scope" *after* the file exists on disk, open the project in Xcode once so it indexes the new file (or add it explicitly to the `Diffusely` and `DiffuselyTests` targets). Same caveat applies to every later task that creates a file.
@@ -268,7 +268,7 @@ private func makeMetadata(
 
 - [ ] **Step 2: Run tests to verify they fail to compile / fail**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryMetadataTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryMetadataTests`
 Expected: build fails — `extra argument 'publishedAt' in call` (helper changed but `LibraryItemMetadata` doesn't have the field yet).
 
 - [ ] **Step 3: Add `publishedAt` to `LibraryItemMetadata` and bump version**
@@ -326,11 +326,11 @@ struct LibraryItemMetadata: Codable, Equatable {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryMetadataTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryMetadataTests`
 Expected: all `LibraryMetadataTests` tests PASS, including the three new ones.
 
 Also re-run the full `LibraryTests` to confirm nothing else broke (the `makeMetadata` signature change touches many callers):
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests`
 Expected: all existing tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -452,7 +452,7 @@ private func gen(checkpointModelType: String? = "Checkpoint",
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/PersistedLibraryItemDenormalizationTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/PersistedLibraryItemDenormalizationTests`
 Expected: build fails — `value of type 'PersistedLibraryItem' has no member 'publishedAt'` (etc.).
 
 - [ ] **Step 3: Add the three columns + denormalization**
@@ -560,11 +560,11 @@ final class PersistedLibraryItem {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/PersistedLibraryItemDenormalizationTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/PersistedLibraryItemDenormalizationTests`
 Expected: all 4 tests PASS.
 
 Run the full library test target to catch fallout from the new init signature:
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests`
 Expected: all tests PASS. (The designated init now has new required parameters; any direct callers of `PersistedLibraryItem(...)` need updating — currently there are none outside `init(metadata:)`. If any appear, update them with `authorAvatarURL: nil, publishedAt: nil, checkpointName: nil`.)
 
 - [ ] **Step 5: Commit**
@@ -634,7 +634,7 @@ import SwiftData
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryIndexIngestTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryIndexIngestTests`
 Expected: FAIL — the existing-row branch of `ingest` does not assign the new fields, so re-ingest leaves them at their initial values.
 
 - [ ] **Step 3: Update the "existing" branch of `ingest`**
@@ -671,7 +671,7 @@ func ingest(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryIndexIngestTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryIndexIngestTests`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -724,12 +724,12 @@ let metadata = LibraryItemMetadata(
 
 - [ ] **Step 3: Build to verify the call compiles**
 
-Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16'`
+Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17'`
 Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 4: Run the full test suite to confirm nothing regressed**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests`
 Expected: all tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -925,7 +925,7 @@ Append to `DiffuselyTests/LibrarySortTests.swift`:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibrarySortServiceTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibrarySortServiceTests`
 Expected: build fails — `cannot find 'LibrarySortService'`.
 
 - [ ] **Step 3: Create the service**
@@ -1141,7 +1141,7 @@ final class LibrarySortService {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibrarySortServiceTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibrarySortServiceTests`
 Expected: all 8 tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -1218,12 +1218,12 @@ func fetchImage(imageId: Int) async throws -> CivitaiImage {
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16'`
+Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17'`
 Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 3: Run the full test suite to confirm no regressions**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests`
 Expected: all tests PASS.
 
 - [ ] **Step 4: Commit**
@@ -1273,7 +1273,7 @@ Append to `LibraryFileWriterTests` in `DiffuselyTests/LibraryTests.swift`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryFileWriterTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryFileWriterTests`
 Expected: FAIL — `value of type 'LibraryFileWriter' has no member 'rewriteMetadata'`.
 
 - [ ] **Step 3: Add the method**
@@ -1309,7 +1309,7 @@ func rewriteMetadata(_ metadata: LibraryItemMetadata) throws {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryFileWriterTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryFileWriterTests`
 Expected: all `LibraryFileWriterTests` PASS.
 
 - [ ] **Step 5: Commit**
@@ -1517,7 +1517,7 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryDateBackfillTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryDateBackfillTests`
 Expected: build fails — `cannot find 'LibraryDateBackfillService'`.
 
 - [ ] **Step 3: Create the service**
@@ -1644,7 +1644,7 @@ func currentDownloadStatus(itemID: Int) -> LibraryDownloadStatus? {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests/LibraryDateBackfillTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests/LibraryDateBackfillTests`
 Expected: all 3 tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -1707,7 +1707,7 @@ struct LibrarySortMenu: View {
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16'`
+Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17'`
 Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 3: Commit**
@@ -1779,7 +1779,7 @@ struct LibraryGroupHeader: View {
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16'`
+Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17'`
 Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 3: Commit**
@@ -2139,12 +2139,12 @@ private final class CivitaiServiceFetchImageAdapter: LibraryDateBackfillService.
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16'`
+Run: `xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17'`
 Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 3: Run the full test suite**
 
-Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:DiffuselyTests`
+Run: `xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:DiffuselyTests`
 Expected: all tests PASS (no regressions; existing `LibraryTests` still good).
 
 - [ ] **Step 4: Manual smoke (run on simulator)**

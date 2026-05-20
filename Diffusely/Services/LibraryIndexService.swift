@@ -19,10 +19,16 @@ actor LibraryIndexService {
             existing.height = metadata.height
             existing.nsfwLevel = metadata.nsfwLevel
             existing.authorUsername = metadata.author.username
+            existing.authorAvatarURL = metadata.author.avatarURL
             existing.sourcePostID = metadata.sourcePostID
             existing.canonicalPageURL = metadata.canonicalPageURL
             existing.fileByteSize = metadata.fileByteSize
             existing.savedAt = metadata.savedAt
+            existing.publishedAt = metadata.publishedAt
+            existing.checkpointName = metadata.generationData?
+                .resources?
+                .first(where: { $0.modelType == "Checkpoint" })?
+                .modelName
             existing.downloadStatus = downloadStatus
         } else {
             modelContext.insert(PersistedLibraryItem(metadata: metadata, downloadStatus: downloadStatus))
@@ -48,6 +54,10 @@ actor LibraryIndexService {
         guard let existing = fetchItem(itemID: itemID) else { return }
         existing.downloadStatus = status
         try? modelContext.save()
+    }
+
+    func currentDownloadStatus(itemID: Int) -> LibraryDownloadStatus? {
+        fetchItem(itemID: itemID)?.downloadStatus
     }
 
     // MARK: - Reconcile (container -> index)

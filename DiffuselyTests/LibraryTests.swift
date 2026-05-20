@@ -10,7 +10,8 @@ private func makeMetadata(
     savedAt: Date = Date(),
     generationData: GenerationData? = nil,
     sourcePostTitle: String? = "My Post",
-    canonicalPostURL: String? = "https://civitai.com/posts/42"
+    canonicalPostURL: String? = "https://civitai.com/posts/42",
+    publishedAt: Date? = nil
 ) -> LibraryItemMetadata {
     LibraryItemMetadata(
         schemaVersion: LibraryItemMetadata.currentSchemaVersion,
@@ -31,6 +32,7 @@ private func makeMetadata(
         author: LibraryAuthor(id: 7, username: "alice", avatarURL: nil),
         stats: nil,
         generationData: generationData,
+        publishedAt: publishedAt,
         savedAt: savedAt,
         savedByAppVersion: "test"
     )
@@ -96,6 +98,48 @@ private func makeMetadata(
         let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
         #expect(decoded.generationData?.meta?.prompt == "a cat")
         #expect(decoded.generationData?.resources?.first?.modelName == "M")
+    }
+
+    @Test func currentSchemaVersionIsThree() {
+        #expect(LibraryItemMetadata.currentSchemaVersion == 3)
+    }
+
+    @Test func roundTripsPublishedAt() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let m = makeMetadata(itemID: 400, publishedAt: date)
+        let data = try LibraryItemMetadata.encoder().encode(m)
+        let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
+        #expect(decoded.publishedAt == date)
+    }
+
+    @Test func decodesV2JSONMissingPublishedAtAsNil() throws {
+        // A v2 sidecar (post fields present, publishedAt absent) must decode
+        // with publishedAt == nil. Adding the new field is a non-breaking
+        // optional addition.
+        let legacy = """
+        {
+            "schemaVersion": 2,
+            "itemID": 700,
+            "sourcePostID": 5,
+            "sourcePostTitle": "Old post",
+            "canonicalPostURL": "https://civitai.com/posts/5",
+            "canonicalPageURL": "https://civitai.com/images/700",
+            "sourceDomain": "civitai.com",
+            "originalCDNURL": "https://image.civitai.com/x/u/original=true/700.jpeg",
+            "mediaType": "image",
+            "mediaFileName": "700.jpeg",
+            "fileByteSize": 10,
+            "contentSHA256": "ab",
+            "width": 1, "height": 1, "nsfwLevel": 1,
+            "author": {},
+            "savedAt": "2026-01-01T00:00:00Z",
+            "savedByAppVersion": "old"
+        }
+        """.data(using: .utf8)!
+        let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: legacy)
+        #expect(decoded.itemID == 700)
+        #expect(decoded.schemaVersion == 2)
+        #expect(decoded.publishedAt == nil)
     }
 }
 
@@ -165,6 +209,30 @@ private func makeMetadata(
             try writer.commit(metadata: makeMetadata(itemID: 201), mediaTempURL: missing)
         }
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("201.json").path) == false)
+    }
+
+    @Test func rewriteMetadataReplacesJSONInPlace() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = LibraryFileWriter(itemsDirectory: dir)
+
+        // Commit an initial item with no publishedAt.
+        let initial = makeMetadata(itemID: 600, publishedAt: nil)
+        let tempMedia = dir.appendingPathComponent("download.tmp")
+        try Data("bytes".utf8).write(to: tempMedia)
+        try writer.commit(metadata: initial, mediaTempURL: tempMedia)
+
+        // Rewrite with a publishedAt.
+        let pub = Date(timeIntervalSince1970: 1_700_000_000)
+        let updated = makeMetadata(itemID: 600, publishedAt: pub)
+        try writer.rewriteMetadata(updated)
+
+        let json = try Data(contentsOf: dir.appendingPathComponent("600.json"))
+        let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: json)
+        #expect(decoded.itemID == 600)
+        #expect(decoded.publishedAt == pub)
+        // Media file untouched.
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("600.jpeg").path))
     }
 }
 

@@ -1,52 +1,177 @@
 import SwiftUI
 import SwiftData
+import Combine
 
 struct LibraryView: View {
     @EnvironmentObject private var store: LibraryStore
-    @Query(sort: \PersistedLibraryItem.savedAt, order: .reverse)
-    private var items: [PersistedLibraryItem]
+    @Environment(\.modelContext) private var modelContext
+
+    @State private var sortService: LibrarySortService?
+    @State private var backfillService: LibraryDateBackfillService?
+    @State private var backfillRemaining: Int = 0
+    @State private var backfillCancellable: AnyCancellable?
+    @State private var content: LibrarySortService.LibrarySortedContent = .flat([])
+    @State private var selectedSort: LibrarySort = .dateNewest
+    @State private var expandedGroups: Set<String> = []
+    @State private var didSeedGroups = false
+    @State private var didRequestDateBackfill = false
 
     var body: some View {
-        content
+        content(for: content)
             .navigationTitle("Library")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .onAppear { store.start() }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    LibrarySortMenu(selectedSort: $selectedSort)
+                }
+            }
+            .task {
+                store.start()
+                initializeServices()
+                reloadContent()
+                await maybeStartBackfill()
+            }
+            .onChange(of: selectedSort) {
+                reloadContent()
+                Task { await maybeStartBackfill() }
+            }
+            .onChange(of: store.itemCount) {
+                reloadContent()
+            }
     }
 
+    // MARK: - Render
+
     @ViewBuilder
-    private var content: some View {
-        if items.isEmpty {
+    private func content(for content: LibrarySortService.LibrarySortedContent) -> some View {
+        if content.isEmpty {
             emptyState
         } else {
             ScrollView {
                 if store.iCloudStatus == .unavailable {
                     localOnlyBanner
                 }
-                MasonryGrid(
-                    items: items,
-                    aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
-                ) { item in
-                    NavigationLink {
-                        LibraryDetailView(itemID: item.itemID)
-                    } label: {
-                        thumbnail(for: item)
-                    }
-                    .buttonStyle(.plain)
+                if backfillRemaining > 0 {
+                    backfillBanner(remaining: backfillRemaining)
                 }
-
-                Text(itemCountText)
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
+                switch content {
+                case .flat(let items):
+                    flatGrid(items: items)
+                    footer(items: items)
+                case .grouped(let groups):
+                    groupedSections(groups: groups)
+                    footer(items: groups.flatMap { $0.items })
+                }
             }
             .background(Color(.systemBackground))
         }
     }
 
-    private var itemCountText: String {
+    @ViewBuilder
+    private func flatGrid(items: [PersistedLibraryItem]) -> some View {
+        MasonryGrid(
+            items: items,
+            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+        ) { item in
+            NavigationLink {
+                LibraryDetailView(itemID: item.itemID)
+            } label: {
+                thumbnail(for: item)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func groupedSections(groups: [LibrarySortService.LibraryGroup]) -> some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ForEach(groups) { group in
+                Section {
+                    if expandedGroups.contains(group.id) {
+                        flatGrid(items: group.items)
+                            .padding(.bottom, 8)
+                    }
+                } header: {
+                    header(for: group)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func header(for group: LibrarySortService.LibraryGroup) -> some View {
+        switch group.kind {
+        case .author(let username, let avatarURL):
+            AuthorSectionHeader(
+                author: CivitaiUser(
+                    id: stableAuthorID(for: username),
+                    username: username,
+                    image: avatarURL
+                ),
+                itemCount: group.items.count,
+                isExpanded: expandedGroups.contains(group.id),
+                onTap: { toggle(group.id) }
+            )
+        case .checkpoint(let name):
+            LibraryGroupHeader(
+                icon: "cube.transparent",
+                title: name,
+                itemCount: group.items.count,
+                isExpanded: expandedGroups.contains(group.id),
+                onTap: { toggle(group.id) }
+            )
+        case .bucket(.videos):
+            LibraryGroupHeader(
+                icon: "film",
+                title: "Videos",
+                itemCount: group.items.count,
+                isExpanded: expandedGroups.contains(group.id),
+                onTap: { toggle(group.id) }
+            )
+        case .bucket(.other):
+            LibraryGroupHeader(
+                icon: "photo.stack",
+                title: "Other",
+                itemCount: group.items.count,
+                isExpanded: expandedGroups.contains(group.id),
+                onTap: { toggle(group.id) }
+            )
+        case .bucket(.unknownAuthor):
+            LibraryGroupHeader(
+                icon: "person.fill.questionmark",
+                title: "Unknown",
+                itemCount: group.items.count,
+                isExpanded: expandedGroups.contains(group.id),
+                onTap: { toggle(group.id) }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func footer(items: [PersistedLibraryItem]) -> some View {
+        Text(itemCountText(for: items))
+            .font(.footnote)
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+    }
+
+    @ViewBuilder
+    private func backfillBanner(remaining: Int) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().scaleEffect(0.7)
+            Text("Backfilling publish dates… \(remaining) remaining")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(8)
+        .background(Color.gray.opacity(0.08))
+    }
+
+    private func itemCountText(for items: [PersistedLibraryItem]) -> String {
         let videos = items.filter { $0.isVideo }.count
         let photos = items.count - videos
         var parts: [String] = []
@@ -118,5 +243,95 @@ struct LibraryView: View {
             .frame(maxWidth: .infinity)
             .padding(8)
             .background(Color.orange.opacity(0.12))
+    }
+
+    // MARK: - Actions
+
+    private func initializeServices() {
+        if sortService == nil {
+            sortService = LibrarySortService(modelContext: modelContext)
+        }
+    }
+
+    private func reloadContent() {
+        guard let sortService else { return }
+        let newContent = sortService.sortedLibraryContent(sort: selectedSort)
+
+        // Expansion state: on the first grouped view, seed all groups as
+        // expanded. On subsequent reloads keep existing state and auto-expand
+        // newly-seen groups.
+        if case .grouped(let groups) = newContent {
+            if !didSeedGroups {
+                expandedGroups = Set(groups.map { $0.id })
+                didSeedGroups = true
+            } else {
+                let existing: Set<String>
+                if case .grouped(let oldGroups) = content {
+                    existing = Set(oldGroups.map { $0.id })
+                } else {
+                    existing = []
+                }
+                let newlySeen = Set(groups.map { $0.id }).subtracting(existing)
+                expandedGroups.formUnion(newlySeen)
+            }
+        }
+
+        content = newContent
+    }
+
+    /// Kick off the publish-date backfill once per `LibraryView` lifetime if
+    /// there are items without `publishedAt`. Triggered on first load and on
+    /// every sort change (cheap guard: `didRequestDateBackfill`).
+    private func maybeStartBackfill() async {
+        guard !didRequestDateBackfill,
+              let sortService else { return }
+        guard sortService.countItemsMissingPublishedDate() > 0 else { return }
+        didRequestDateBackfill = true
+
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else {
+            didRequestDateBackfill = false   // try again later
+            return
+        }
+        let service = LibraryDateBackfillService(
+            indexService: store.indexService,
+            itemsDirectory: dir,
+            fetcher: CivitaiServiceFetchImageAdapter()
+        )
+        backfillService = service
+        backfillCancellable = service.$remaining.sink { value in
+            backfillRemaining = value
+        }
+        await service.runOnce()
+        reloadContent()
+    }
+
+    private func toggle(_ groupID: String) {
+        if expandedGroups.contains(groupID) {
+            expandedGroups.remove(groupID)
+        } else {
+            expandedGroups.insert(groupID)
+        }
+    }
+
+    /// Stable surrogate id for `AuthorSectionHeader`, which expects an
+    /// `Int` user id. Library author rows only carry the username, so we
+    /// hash it into a positive Int for the section header to consume.
+    /// The collection view's `AuthorSectionHeader` only uses this for
+    /// `Identifiable`-style purposes, not for fetching anything.
+    private func stableAuthorID(for username: String) -> Int {
+        var hasher = Hasher()
+        hasher.combine(username)
+        return abs(hasher.finalize() & 0x7FFF_FFFF)
+    }
+}
+
+/// Bridges the live `CivitaiService` to `LibraryDateBackfillService.FetchImageProvider`.
+/// `@MainActor` because `CivitaiService` is itself main-actor isolated; the backfill
+/// service is also main-actor so the hop is free.
+@MainActor
+private final class CivitaiServiceFetchImageAdapter: LibraryDateBackfillService.FetchImageProvider {
+    private let service = CivitaiService()
+    func fetchImage(imageId: Int) async throws -> CivitaiImage {
+        try await service.fetchImage(imageId: imageId)
     }
 }

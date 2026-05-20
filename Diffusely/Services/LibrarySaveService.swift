@@ -78,6 +78,31 @@ struct LibraryFileWriter {
         if let coordinationError { throw coordinationError }
         if let thrown { throw thrown }
     }
+
+    /// Atomically rewrites the sidecar JSON for an already-committed item.
+    /// Used by `LibraryDateBackfillService` to add fields (like `publishedAt`)
+    /// onto old sidecars without touching the media file.
+    func rewriteMetadata(_ metadata: LibraryItemMetadata) throws {
+        let json = try LibraryItemMetadata.encoder().encode(metadata)
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var thrown: Error?
+        let target = metadataURL(forItemID: metadata.itemID)
+
+        coordinator.coordinate(
+            writingItemAt: target,
+            options: .forReplacing,
+            error: &coordinationError
+        ) { destination in
+            do {
+                try json.write(to: destination, options: .atomic)
+            } catch {
+                thrown = error
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        if let thrown { throw thrown }
+    }
 }
 
 /// Orchestrates saving a feed item into the personal library: download the
@@ -217,6 +242,7 @@ final class LibrarySaveService: ObservableObject {
             author: author,
             stats: image.stats,
             generationData: generationData,
+            publishedAt: image.publishedAtDate,
             savedAt: Date(),
             savedByAppVersion: Self.appVersion
         )
