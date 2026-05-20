@@ -11,6 +11,11 @@ struct ImageFeedItemView: View {
     /// `feedNavigator.push` clobbers any intermediate `NavigationLink`-pushed
     /// view (like CollectionDetailView itself).
     var onSelectImage: (() -> Void)? = nil
+    /// When provided, the item gains a right-click / long-press context menu
+    /// that mirrors the ellipsis overlay AND appends "Remove from Collection".
+    /// Set only by collection-grid callers; nil elsewhere keeps the main feed
+    /// and author profile context-menu-free.
+    var onRequestRemove: (() -> Void)? = nil
 
     #if os(iOS)
     @State private var showingDetail = false
@@ -47,7 +52,20 @@ struct ImageFeedItemView: View {
         #endif
     }
 
+    // Opt-in context menu — only the collection grid passes
+    // `onRequestRemove`, which keeps the main feed and author profile
+    // context-menu-free.
+    @ViewBuilder
     var body: some View {
+        if onRequestRemove != nil {
+            bodyCore.contextMenu { menuContent }
+        } else {
+            bodyCore
+        }
+    }
+
+    @ViewBuilder
+    private var bodyCore: some View {
         VStack(alignment: .leading, spacing: 0) {
             if isGridMode {
                 gridContent
@@ -100,37 +118,52 @@ struct ImageFeedItemView: View {
         true
     }
 
+    /// Shared by the ellipsis overlay and the opt-in context menu so the two
+    /// stay in lockstep. The "Remove from Collection" item is appended only
+    /// when `onRequestRemove` is provided (collection-grid context).
+    @ViewBuilder
+    private var menuContent: some View {
+        Button(action: {
+            librarySaveService.save(image)
+        }) {
+            Label(
+                librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
+                systemImage: "square.and.arrow.down"
+            )
+        }
+        .disabled(librarySaveService.isSaving(itemID: image.id))
+
+        if image.postId != nil {
+            Button(action: {
+                Task {
+                    await loadPost()
+                }
+            }) {
+                Label("View Post", systemImage: "photo.stack")
+            }
+        }
+
+        if APIKeyManager.shared.hasAPIKey {
+            Button(action: {
+                showingCollectionPicker = true
+            }) {
+                Label("Add to Collection", systemImage: "folder.badge.plus")
+            }
+        }
+
+        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
+            Divider()
+            Button(role: .destructive, action: onRequestRemove) {
+                Label("Remove from Collection", systemImage: "trash")
+            }
+        }
+    }
+
     @ViewBuilder
     private var ellipsisMenu: some View {
         if hasMenuItems {
             Menu {
-                Button(action: {
-                    librarySaveService.save(image)
-                }) {
-                    Label(
-                        librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
-                        systemImage: "square.and.arrow.down"
-                    )
-                }
-                .disabled(librarySaveService.isSaving(itemID: image.id))
-
-                if image.postId != nil {
-                    Button(action: {
-                        Task {
-                            await loadPost()
-                        }
-                    }) {
-                        Label("View Post", systemImage: "photo.stack")
-                    }
-                }
-
-                if APIKeyManager.shared.hasAPIKey {
-                    Button(action: {
-                        showingCollectionPicker = true
-                    }) {
-                        Label("Add to Collection", systemImage: "folder.badge.plus")
-                    }
-                }
+                menuContent
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.caption)

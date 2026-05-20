@@ -21,17 +21,9 @@ struct AuthorContentGrid: View {
                     image: image,
                     isGridMode: true,
                     preserveAspectRatio: true,
-                    onSelectImage: onSelectImage.map { selector in { selector(image) } }
+                    onSelectImage: onSelectImage.map { selector in { selector(image) } },
+                    onRequestRemove: onRequestRemove.map { rm in { rm(.image(id: image.id)) } }
                 )
-                    .contextMenu {
-                        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
-                            Button(role: .destructive) {
-                                onRequestRemove(.image(id: image.id))
-                            } label: {
-                                Label("Remove from Collection", systemImage: "trash")
-                            }
-                        }
-                    }
             }
         } else {
             MasonryGrid(
@@ -43,17 +35,9 @@ struct AuthorContentGrid: View {
             ) { post in
                 PostThumbnailView(
                     post: post,
-                    onSelect: onSelectPost.map { selector in { selector(post) } }
+                    onSelect: onSelectPost.map { selector in { selector(post) } },
+                    onRequestRemove: onRequestRemove.map { rm in { rm(.post(id: post.id)) } }
                 )
-                    .contextMenu {
-                        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
-                            Button(role: .destructive) {
-                                onRequestRemove(.post(id: post.id))
-                            } label: {
-                                Label("Remove from Collection", systemImage: "trash")
-                            }
-                        }
-                    }
             }
         }
     }
@@ -65,11 +49,27 @@ struct PostThumbnailView: View {
     /// parent uses this to push `PostDetailView` at its own stack level (so
     /// back returns to the collection rather than to the root).
     var onSelect: (() -> Void)? = nil
+    /// When provided, the thumbnail gains a right-click / long-press context
+    /// menu that mirrors `PostDetailView`'s "…" menu AND appends "Remove from
+    /// Collection". Set only by the collection grid.
+    var onRequestRemove: (() -> Void)? = nil
     #if os(iOS)
     @State private var showingDetail = false
     #endif
+    @State private var showingCollectionPicker = false
+    @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
+    @ViewBuilder
     var body: some View {
+        if onRequestRemove != nil {
+            bodyCore.contextMenu { menuContent }
+        } else {
+            bodyCore
+        }
+    }
+
+    @ViewBuilder
+    private var bodyCore: some View {
         ZStack {
             if let firstImage = post.safeImages.first {
                 CachedAsyncImage(url: firstImage.thumbnailURL)
@@ -118,5 +118,39 @@ struct PostThumbnailView: View {
             PostDetailView(post: post)
         }
         #endif
+        .sheet(isPresented: $showingCollectionPicker) {
+            CollectionPickerView(itemType: .post(id: post.id)) {
+                showingCollectionPicker = false
+            }
+        }
+    }
+
+    /// Mirrors `PostDetailView`'s ellipsis menu plus the optional Remove item.
+    @ViewBuilder
+    private var menuContent: some View {
+        Button {
+            librarySaveService.savePost(post)
+        } label: {
+            Label(
+                librarySaveService.isSavingPost(post) ? "Saving Post…" : "Save Post to Library",
+                systemImage: "square.and.arrow.down.on.square"
+            )
+        }
+        .disabled(librarySaveService.isSavingPost(post))
+
+        if APIKeyManager.shared.hasAPIKey {
+            Button {
+                showingCollectionPicker = true
+            } label: {
+                Label("Add to Collection", systemImage: "folder.badge.plus")
+            }
+        }
+
+        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
+            Divider()
+            Button(role: .destructive, action: onRequestRemove) {
+                Label("Remove from Collection", systemImage: "trash")
+            }
+        }
     }
 }
