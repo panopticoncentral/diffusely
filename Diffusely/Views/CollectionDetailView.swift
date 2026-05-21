@@ -300,8 +300,10 @@ struct CollectionDetailView: View {
         await MainActor.run {
             if case .grouped(let groups) = newContent {
                 if isInitialLoad {
-                    // Expand all authors by default on first load
-                    expandedAuthors = Set(groups.map { $0.id })
+                    // Expand all authors by default on first load, minus any the
+                    // user previously collapsed (persisted per collection).
+                    let collapsed = CollapsedAuthorsStore.load(collectionId: collection.id)
+                    expandedAuthors = Set(groups.map { $0.id }).subtracting(collapsed)
                 } else {
                     // Preserve expansion state, expand newly-seen authors
                     let existingIds: Set<Int>
@@ -402,5 +404,14 @@ struct CollectionDetailView: View {
         } else {
             expandedAuthors.insert(authorId)
         }
+        persistCollapsedAuthors()
+    }
+
+    /// Persists the collapsed set (all current authors minus the expanded ones)
+    /// so the user's collapse choices survive leaving and reopening the view.
+    private func persistCollapsedAuthors() {
+        guard case .grouped(let groups) = content else { return }
+        let collapsed = Set(groups.map { $0.id }).subtracting(expandedAuthors)
+        CollapsedAuthorsStore.save(collapsed, collectionId: collection.id)
     }
 }
