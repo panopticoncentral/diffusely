@@ -110,6 +110,10 @@ final class PersistedPostImage {
     }
 
     func toCivitaiImage() -> CivitaiImage {
+        // The author lives on the parent `PersistedPost`; propagate it through
+        // the existing back-reference so callers (notably `LibrarySaveService`)
+        // capture the creator. Same goes for `postId` — without it, "Save to
+        // Library" can't build a canonical post URL.
         CivitaiImage(
             id: id,
             url: url,
@@ -117,8 +121,8 @@ final class PersistedPostImage {
             height: height,
             nsfwLevel: nsfwLevel,
             type: imageType,
-            postId: nil,
-            user: nil,
+            postId: post?.id,
+            user: post?.author?.toCivitaiUser(),
             stats: nil
         )
     }
