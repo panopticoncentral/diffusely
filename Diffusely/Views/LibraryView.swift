@@ -112,7 +112,7 @@ struct LibraryView: View {
                 ),
                 itemCount: group.items.count,
                 isExpanded: expandedGroups.contains(group.id),
-                onTap: { toggle(group.id) }
+                onToggleCollapse: { toggle(group.id) }
             )
         case .checkpoint(let name):
             LibraryGroupHeader(

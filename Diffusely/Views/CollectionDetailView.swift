@@ -31,6 +31,11 @@ struct CollectionDetailView: View {
     // `feedNavigator.push` was clobbering this view's stack slot.
     @State private var pushedImage: CivitaiImage?
     @State private var pushedPost: CivitaiPost?
+    @State private var pushedUser: CivitaiUser?
+    #else
+    // iOS presents the author's content as a full-screen cover, matching
+    // ImageDetailView / PostDetailView.
+    @State private var userForContent: CivitaiUser?
     #endif
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -101,6 +106,9 @@ struct CollectionDetailView: View {
         }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(item: $userForContent) { user in
+            UserContentView(user: user)
+        }
         #else
         // Push detail views ABOVE CollectionDetailView (not at the root of the
         // NavigationStack). Attaching `.navigationDestination(item:)` here —
@@ -111,6 +119,9 @@ struct CollectionDetailView: View {
         }
         .navigationDestination(item: $pushedPost) { post in
             PostDetailView(post: post)
+        }
+        .navigationDestination(item: $pushedUser) { user in
+            UserContentView(user: user)
         }
         #endif
         .toolbar {
@@ -248,6 +259,17 @@ struct CollectionDetailView: View {
         #endif
     }
 
+    /// Drill into an author's content: a local push on macOS (kept above this
+    /// view's stack slot, like the image/post selectors) and a full-screen
+    /// cover on iOS.
+    private func selectAuthor(_ author: CivitaiUser) {
+        #if os(macOS)
+        pushedUser = author
+        #else
+        userForContent = author
+        #endif
+    }
+
     @ViewBuilder
     private func authorGroupedContent(_ groups: [CollectionPersistenceService.AuthorGroup]) -> some View {
         LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -269,7 +291,8 @@ struct CollectionDetailView: View {
                         author: group.author,
                         itemCount: group.itemCount,
                         isExpanded: expandedAuthors.contains(group.id),
-                        onTap: { toggleAuthor(group.id) }
+                        onSelectAuthor: { selectAuthor(group.author) },
+                        onToggleCollapse: { toggleAuthor(group.id) }
                     )
                 }
             }

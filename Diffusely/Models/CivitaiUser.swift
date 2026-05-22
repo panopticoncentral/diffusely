@@ -1,4 +1,4 @@
-struct CivitaiUser: Codable, Hashable {
+struct CivitaiUser: Codable, Hashable, Identifiable {
     let id: Int
     let username: String?
     let image: String?
