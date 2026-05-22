@@ -22,7 +22,10 @@ struct PostDetailView: View {
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     #if os(macOS)
-    @EnvironmentObject private var feedNavigator: FeedNavigator
+    // Push the author's content above THIS view's stack slot (not at the
+    // NavigationStack root via feedNavigator) so back returns to the post
+    // rather than collapsing past it to the collection list.
+    @State private var pushedUser: CivitaiUser?
     #endif
 
     /// The image currently visible in the carousel, or nil if the post is empty
@@ -36,7 +39,7 @@ struct PostDetailView: View {
 
     private func openUserContent() {
         #if os(macOS)
-        feedNavigator.push(post.user)
+        pushedUser = post.user
         #else
         showingUserContent = true
         #endif
@@ -268,6 +271,10 @@ struct PostDetailView: View {
         #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
             UserContentView(user: post.user)
+        }
+        #else
+        .navigationDestination(item: $pushedUser) { user in
+            UserContentView(user: user)
         }
         #endif
     }

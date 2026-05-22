@@ -13,7 +13,10 @@ struct ImageDetailView: View {
     #if os(iOS)
     @State private var showingUserContent = false
     #else
-    @EnvironmentObject private var feedNavigator: FeedNavigator
+    // Push the author's content above THIS view's stack slot rather than at the
+    // NavigationStack root, so back returns to the image — not to the collection
+    // list it was opened from.
+    @State private var pushedUser: CivitaiUser?
     #endif
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
@@ -40,7 +43,7 @@ struct ImageDetailView: View {
                             #if os(iOS)
                             showingUserContent = true
                             #else
-                            feedNavigator.push(user)
+                            pushedUser = user
                             #endif
                         }) {
                             HStack(spacing: 4) {
@@ -152,6 +155,11 @@ struct ImageDetailView: View {
             .navigationDestination(item: $navigateToPost) { post in
                 PostDetailView(post: post)
             }
+            #if os(macOS)
+            .navigationDestination(item: $pushedUser) { user in
+                UserContentView(user: user)
+            }
+            #endif
             .sheet(isPresented: $showingCollectionPicker) {
                 CollectionPickerView(itemType: .image(id: image.id)) {
                     showingCollectionPicker = false
