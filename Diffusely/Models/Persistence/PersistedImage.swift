@@ -3,7 +3,13 @@ import SwiftData
 
 @Model
 final class PersistedImage {
-    @Attribute(.unique) var id: Int
+    // Deliberately NOT `@Attribute(.unique)`: an image can belong to several
+    // collections on Civitai, and each collection caches its own row (the
+    // `collection` reference below is to-one). A global unique constraint would
+    // collapse those into a single row that could only point at one collection,
+    // making a multi-collection image vanish from every collection but the last
+    // one synced.
+    var id: Int
     var url: String
     var width: Int
     var height: Int

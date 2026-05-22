@@ -3,7 +3,13 @@ import SwiftData
 
 @Model
 final class PersistedPost {
-    @Attribute(.unique) var id: Int
+    // Deliberately NOT `@Attribute(.unique)`: a post can belong to several
+    // collections on Civitai, and each collection caches its own row (the
+    // `collection` reference below is to-one). A global unique constraint would
+    // collapse those into a single row that could only point at one collection,
+    // making a multi-collection post vanish from every collection but the last
+    // one synced.
+    var id: Int
     var nsfwLevel: Int
     var title: String?
     var imageCount: Int
@@ -80,7 +86,9 @@ final class PersistedPost {
 
 @Model
 final class PersistedPostImage {
-    @Attribute(.unique) var id: Int
+    // Not unique: its parent `PersistedPost` is duplicated per collection (see
+    // PersistedPost.id), so the same image id recurs once per copy.
+    var id: Int
     var url: String
     var width: Int
     var height: Int

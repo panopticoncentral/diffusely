@@ -54,7 +54,7 @@ struct DiffuselyApp: App {
         // CRITICAL: opt out of CloudKit. `cloudKitDatabase` defaults to
         // `.automatic`, which - because the app now ships the iCloud entitlement -
         // would make SwiftData attempt CloudKit mirroring. That fails the schema
-        // (CloudKit forbids `@Attribute(.unique)`, which every model here uses).
+        // (CloudKit forbids `@Attribute(.unique)`, which several models here use).
         // iCloud sync is handled by the iCloud Drive document container, not
         // SwiftData; this store is an intentionally local, disposable index.
         let modelConfiguration = ModelConfiguration(
