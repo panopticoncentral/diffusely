@@ -8,6 +8,7 @@ struct CollectionsView: View {
     @State private var persistenceService: CollectionPersistenceService?
     @State private var listSyncService: CollectionListSyncService?
     @State private var showingSettings = false
+    @State private var showingCreateCollection = false
     @State private var collections: [CivitaiCollection] = []  // from local cache
     @State private var previewImages: [Int: CivitaiImage] = [:]  // collectionId -> preview image
 
@@ -147,8 +148,22 @@ struct CollectionsView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
+            .sheet(isPresented: $showingCreateCollection) {
+                CreateCollectionView { _ in
+                    forceListRefresh()
+                }
+            }
             .toolbar {
                 if apiKeyManager.hasAPIKey {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingCreateCollection = true
+                        } label: {
+                            Label("New Collection", systemImage: "plus")
+                        }
+                        .keyboardShortcut("n")  // ⌘N
+                        .help("Create a new collection")
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             forceListRefresh()

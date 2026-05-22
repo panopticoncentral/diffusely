@@ -619,6 +619,95 @@ class CivitaiService: ObservableObject {
         return tRPCResponse[0].result.data.json.collection
     }
 
+    /// Builds the tRPC request body for `collection.upsert`. Pure/testable.
+    /// A trimmed-empty or nil `description` is omitted from the payload.
+    nonisolated static func makeUpsertBody(
+        name: String,
+        type: String,
+        description: String?,
+        read: String
+    ) -> [String: Any] {
+        var json: [String: Any] = [
+            "name": name,
+            "type": type,
+            "read": read
+        ]
+        if let description = description,
+           !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            json["description"] = description
+        }
+        return ["0": ["json": json]]
+    }
+
+    /// Creates a new collection via `collection.upsert`. Returns the new
+    /// collection's id. Requires an API key.
+    /// - Parameters:
+    ///   - type: "Image" or "Post".
+    ///   - read: "Private", "Public", or "Unlisted".
+    func createCollection(
+        name: String,
+        type: String,
+        description: String?,
+        read: String
+    ) async throws -> Int {
+        let url = URL(string: "\(baseURL)/collection.upsert?batch=1")!
+
+        let bodyData = try JSONSerialization.data(
+            withJSONObject: CivitaiService.makeUpsertBody(
+                name: name, type: type, description: description, read: read))
+
+        print("Creating collection: \(name)")
+        print("Request URL: \(url)")
+        if let bodyString = String(data: bodyData, encoding: .utf8) {
+            print("Request body: \(bodyString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        guard let apiKey = APIKeyManager.shared.apiKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Response body: \(responseString)")
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+
+        print("Response status code: \(httpResponse.statusCode)")
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+
+        struct UpsertResponse: Decodable {
+            let result: UpsertResult
+        }
+        struct UpsertResult: Decodable {
+            let data: UpsertData
+        }
+        struct UpsertData: Decodable {
+            let json: UpsertCollection
+        }
+        struct UpsertCollection: Decodable {
+            let id: Int
+        }
+
+        let decoded = try JSONDecoder().decode([UpsertResponse].self, from: data)
+        guard let id = decoded.first?.result.data.json.id else {
+            throw URLError(.cannotParseResponse)
+        }
+        return id
+    }
+
     func addImageToCollection(imageId: Int, collectionId: Int) async throws {
         let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
 

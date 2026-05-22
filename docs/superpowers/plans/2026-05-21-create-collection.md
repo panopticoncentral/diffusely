@@ -16,8 +16,9 @@
 - **Build/test command (macOS, fastest — no simulator):**
   ```bash
   xcodebuild -scheme Diffusely -destination 'platform=macOS' build
-  xcodebuild -scheme Diffusely -destination 'platform=macOS' test
+  xcodebuild -scheme Diffusely -destination 'platform=macOS' -only-testing:DiffuselyTests test
   ```
+  **Always pass `-only-testing:DiffuselyTests` when testing.** This runs only the unit-test bundle and skips the `DiffuselyUITests` UI-test target, which would otherwise launch the app via XCUITest and show the macOS "Automation running" overlay. The `CreateCollectionTests` added by this plan are plain unit tests and need nothing from the UI target.
   If macOS signing/SDK is unavailable, substitute an iOS Simulator destination, e.g. `-destination 'platform=iOS Simulator,name=iPhone 16'`.
 - The pattern for authenticated write requests is `addImageToCollection` in `Diffusely/Services/CivitaiService.swift:622`. The pattern for parsing a tRPC batch response is `getAllUserCollections` in the same file (around line 482).
 - Test harness for stubbed network: `StubURLProtocol` + `CivitaiService(session:)` in `DiffuselyTests/CollectionListFetchTests.swift`.
