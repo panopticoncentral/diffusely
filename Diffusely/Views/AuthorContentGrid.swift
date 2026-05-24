@@ -4,7 +4,9 @@ struct AuthorContentGrid: View {
     let images: [CivitaiImage]
     let posts: [CivitaiPost]
     let collectionType: String
-    var onRequestRemove: ((CollectionItemType) -> Void)? = nil
+    /// When true, each thumbnail shows a context menu. Set only by the
+    /// collection grid so the main feed and author profile remain clean.
+    var showsItemContextMenus: Bool = false
     /// Provided by the parent on Mac so taps push at the parent's level rather
     /// than at the root (where `feedNavigator.push` would clobber the parent's
     /// own stack entry). Nil on iOS — the children fall back to fullScreenCover.
@@ -22,7 +24,7 @@ struct AuthorContentGrid: View {
                     isGridMode: true,
                     preserveAspectRatio: true,
                     onSelectImage: onSelectImage.map { selector in { selector(image) } },
-                    onRequestRemove: onRequestRemove.map { rm in { rm(.image(id: image.id)) } }
+                    showsContextMenu: showsItemContextMenus
                 )
             }
         } else {
@@ -36,7 +38,7 @@ struct AuthorContentGrid: View {
                 PostThumbnailView(
                     post: post,
                     onSelect: onSelectPost.map { selector in { selector(post) } },
-                    onRequestRemove: onRequestRemove.map { rm in { rm(.post(id: post.id)) } }
+                    showsContextMenu: showsItemContextMenus
                 )
             }
         }
@@ -49,10 +51,10 @@ struct PostThumbnailView: View {
     /// parent uses this to push `PostDetailView` at its own stack level (so
     /// back returns to the collection rather than to the root).
     var onSelect: (() -> Void)? = nil
-    /// When provided, the thumbnail gains a right-click / long-press context
-    /// menu that mirrors `PostDetailView`'s "…" menu AND appends "Remove from
-    /// Collection". Set only by the collection grid.
-    var onRequestRemove: (() -> Void)? = nil
+    /// When true, the thumbnail gains a right-click / long-press context
+    /// menu that mirrors `PostDetailView`'s "…" menu. Set only by the
+    /// collection grid.
+    var showsContextMenu: Bool = false
     #if os(iOS)
     @State private var showingDetail = false
     #endif
@@ -61,7 +63,7 @@ struct PostThumbnailView: View {
 
     @ViewBuilder
     var body: some View {
-        if onRequestRemove != nil {
+        if showsContextMenu {
             bodyCore.contextMenu { menuContent }
         } else {
             bodyCore
@@ -119,7 +121,7 @@ struct PostThumbnailView: View {
         }
         #endif
         .sheet(isPresented: $showingCollectionPicker) {
-            CollectionPickerView(itemType: .post(id: post.id)) {
+            ManageCollectionsSheet(target: .post(post)) {
                 showingCollectionPicker = false
             }
         }
@@ -142,15 +144,9 @@ struct PostThumbnailView: View {
             Button {
                 showingCollectionPicker = true
             } label: {
-                Label("Add to Collection", systemImage: "folder.badge.plus")
+                Label("Manage Collections", systemImage: "folder")
             }
         }
 
-        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
-            Divider()
-            Button(role: .destructive, action: onRequestRemove) {
-                Label("Remove from Collection", systemImage: "trash")
-            }
-        }
     }
 }

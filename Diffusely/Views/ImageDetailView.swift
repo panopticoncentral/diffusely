@@ -85,7 +85,7 @@ struct ImageDetailView: View {
                             Button(action: {
                                 showingCollectionPicker = true
                             }) {
-                                Label("Add to Collection", systemImage: "folder.badge.plus")
+                                Label("Manage Collections", systemImage: "folder")
                             }
                         }
                     } label: {
@@ -161,7 +161,7 @@ struct ImageDetailView: View {
             }
             #endif
             .sheet(isPresented: $showingCollectionPicker) {
-                CollectionPickerView(itemType: .image(id: image.id)) {
+                ManageCollectionsSheet(target: .image(image)) {
                     showingCollectionPicker = false
                 }
             }

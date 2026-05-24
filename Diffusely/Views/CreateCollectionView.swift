@@ -2,12 +2,29 @@ import SwiftUI
 
 /// Sheet for creating a new Image ("Photo / Video") or Post collection.
 struct CreateCollectionView: View {
+    /// If non-nil, the type picker is pre-selected to this value. Pass the
+    /// `ManageCollectionsTarget.collectionType` when creating a collection
+    /// of a specific type from the manage sheet.
+    let initialType: String?
     /// Called after a collection is successfully created (passes the new id).
     /// The parent uses this to refresh its list.
     let onCreated: (Int) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var civitaiService = CivitaiService()
+
+    init(initialType: String? = nil, onCreated: @escaping (Int) -> Void) {
+        self.initialType = initialType
+        self.onCreated = onCreated
+        let resolved: CollectionTypeChoice = {
+            switch initialType {
+            case "Post":  return .post
+            case "Image": return .image
+            default:      return .image
+            }
+        }()
+        _type = State(initialValue: resolved)
+    }
 
     private enum CollectionTypeChoice: String, CaseIterable, Identifiable {
         case image = "Image"

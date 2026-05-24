@@ -146,7 +146,7 @@ struct PostsFeedItemView: View {
         }
         #endif
         .sheet(isPresented: $showingCollectionPicker) {
-            CollectionPickerView(itemType: .post(id: post.id)) {
+            ManageCollectionsSheet(target: .post(post)) {
                 showingCollectionPicker = false
             }
         }
@@ -164,7 +164,7 @@ struct PostsFeedItemView: View {
                 Button(action: {
                     showingCollectionPicker = true
                 }) {
-                    Label("Add to Collection", systemImage: "folder.badge.plus")
+                    Label("Manage Collections", systemImage: "folder")
                 }
             } label: {
                 Image(systemName: "ellipsis")

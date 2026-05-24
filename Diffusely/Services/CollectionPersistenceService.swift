@@ -129,6 +129,69 @@ class CollectionPersistenceService: ObservableObject {
         try? modelContext.save()
     }
 
+    // MARK: - Optimistic Stubs (write-through for ManageCollectionsSheet)
+
+    /// Inserts a `PersistedImage` row tying `image` to the collection if one
+    /// does not already exist. Stamps it with the collection's current
+    /// `syncGeneration` so a concurrent mark-and-sweep won't evict it.
+    /// Idempotent: a second call for the same (imageId, collectionId) is a no-op.
+    func addImageStub(_ image: CivitaiImage, toCollectionId collectionId: Int) {
+        guard let collection = getPersistedCollection(id: collectionId) else { return }
+        let imageId = image.id
+        let descriptor = FetchDescriptor<PersistedImage>(
+            predicate: #Predicate { $0.id == imageId && $0.collection?.id == collectionId }
+        )
+        if let existing = try? modelContext.fetch(descriptor).first {
+            // Re-stamp so a concurrent in-flight sync doesn't sweep a row
+            // the user just optimistically re-added.
+            existing.lastSeenGeneration = collection.syncGeneration
+            try? modelContext.save()
+            return
+        }
+
+        let persisted = PersistedImage(from: image)
+        persisted.collection = collection
+        persisted.lastSeenGeneration = collection.syncGeneration
+        if let user = image.user {
+            persisted.author = getOrCreateAuthor(from: user)
+        }
+        modelContext.insert(persisted)
+        collection.images.append(persisted)
+        try? modelContext.save()
+    }
+
+    /// Inserts a `PersistedPost` row (plus child `PersistedPostImage` rows
+    /// from `post.safeImages`) tying `post` to the collection if one does not
+    /// already exist. Stamps with current `syncGeneration`. Idempotent.
+    func addPostStub(_ post: CivitaiPost, toCollectionId collectionId: Int) {
+        guard let collection = getPersistedCollection(id: collectionId) else { return }
+        let postId = post.id
+        let descriptor = FetchDescriptor<PersistedPost>(
+            predicate: #Predicate { $0.id == postId && $0.collection?.id == collectionId }
+        )
+        if let existing = try? modelContext.fetch(descriptor).first {
+            existing.lastSeenGeneration = collection.syncGeneration
+            try? modelContext.save()
+            return
+        }
+
+        let persisted = PersistedPost(from: post)
+        persisted.collection = collection
+        persisted.lastSeenGeneration = collection.syncGeneration
+        persisted.author = getOrCreateAuthor(from: post.user)
+
+        for image in post.safeImages {
+            let postImage = PersistedPostImage(from: image)
+            postImage.post = persisted
+            modelContext.insert(postImage)
+            persisted.images.append(postImage)
+        }
+
+        modelContext.insert(persisted)
+        collection.posts.append(persisted)
+        try? modelContext.save()
+    }
+
     // MARK: - Removal
 
     func removeImage(imageId: Int, fromCollectionId collectionId: Int) {

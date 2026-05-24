@@ -11,11 +11,10 @@ struct ImageFeedItemView: View {
     /// `feedNavigator.push` clobbers any intermediate `NavigationLink`-pushed
     /// view (like CollectionDetailView itself).
     var onSelectImage: (() -> Void)? = nil
-    /// When provided, the item gains a right-click / long-press context menu
-    /// that mirrors the ellipsis overlay AND appends "Remove from Collection".
-    /// Set only by collection-grid callers; nil elsewhere keeps the main feed
-    /// and author profile context-menu-free.
-    var onRequestRemove: (() -> Void)? = nil
+    /// When true, the item gains a right-click / long-press context menu
+    /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
+    /// false elsewhere keeps the main feed and author profile context-menu-free.
+    var showsContextMenu: Bool = false
 
     #if os(iOS)
     @State private var showingDetail = false
@@ -52,12 +51,12 @@ struct ImageFeedItemView: View {
         #endif
     }
 
-    // Opt-in context menu — only the collection grid passes
-    // `onRequestRemove`, which keeps the main feed and author profile
+    // Opt-in context menu — only the collection grid sets
+    // `showsContextMenu`, which keeps the main feed and author profile
     // context-menu-free.
     @ViewBuilder
     var body: some View {
-        if onRequestRemove != nil {
+        if showsContextMenu {
             bodyCore.contextMenu { menuContent }
         } else {
             bodyCore
@@ -83,7 +82,7 @@ struct ImageFeedItemView: View {
         }
         #endif
         .sheet(isPresented: $showingCollectionPicker) {
-            CollectionPickerView(itemType: .image(id: image.id)) {
+            ManageCollectionsSheet(target: .image(image)) {
                 showingCollectionPicker = false
             }
         }
@@ -119,8 +118,7 @@ struct ImageFeedItemView: View {
     }
 
     /// Shared by the ellipsis overlay and the opt-in context menu so the two
-    /// stay in lockstep. The "Remove from Collection" item is appended only
-    /// when `onRequestRemove` is provided (collection-grid context).
+    /// stay in lockstep.
     @ViewBuilder
     private var menuContent: some View {
         Button(action: {
@@ -147,16 +145,10 @@ struct ImageFeedItemView: View {
             Button(action: {
                 showingCollectionPicker = true
             }) {
-                Label("Add to Collection", systemImage: "folder.badge.plus")
+                Label("Manage Collections", systemImage: "folder")
             }
         }
 
-        if APIKeyManager.shared.hasAPIKey, let onRequestRemove {
-            Divider()
-            Button(role: .destructive, action: onRequestRemove) {
-                Label("Remove from Collection", systemImage: "trash")
-            }
-        }
     }
 
     @ViewBuilder

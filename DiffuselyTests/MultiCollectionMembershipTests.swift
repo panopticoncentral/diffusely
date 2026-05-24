@@ -88,4 +88,60 @@ import SwiftData
         #expect(!collA.images.contains { $0.id == 9 })
         #expect(collB.images.contains { $0.id == 9 })
     }
+
+    // MARK: - Optimistic add-stub tests (used by ManageCollectionsSheet)
+
+    @Test func addImageStubInsertsRowStampedWithCollectionGeneration() throws {
+        let svc = CollectionPersistenceService(modelContext: try makeContext())
+        let coll = svc.getOrCreateCollection(from: apiCollection(id: 11, type: "Image"))
+        coll.syncGeneration = 7  // Simulate a collection that has been synced before.
+
+        svc.addImageStub(stubImage(id: 100), toCollectionId: coll.id)
+
+        #expect(coll.images.count == 1)
+        #expect(coll.images.first?.id == 100)
+        #expect(coll.images.first?.lastSeenGeneration == 7)
+    }
+
+    @Test func addImageStubIsIdempotent() throws {
+        let svc = CollectionPersistenceService(modelContext: try makeContext())
+        let coll = svc.getOrCreateCollection(from: apiCollection(id: 12, type: "Image"))
+        let image = stubImage(id: 101)
+
+        svc.addImageStub(image, toCollectionId: coll.id)
+        svc.addImageStub(image, toCollectionId: coll.id)
+
+        #expect(coll.images.filter { $0.id == 101 }.count == 1)
+    }
+
+    @Test func addPostStubMaterializesChildImages() throws {
+        let svc = CollectionPersistenceService(modelContext: try makeContext())
+        let coll = svc.getOrCreateCollection(from: apiCollection(id: 13, type: "Post"))
+        coll.syncGeneration = 3
+
+        svc.addPostStub(stubPost(id: 200, imageId: 201), toCollectionId: coll.id)
+
+        let inserted = coll.posts.first { $0.id == 200 }
+        #expect(inserted != nil)
+        #expect(inserted?.lastSeenGeneration == 3)
+        #expect(inserted?.images.count == 1)
+        #expect(inserted?.images.first?.id == 201)
+    }
+
+    @Test func addImageStubReStampsGenerationOnExistingRow() throws {
+        let svc = CollectionPersistenceService(modelContext: try makeContext())
+        let coll = svc.getOrCreateCollection(from: apiCollection(id: 14, type: "Image"))
+        let image = stubImage(id: 102)
+
+        coll.syncGeneration = 1
+        svc.addImageStub(image, toCollectionId: coll.id)
+        #expect(coll.images.first?.lastSeenGeneration == 1)
+
+        // Simulate a sync bump while the row already exists, then re-add.
+        coll.syncGeneration = 5
+        svc.addImageStub(image, toCollectionId: coll.id)
+
+        #expect(coll.images.filter { $0.id == 102 }.count == 1)  // still idempotent
+        #expect(coll.images.first?.lastSeenGeneration == 5)      // re-stamped
+    }
 }

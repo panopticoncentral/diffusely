@@ -708,109 +708,88 @@ class CivitaiService: ObservableObject {
         return id
     }
 
-    func addImageToCollection(imageId: Int, collectionId: Int) async throws {
+    /// Adds the target item to `adding` collections and removes it from
+    /// `removing` collections in a single `collection.saveItem` request.
+    /// Either array may be empty; both arrays empty is a no-op but still sends
+    /// the request (caller should avoid this).
+    func saveItem(
+        target: ManageCollectionsTarget,
+        adding: [Int],
+        removing: [Int]
+    ) async throws {
         let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
 
-        let inputParams: [String: Any] = [
-            "imageId": imageId,
-            "type": "Image",
-            "collections": [
-                ["collectionId": collectionId]
-            ]
+        var inputParams: [String: Any] = [
+            "type": target.collectionType,
+            "collections": adding.map { ["collectionId": $0] },
+            "removeFromCollectionIds": removing
         ]
-
-        let tRPCInput = [
-            "0": [
-                "json": inputParams
-            ]
-        ]
-
-        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
-
-        print("Adding image \(imageId) to collection \(collectionId)")
-        print("Request URL: \(url)")
-        if let bodyString = String(data: bodyData, encoding: .utf8) {
-            print("Request body: \(bodyString)")
+        switch target {
+        case .image(let image): inputParams["imageId"] = image.id
+        case .post(let post):   inputParams["postId"] = post.id
         }
+
+        let tRPCInput = ["0": ["json": inputParams]]
+        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = bodyData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        // API key is required for this endpoint
         guard let apiKey = APIKeyManager.shared.apiKey else {
             throw URLError(.userAuthenticationRequired)
         }
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await session.data(for: request)
-
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Response body: \(responseString)")
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-
-        print("Response status code: \(httpResponse.statusCode)")
-
-        guard (200...299).contains(httpResponse.statusCode) else {
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
     }
 
-    func removeImageFromCollection(imageId: Int, collectionId: Int) async throws {
-        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
+    /// Returns the collection ids that contain the given image or post,
+    /// filtered to collections the authenticated user can write to.
+    /// Source of truth for the "Manage Collections" sheet's membership state.
+    func getUserCollectionItemsByItem(target: ManageCollectionsTarget) async throws -> [Int] {
+        var components = URLComponents(string: "\(baseURL)/collection.getUserCollectionItemsByItem")!
 
-        let inputParams: [String: Any] = [
-            "imageId": imageId,
-            "type": "Image",
-            "collections": [],
-            "removeFromCollectionIds": [collectionId]
+        var inputParams: [String: Any] = [
+            "type": target.collectionType,
+            "contributingOnly": true
         ]
-
-        let tRPCInput = [
-            "0": [
-                "json": inputParams
-            ]
-        ]
-
-        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
-
-        print("Removing image \(imageId) from collection \(collectionId)")
-        print("Request URL: \(url)")
-        if let bodyString = String(data: bodyData, encoding: .utf8) {
-            print("Request body: \(bodyString)")
+        switch target {
+        case .image(let image): inputParams["imageId"] = image.id
+        case .post(let post):   inputParams["postId"] = post.id
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = bodyData
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let tRPCInput = ["0": ["json": inputParams]]
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
 
-        // API key is required for this endpoint
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else { throw URLError(.badURL) }
+
+        var request = URLRequest(url: url)
         guard let apiKey = APIKeyManager.shared.apiKey else {
             throw URLError(.userAuthenticationRequired)
         }
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, _) = try await session.data(for: request)
 
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Response body: \(responseString)")
+        struct Envelope: Decodable {
+            let result: ResultBox
+            struct ResultBox: Decodable { let data: DataBox }
+            struct DataBox: Decodable { let json: [Item] }
+            struct Item: Decodable { let collectionId: Int }
         }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-
-        print("Response status code: \(httpResponse.statusCode)")
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
+        let decoded = try JSONDecoder().decode([Envelope].self, from: data)
+        return decoded[0].result.data.json.map(\.collectionId)
     }
 
     func getUserImageCollections() async throws -> [CivitaiCollection] {
@@ -862,109 +841,6 @@ class CivitaiService: ObservableObject {
 
         let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
         return tRPCResponse[0].result.data.json
-    }
-
-    func addPostToCollection(postId: Int, collectionId: Int) async throws {
-        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
-
-        let inputParams: [String: Any] = [
-            "postId": postId,
-            "type": "Post",
-            "collections": [
-                ["collectionId": collectionId]
-            ]
-        ]
-
-        let tRPCInput = [
-            "0": [
-                "json": inputParams
-            ]
-        ]
-
-        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
-
-        print("Adding post \(postId) to collection \(collectionId)")
-        print("Request URL: \(url)")
-        if let bodyString = String(data: bodyData, encoding: .utf8) {
-            print("Request body: \(bodyString)")
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = bodyData
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        guard let apiKey = APIKeyManager.shared.apiKey else {
-            throw URLError(.userAuthenticationRequired)
-        }
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await session.data(for: request)
-
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Response body: \(responseString)")
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-
-        print("Response status code: \(httpResponse.statusCode)")
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
-    }
-
-    func removePostFromCollection(postId: Int, collectionId: Int) async throws {
-        let url = URL(string: "\(baseURL)/collection.saveItem?batch=1")!
-
-        let inputParams: [String: Any] = [
-            "postId": postId,
-            "type": "Post",
-            "collections": [],
-            "removeFromCollectionIds": [collectionId]
-        ]
-
-        let tRPCInput = [
-            "0": [
-                "json": inputParams
-            ]
-        ]
-
-        let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
-
-        print("Removing post \(postId) from collection \(collectionId)")
-        print("Request URL: \(url)")
-        if let bodyString = String(data: bodyData, encoding: .utf8) {
-            print("Request body: \(bodyString)")
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = bodyData
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        guard let apiKey = APIKeyManager.shared.apiKey else {
-            throw URLError(.userAuthenticationRequired)
-        }
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await session.data(for: request)
-
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Response body: \(responseString)")
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-
-        print("Response status code: \(httpResponse.statusCode)")
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
     }
 
     func getUserPostCollections() async throws -> [CivitaiCollection] {

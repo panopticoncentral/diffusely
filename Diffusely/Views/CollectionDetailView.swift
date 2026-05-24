@@ -18,11 +18,6 @@ struct CollectionDetailView: View {
     @State private var expandedAuthors: Set<Int> = []
     @State private var isInitialLoad = true
 
-    // Removal state
-    @State private var pendingRemoval: CollectionItemType?
-    @State private var isRemoving = false
-    @State private var removalError: String?
-
     #if os(macOS)
     // Locally-owned navigation pushes. By attaching `.navigationDestination(item:)`
     // to this view (rather than at the NavigationStack root in ContentView),
@@ -95,6 +90,15 @@ struct CollectionDetailView: View {
                     await reloadContent()
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .collectionMembershipChanged)) { notification in
+                // Only reload if the change was for this collection (the userInfo's
+                // collectionId matches ours). Otherwise it's noise from a sheet open
+                // for an item in a different collection.
+                if let changedId = notification.userInfo?["collectionId"] as? Int,
+                   changedId == collection.id {
+                    Task { await reloadContent() }
+                }
+            }
             .onChange(of: selectedSort) {
                 Task { await reloadContent() }
             }
@@ -138,35 +142,6 @@ struct CollectionDetailView: View {
             ToolbarItem(placement: .primaryAction) {
                 CollectionSortMenu(selectedSort: $selectedSort)
             }
-        }
-        .confirmationDialog(
-            "Remove from \"\(collection.name)\"?",
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Remove", role: .destructive) {
-                if let item = pendingRemoval {
-                    pendingRemoval = nil
-                    Task { await performRemoval(item) }
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                pendingRemoval = nil
-            }
-        }
-        .alert(
-            "Couldn't Remove Item",
-            isPresented: Binding(
-                get: { removalError != nil },
-                set: { if !$0 { removalError = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { removalError = nil }
-        } message: {
-            Text(removalError ?? "")
         }
     }
 
@@ -222,7 +197,7 @@ struct CollectionDetailView: View {
                 images: images,
                 posts: [],
                 collectionType: "Image",
-                onRequestRemove: { pendingRemoval = $0 },
+                showsItemContextMenus: true,
                 onSelectImage: macImageSelector,
                 onSelectPost: macPostSelector
             )
@@ -232,7 +207,7 @@ struct CollectionDetailView: View {
                 images: [],
                 posts: posts,
                 collectionType: "Post",
-                onRequestRemove: { pendingRemoval = $0 },
+                showsItemContextMenus: true,
                 onSelectImage: macImageSelector,
                 onSelectPost: macPostSelector
             )
@@ -280,7 +255,7 @@ struct CollectionDetailView: View {
                             images: group.images,
                             posts: group.posts,
                             collectionType: collection.type ?? "Image",
-                            onRequestRemove: { pendingRemoval = $0 },
+                            showsItemContextMenus: true,
                             onSelectImage: macImageSelector,
                             onSelectPost: macPostSelector
                         )
@@ -398,27 +373,6 @@ struct CollectionDetailView: View {
         persistenceService.updateSyncCursor(for: collection.id, cursor: nil)
 
         startSync(force: true)
-    }
-
-    private func performRemoval(_ item: CollectionItemType) async {
-        guard let persistenceService = persistenceService else { return }
-
-        isRemoving = true
-        defer { isRemoving = false }
-
-        do {
-            switch item {
-            case .image(let imageId):
-                try await civitaiService.removeImageFromCollection(imageId: imageId, collectionId: collection.id)
-                persistenceService.removeImage(imageId: imageId, fromCollectionId: collection.id)
-            case .post(let postId):
-                try await civitaiService.removePostFromCollection(postId: postId, collectionId: collection.id)
-                persistenceService.removePost(postId: postId, fromCollectionId: collection.id)
-            }
-            await reloadContent()
-        } catch {
-            removalError = "Failed to remove from collection: \(error.localizedDescription)"
-        }
     }
 
     private func toggleAuthor(_ authorId: Int) {
