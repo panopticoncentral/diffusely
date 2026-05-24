@@ -11,6 +11,11 @@ struct ImageFeedItemView: View {
     /// `feedNavigator.push` clobbers any intermediate `NavigationLink`-pushed
     /// view (like CollectionDetailView itself).
     var onSelectImage: (() -> Void)? = nil
+    /// Same story as `onSelectImage`, but for the username overlay. Without
+    /// this, parents pushed below the NavigationStack root collapse their own
+    /// stack slot when a thumbnail's username is tapped, because the default
+    /// path calls `feedNavigator.push(user)`.
+    var onSelectUser: ((CivitaiUser) -> Void)? = nil
     /// When true, the item gains a right-click / long-press context menu
     /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
     /// false elsewhere keeps the main feed and author profile context-menu-free.
@@ -44,6 +49,10 @@ struct ImageFeedItemView: View {
 
     private func openUserContent() {
         guard let user = image.user else { return }
+        if let onSelectUser = onSelectUser {
+            onSelectUser(user)
+            return
+        }
         #if os(macOS)
         feedNavigator.push(user)
         #else

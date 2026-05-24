@@ -19,6 +19,18 @@ struct UserContentView: View {
     @State private var isFollowLoading: Bool = false
     @State private var followError: String?
 
+    #if os(macOS)
+    // Push image details ABOVE THIS view's stack slot rather than at the
+    // NavigationStack root via feedNavigator. Without this, tapping an image
+    // here when UserContentView was itself pushed onto an intermediate stack
+    // (e.g. opened from a post's author button) sets feedNavigator.image,
+    // which replaces the root-level navigationDestination and collapses every
+    // pushed view between Feed and the new image — so back returns to Feed
+    // instead of this user content. Matches the pushed*-local pattern in
+    // CollectionDetailView / ImageDetailView / PostDetailView.
+    @State private var pushedImage: CivitaiImage?
+    #endif
+
     private var hasAPIKey: Bool {
         APIKeyManager.shared.hasAPIKey
     }
@@ -108,6 +120,11 @@ struct UserContentView: View {
                 await refreshContent()
             }
         }
+        #if os(macOS)
+        .navigationDestination(item: $pushedImage) { image in
+            ImageDetailView(image: image)
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -117,7 +134,20 @@ struct UserContentView: View {
             items: civitaiService.images,
             aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
         ) { image in
-            ImageFeedItemView(image: image, isGridMode: true, preserveAspectRatio: true)
+            ImageFeedItemView(
+                image: image,
+                isGridMode: true,
+                preserveAspectRatio: true,
+                // Route through THIS view's local pushedImage instead of the
+                // default feedNavigator.push(image), which would replace the
+                // root-level destination and collapse the stack above us.
+                onSelectImage: { pushedImage = image },
+                // Every thumbnail here is by `user` (we filtered by username),
+                // so the username overlay tap is a no-op rather than pushing
+                // a duplicate of this same view onto the stack. Also dodges
+                // the feedNavigator.push(user) collapse-the-stack bug.
+                onSelectUser: { _ in }
+            )
                 .onAppear {
                     if image.id == civitaiService.images.last?.id {
                         Task { await loadMore() }

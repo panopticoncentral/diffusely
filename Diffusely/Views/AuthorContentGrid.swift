@@ -12,6 +12,8 @@ struct AuthorContentGrid: View {
     /// own stack entry). Nil on iOS — the children fall back to fullScreenCover.
     var onSelectImage: ((CivitaiImage) -> Void)? = nil
     var onSelectPost: ((CivitaiPost) -> Void)? = nil
+    /// Same story for the per-thumbnail username overlay tap.
+    var onSelectUser: ((CivitaiUser) -> Void)? = nil
 
     var body: some View {
         if collectionType == "Image" {
@@ -24,6 +26,7 @@ struct AuthorContentGrid: View {
                     isGridMode: true,
                     preserveAspectRatio: true,
                     onSelectImage: onSelectImage.map { selector in { selector(image) } },
+                    onSelectUser: onSelectUser,
                     showsContextMenu: showsItemContextMenus
                 )
             }

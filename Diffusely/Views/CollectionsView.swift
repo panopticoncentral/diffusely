@@ -22,9 +22,11 @@ struct CollectionsView: View {
         }
     }
 
+    // Adaptive sizing keeps tiles at a sensible size across phone/iPad/Mac.
+    // Two flexible columns would let each square stretch to half the window
+    // width on a wide Mac, producing huge tiles.
     private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
+        GridItem(.adaptive(minimum: 160, maximum: 220), spacing: 12)
     ]
 
     var body: some View {

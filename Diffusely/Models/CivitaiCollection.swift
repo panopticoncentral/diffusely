@@ -10,7 +10,11 @@ struct CollectionCoverImage: Codable, Hashable {
 
     var fullImageURL: String? {
         guard let url = url, let id = id else { return nil }
-        return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/anim=false,width=450,optimized=true/\(id).jpeg"
+        // The Civitai API does not tell us whether a collection cover is an image or a video,
+        // so we always request a static JPEG frame: `transcode=true` + `anim=false` works for
+        // both (no-op for image sources, frame extraction for video sources). `skip=4` avoids
+        // an all-black opening frame on video sources and is ignored for images.
+        return "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/\(url)/transcode=true,anim=false,skip=4,width=450,optimized=true/\(id).jpeg"
     }
 }
 

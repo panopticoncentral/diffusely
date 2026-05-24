@@ -232,6 +232,7 @@ class MediaCacheService: ObservableObject {
 
     private func loadImageAsync(url: String) async {
         guard let imageURL = URL(string: url) else {
+            logMediaFailure(url: url, isVideo: false, reason: "Invalid URL")
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 if let entry = entries[url] {
@@ -249,6 +250,14 @@ class MediaCacheService: ObservableObject {
 
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode
+                logMediaFailure(
+                    url: url,
+                    isVideo: false,
+                    reason: "Bad HTTP response — status \(statusCode.map(String.init) ?? "n/a"), "
+                        + "content-type \(contentType(of: response) ?? "n/a"), \(data.count) bytes"
+                        + bodySnippet(data: data, response: response)
+                )
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     if let entry = entries[url] {
@@ -259,8 +268,41 @@ class MediaCacheService: ObservableObject {
                 return
             }
 
+            // Sometimes the Civitai/Cloudflare CDN ignores our `transcode=true,anim=false`
+            // request and serves the raw video instead of an extracted JPEG frame. When
+            // that happens, fall back to extracting a still frame locally with AVFoundation
+            // so the caller still gets a usable thumbnail.
+            let responseContentType = contentType(of: response) ?? ""
+            if responseContentType.hasPrefix("video/") {
+                let frame = await extractFrameFromVideoResponse(
+                    url: url,
+                    data: data,
+                    contentType: responseContentType
+                )
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    guard let entry = entries[url] else { return }
+                    if let frame {
+                        let content = MediaContent.image(frame)
+                        entry.content = content
+                        entry.state = .loaded(content)
+                    } else {
+                        entry.state = .failed(URLError(.cannotDecodeContentData))
+                    }
+                    entry.loadingTask = nil
+                }
+                return
+            }
+
             // Downsample the image to reduce memory usage
             guard let image = downsampleImage(data: data, maxDimension: maxImageDimension) else {
+                logMediaFailure(
+                    url: url,
+                    isVideo: false,
+                    reason: "Could not decode \(data.count) bytes as an image "
+                        + "(content-type \(contentType(of: response) ?? "n/a"))"
+                        + bodySnippet(data: data, response: response)
+                )
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     if let entry = entries[url] {
@@ -282,6 +324,9 @@ class MediaCacheService: ObservableObject {
             }
 
         } catch {
+            if !Task.isCancelled {
+                logMediaFailure(url: url, isVideo: false, reason: describe(error: error))
+            }
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 if let entry = entries[url] {
@@ -292,12 +337,133 @@ class MediaCacheService: ObservableObject {
         }
     }
 
+    // MARK: - Failure logging
+
+    /// Logs a media load failure with a consistent `[MediaError]` tag so the
+    /// cause behind the orange "failed" thumbnail can be diagnosed from the console.
+    private func logMediaFailure(url: String, isVideo: Bool, reason: String) {
+        let kind = isVideo ? "video" : "image"
+        print("[MediaError] Failed to load \(kind): \(url)")
+        print("[MediaError]   \(reason)")
+    }
+
+    private func contentType(of response: URLResponse?) -> String? {
+        (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")
+    }
+
+    /// Returns a short text snippet of the response body when it looks like text
+    /// (e.g. an HTML/JSON error page returned instead of image bytes). Empty otherwise.
+    private func bodySnippet(data: Data, response: URLResponse?) -> String {
+        let type = contentType(of: response) ?? ""
+        guard type.contains("text") || type.contains("json") || type.contains("html") else { return "" }
+        guard !data.isEmpty, let text = String(data: data.prefix(200), encoding: .utf8) else { return "" }
+        let collapsed = text.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? "" : "\n[MediaError]   body: \(collapsed)"
+    }
+
+    private func describe(error: Error) -> String {
+        if let urlError = error as? URLError {
+            return "Network error — \(urlError.code) (\(urlError.errorCode)): \(urlError.localizedDescription)"
+        }
+        let nsError = error as NSError
+        return "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
+    }
+
+    // MARK: - Video → image fallback
+
+    /// Maximum video payload we'll stage to disk for local thumbnail extraction
+    /// when the CDN serves a video instead of the requested image. Larger payloads
+    /// bail to a logged failure rather than wasting memory on a multi-minute upload.
+    private static let maxVideoBytesForThumbnailExtraction = 50 * 1024 * 1024  // 50 MB
+
+    /// Writes the video bytes to a temp file and uses AVAssetImageGenerator to
+    /// extract a single still frame, downsampled to `maxImageDimension`. Returns
+    /// nil on any failure; failures are logged via `logMediaFailure`.
+    private func extractFrameFromVideoResponse(url: String, data: Data, contentType: String) async -> PlatformImage? {
+        guard data.count <= Self.maxVideoBytesForThumbnailExtraction else {
+            logMediaFailure(
+                url: url,
+                isVideo: false,
+                reason: "CDN served \(contentType) (\(data.count) bytes) instead of an image; "
+                    + "exceeds \(Self.maxVideoBytesForThumbnailExtraction)-byte local-extraction cap"
+            )
+            return nil
+        }
+
+        let ext: String
+        if contentType.contains("quicktime") {
+            ext = "mov"
+        } else if contentType.contains("webm") {
+            ext = "webm"
+        } else {
+            ext = "mp4"
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-thumb-\(UUID().uuidString)")
+            .appendingPathExtension(ext)
+
+        do {
+            try data.write(to: tempURL, options: .atomic)
+        } catch {
+            logMediaFailure(
+                url: url,
+                isVideo: false,
+                reason: "Failed to stage video for thumbnail extraction: \(error.localizedDescription)"
+            )
+            return nil
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let asset = AVURLAsset(url: tempURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxImageDimension, height: maxImageDimension)
+        // Frame-accurate seeking fails on some codecs; let AVFoundation snap to the
+        // nearest decodable frame in either direction.
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+
+        // Prefer a small positive offset (skip black opening frames), then fall
+        // back to frame 0 for very short or single-frame videos.
+        let candidateTimes: [CMTime] = [
+            CMTime(seconds: 0.5, preferredTimescale: 600),
+            .zero
+        ]
+
+        for time in candidateTimes {
+            do {
+                let result = try await generator.image(at: time)
+                let cgImage = result.image
+                #if canImport(UIKit)
+                return PlatformImage(cgImage: cgImage)
+                #elseif canImport(AppKit)
+                return PlatformImage(
+                    cgImage: cgImage,
+                    size: NSSize(width: cgImage.width, height: cgImage.height)
+                )
+                #endif
+            } catch {
+                continue
+            }
+        }
+
+        logMediaFailure(
+            url: url,
+            isVideo: false,
+            reason: "AVAssetImageGenerator could not extract a frame from \(data.count)-byte \(contentType)"
+        )
+        return nil
+    }
+
     private func downsampleImage(data: Data, maxDimension: CGFloat) -> PlatformImage? {
         ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
     }
 
     private func loadVideoAsync(url: String) async {
         guard let videoURL = URL(string: url) else {
+            logMediaFailure(url: url, isVideo: true, reason: "Invalid URL")
             if let entry = entries[url] {
                 entry.state = .failed(URLError(.badURL))
                 entry.loadingTask = nil
@@ -341,8 +507,7 @@ class MediaCacheService: ObservableObject {
 
                     case .failed:
                         let error = item.error ?? URLError(.unknown)
-                        print("[VideoError] Failed to load: \(url)")
-                        print("[VideoError] \(error.localizedDescription)")
+                        self.logMediaFailure(url: url, isVideo: true, reason: self.describe(error: error))
                         if let entry = self.entries[url] {
                             entry.state = .failed(error)
                             entry.loadingTask = nil
@@ -358,6 +523,7 @@ class MediaCacheService: ObservableObject {
 
                     @unknown default:
                         let error = URLError(.unknown)
+                        self.logMediaFailure(url: url, isVideo: true, reason: "Unknown player item status")
                         if let entry = self.entries[url] {
                             entry.state = .failed(error)
                             entry.loadingTask = nil

@@ -33,20 +33,6 @@ struct CollectionDetailView: View {
     @State private var userForContent: CivitaiUser?
     #endif
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    private var isGridLayout: Bool {
-        horizontalSizeClass == .regular
-    }
-
-    private var columns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 2),
-            GridItem(.flexible(), spacing: 2),
-            GridItem(.flexible(), spacing: 2)
-        ]
-    }
-
     var body: some View {
         ZStack {
             ScrollView {
@@ -199,7 +185,8 @@ struct CollectionDetailView: View {
                 collectionType: "Image",
                 showsItemContextMenus: true,
                 onSelectImage: macImageSelector,
-                onSelectPost: macPostSelector
+                onSelectPost: macPostSelector,
+                onSelectUser: macUserSelector
             )
             .padding(.bottom, 8)
         case .flatPosts(let posts):
@@ -209,7 +196,8 @@ struct CollectionDetailView: View {
                 collectionType: "Post",
                 showsItemContextMenus: true,
                 onSelectImage: macImageSelector,
-                onSelectPost: macPostSelector
+                onSelectPost: macPostSelector,
+                onSelectUser: macUserSelector
             )
             .padding(.bottom, 8)
         }
@@ -229,6 +217,14 @@ struct CollectionDetailView: View {
     private var macPostSelector: ((CivitaiPost) -> Void)? {
         #if os(macOS)
         return { pushedPost = $0 }
+        #else
+        return nil
+        #endif
+    }
+
+    private var macUserSelector: ((CivitaiUser) -> Void)? {
+        #if os(macOS)
+        return { pushedUser = $0 }
         #else
         return nil
         #endif
@@ -257,7 +253,8 @@ struct CollectionDetailView: View {
                             collectionType: collection.type ?? "Image",
                             showsItemContextMenus: true,
                             onSelectImage: macImageSelector,
-                            onSelectPost: macPostSelector
+                            onSelectPost: macPostSelector,
+                            onSelectUser: macUserSelector
                         )
                         .padding(.bottom, 8)
                     }

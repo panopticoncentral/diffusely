@@ -43,6 +43,7 @@ final class LibraryMediaLoader: ObservableObject {
         guard
             let dir = try? await LibraryContainer.shared.itemsDirectory()
         else {
+            logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: "Library items directory unavailable")
             state = .failed
             return
         }
@@ -51,6 +52,10 @@ final class LibraryMediaLoader: ObservableObject {
         do {
             try await ensureDownloaded(url: url)
         } catch {
+            if !(error is CancellationError) {
+                logFailure(itemID: itemID, mediaFileName: mediaFileName,
+                           reason: "Download failed — \((error as NSError).localizedDescription)")
+            }
             state = .failed
             return
         }
@@ -62,22 +67,88 @@ final class LibraryMediaLoader: ObservableObject {
             return
         }
 
-        var data: Data?
-        var coordError: NSError?
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordError) { readURL in
-            data = try? Data(contentsOf: readURL)
-        }
-        guard
-            let data,
-            let image = ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
-        else {
+        // Run the file-coordinator read + ImageIO decode off the main actor.
+        // The class is @MainActor for `state` plumbing, but doing the
+        // synchronous Data(contentsOf:) + downsample here would serialize
+        // every visible thumbnail on the main thread and freeze the UI when
+        // a Library full of items appears at once.
+        let outcome: LoadOutcome = await Task.detached(priority: .userInitiated) {
+            var data: Data?
+            var coordError: NSError?
+            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordError) { readURL in
+                data = try? Data(contentsOf: readURL)
+            }
+            if let data, let image = ImageDownsampler.downsample(data: data, maxDimension: maxDimension) {
+                return .success(image)
+            }
+            let detail: String
+            if let coordError {
+                detail = "File coordination error — \(coordError.localizedDescription)"
+            } else if data == nil {
+                detail = "Could not read file at \(url.path)"
+            } else {
+                detail = "Could not decode \(data?.count ?? 0) bytes as an image"
+            }
+            return .failure(detail)
+        }.value
+
+        if Task.isCancelled { return }
+
+        switch outcome {
+        case .success(let image):
+            state = .image(image)
+        case .failure(let detail):
+            logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: detail)
             state = .failed
-            return
         }
-        state = .image(image)
+    }
+
+    private enum LoadOutcome {
+        case success(PlatformImage)
+        case failure(String)
+    }
+
+    /// Logs a local-library load failure with the same `[MediaError]` tag used by
+    /// `MediaCacheService`, so the cause behind the orange "failed" thumbnail is visible.
+    private func logFailure(itemID: Int, mediaFileName: String, reason: String) {
+        print("[MediaError] Failed to load library item \(itemID) (\(mediaFileName))")
+        print("[MediaError]   \(reason)")
     }
 
     private func ensureDownloaded(url: URL) async throws {
+        // `URL.resourceValues(forKeys:)` for the ubiquity keys can perform
+        // blocking iCloud metadata lookups under a cold cache; keep them off
+        // the main actor so they don't pile up there.
+        let initial = await Task.detached(priority: .userInitiated) {
+            Self.checkLocalReadiness(at: url)
+        }.value
+        if initial == .ready { return }
+
+        state = .downloading(nil)
+        try FileManager.default.startDownloadingUbiquitousItem(at: url)
+
+        // Poll until the file is current/downloaded (~2 min ceiling).
+        for _ in 0..<240 {
+            if Task.isCancelled { throw CancellationError() }
+            try await Task.sleep(nanoseconds: 500_000_000)
+            let downloaded = await Task.detached(priority: .userInitiated) {
+                let v = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+                return v?.ubiquitousItemDownloadingStatus == .current
+                    || v?.ubiquitousItemDownloadingStatus == .downloaded
+            }.value
+            if downloaded { return }
+        }
+        throw URLError(.timedOut)
+    }
+
+    private enum Readiness { case ready, needsDownload }
+
+    /// Pure helper: snapshots the on-disk + iCloud-status view of `url` so the
+    /// caller can decide whether to trigger a download. Safe to invoke from
+    /// any thread — touches only `FileManager.default` and `URL` resource keys.
+    /// `nonisolated` so the detached task that calls it doesn't have to hop
+    /// back to the main actor just to read filesystem state.
+    nonisolated private static func checkLocalReadiness(at url: URL) -> Readiness {
         let fileManager = FileManager.default
         let values = try? url.resourceValues(forKeys: [
             .isUbiquitousItemKey,
@@ -86,27 +157,13 @@ final class LibraryMediaLoader: ObservableObject {
 
         // Non-ubiquitous local file that exists: ready immediately.
         if values?.isUbiquitousItem != true, fileManager.fileExists(atPath: url.path) {
-            return
+            return .ready
         }
 
         if values?.ubiquitousItemDownloadingStatus == .current
             || values?.ubiquitousItemDownloadingStatus == .downloaded {
-            return
+            return .ready
         }
-
-        state = .downloading(nil)
-        try fileManager.startDownloadingUbiquitousItem(at: url)
-
-        // Poll until the file is current/downloaded (~2 min ceiling).
-        for _ in 0..<240 {
-            if Task.isCancelled { throw CancellationError() }
-            try await Task.sleep(nanoseconds: 500_000_000)
-            let v = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-            if v?.ubiquitousItemDownloadingStatus == .current
-                || v?.ubiquitousItemDownloadingStatus == .downloaded {
-                return
-            }
-        }
-        throw URLError(.timedOut)
+        return .needsDownload
     }
 }
