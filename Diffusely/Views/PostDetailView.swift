@@ -51,9 +51,13 @@ struct PostDetailView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Header
+                #if os(iOS)
+                // iOS-only header. On Mac the equivalent affordances (back via
+                // NavigationStack chrome, username, post title, menu) move into
+                // `.toolbar` at the end of the body — having a second in-content
+                // header on top of the navigation title bar reads as a stray
+                // second toolbar.
                 HStack {
-                    #if os(iOS)
                     Button(action: {
                         dismiss()
                     }) {
@@ -62,7 +66,6 @@ struct PostDetailView: View {
                             .foregroundColor(.primary)
                             .padding()
                     }
-                    #endif
 
                     VStack(alignment: .leading, spacing: 2) {
                         if let username = post.user.username {
@@ -90,36 +93,7 @@ struct PostDetailView: View {
                     Spacer()
 
                     Menu {
-                        if let currentImage = currentImage {
-                            let isSavingCurrent = librarySaveService.isSaving(itemID: currentImage.id)
-                            Button(action: {
-                                librarySaveService.save(currentImage, knownPostTitle: post.title)
-                            }) {
-                                Label(
-                                    isSavingCurrent ? "Saving Image…" : "Save Image to Library",
-                                    systemImage: "square.and.arrow.down"
-                                )
-                            }
-                            .disabled(isSavingCurrent)
-                        }
-
-                        Button(action: {
-                            librarySaveService.savePost(post)
-                        }) {
-                            Label(
-                                librarySaveService.isSavingPost(post) ? "Saving Post…" : "Save Post to Library",
-                                systemImage: "square.and.arrow.down.on.square"
-                            )
-                        }
-                        .disabled(librarySaveService.isSavingPost(post))
-
-                        if APIKeyManager.shared.hasAPIKey {
-                            Button(action: {
-                                showingCollectionPicker = true
-                            }) {
-                                Label("Manage Collections", systemImage: "folder")
-                            }
-                        }
+                        postMenuContent
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.title3)
@@ -128,6 +102,7 @@ struct PostDetailView: View {
                     }
                 }
                 .background(Color(.systemBackground))
+                #endif
 
                 // Carousel + stats - scrollable; media fits the window on macOS
                 GeometryReader { proxy in
@@ -235,6 +210,9 @@ struct PostDetailView: View {
         #if os(iOS)
         .navigationBarHidden(true)
         #endif
+        #if os(macOS)
+        .toolbar { macToolbar }
+        #endif
         .onChange(of: currentImageIndex) { _, newIndex in
             #if os(macOS)
             // Keep the paged ScrollView in lockstep when arrow keys (or any
@@ -329,6 +307,91 @@ struct PostDetailView: View {
         guard next != currentImageIndex else { return }
         withAnimation { currentImageIndex = next }
     }
+
+    /// Menu buttons shared between the iOS in-content menu and the macOS
+    /// toolbar menu. Same actions, different chrome wrapping them. The
+    /// "View User" entry is Mac-only — on iOS the username is already a
+    /// button in the in-content header, so the menu would be redundant.
+    @ViewBuilder
+    private var postMenuContent: some View {
+        if let currentImage = currentImage {
+            let isSavingCurrent = librarySaveService.isSaving(itemID: currentImage.id)
+            Button(action: {
+                librarySaveService.save(currentImage, knownPostTitle: post.title)
+            }) {
+                Label(
+                    isSavingCurrent ? "Saving Image…" : "Save Image to Library",
+                    systemImage: "square.and.arrow.down"
+                )
+            }
+            .disabled(isSavingCurrent)
+        }
+
+        Button(action: {
+            librarySaveService.savePost(post)
+        }) {
+            Label(
+                librarySaveService.isSavingPost(post) ? "Saving Post…" : "Save Post to Library",
+                systemImage: "square.and.arrow.down.on.square"
+            )
+        }
+        .disabled(librarySaveService.isSavingPost(post))
+
+        if APIKeyManager.shared.hasAPIKey {
+            Button(action: {
+                showingCollectionPicker = true
+            }) {
+                Label("Manage Collections", systemImage: "folder")
+            }
+        }
+    }
+
+    #if os(macOS)
+    /// macOS toolbar — replaces the in-content header used on iOS. Extracted
+    /// to a @ToolbarContentBuilder so the SwiftUI type-checker doesn't time
+    /// out on the already-long body modifier chain.
+    ///
+    /// The username sits in `.principal` as a Menu so it's both visible and
+    /// obviously clickable (Menu renders a small disclosure chevron natively
+    /// on Mac). When the post has a title, it appears as a quiet secondary
+    /// line below. We deliberately do NOT set `.navigationTitle` here —
+    /// when both are set on macOS, both render and the username appears
+    /// twice.
+    @ToolbarContentBuilder
+    private var macToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            VStack(spacing: 0) {
+                if let username = post.user.username {
+                    Menu {
+                        Button(action: { openUserContent() }) {
+                            Label("View \(username)'s content", systemImage: "person.crop.circle")
+                        }
+                    } label: {
+                        Text(username)
+                            .font(.headline)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("\(username) — click for actions")
+                }
+                if let title = post.title {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                postMenuContent
+            } label: {
+                Label("More", systemImage: "ellipsis")
+            }
+            .help("More actions")
+        }
+    }
+    #endif
 
     private func loadGenerationData(for index: Int) async {
         guard index < post.safeImages.count else { return }
