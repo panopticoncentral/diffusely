@@ -47,6 +47,42 @@ private final class StubFetchImageProvider: LibraryDateBackfillService.FetchImag
     }
 }
 
+/// Test seam for the new sidecar-store dependency. Captures every call and
+/// records whether it ran on the main thread so we can prove the production
+/// code no longer does file I/O on @MainActor.
+private final class RecordingSidecarStore: LibraryBackfillSidecarStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _pending: [LibraryItemMetadata]
+    private var _pendingItemsCallCount = 0
+    private var _pendingItemsRanOnMainThread: [Bool] = []
+    private var _rewrittenItems: [LibraryItemMetadata] = []
+    private var _rewriteRanOnMainThread: [Bool] = []
+
+    init(pending: [LibraryItemMetadata]) { self._pending = pending }
+
+    var pendingItemsCallCount: Int { lock.withLock { _pendingItemsCallCount } }
+    var pendingItemsRanOnMainThread: [Bool] { lock.withLock { _pendingItemsRanOnMainThread } }
+    var rewrittenItems: [LibraryItemMetadata] { lock.withLock { _rewrittenItems } }
+    var rewriteRanOnMainThread: [Bool] { lock.withLock { _rewriteRanOnMainThread } }
+
+    func pendingItems() async throws -> [LibraryItemMetadata] {
+        let onMain = Thread.isMainThread
+        return lock.withLock {
+            _pendingItemsCallCount += 1
+            _pendingItemsRanOnMainThread.append(onMain)
+            return _pending
+        }
+    }
+
+    func rewriteMetadata(_ metadata: LibraryItemMetadata) async throws {
+        let onMain = Thread.isMainThread
+        lock.withLock {
+            _rewriteRanOnMainThread.append(onMain)
+            _rewrittenItems.append(metadata)
+        }
+    }
+}
+
 private func tempDir() -> URL {
     let dir = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -212,6 +248,37 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
         #expect(after?.publishedAt != nil)
         // Critical: backfill did not clobber the .evicted status.
         #expect(after?.downloadStatus == .evicted)
+    }
+
+    @Test func backfillUsesInjectedSidecarStoreAndRunsItsIOOffMainThread() async throws {
+        let m = makeMeta(itemID: 70, publishedAt: nil)
+        let store = RecordingSidecarStore(pending: [m])
+
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        // Seed the index so the per-item ingest finds an existing row.
+        await index.ingest(metadata: m, downloadStatus: .downloaded)
+
+        let stub = StubFetchImageProvider()
+        stub.responses[70] = civitaiImage(id: 70, publishedAtISO: "2024-03-22T10:52:00.000Z")
+
+        let svc = await LibraryDateBackfillService(
+            indexService: index,
+            sidecarStore: store,
+            fetcher: stub
+        )
+        await svc.runOnce()
+
+        // The service delegated enumeration + rewrite to the store.
+        #expect(store.pendingItemsCallCount == 1)
+        #expect(store.rewrittenItems.count == 1)
+        #expect(store.rewrittenItems.first?.itemID == 70)
+        #expect(store.rewrittenItems.first?.publishedAt != nil)
+
+        // Every store callback ran off the main thread — this is what cures the
+        // UI choppiness reported when the user enters the Library tab.
+        #expect(store.pendingItemsRanOnMainThread.allSatisfy { $0 == false })
+        #expect(store.rewriteRanOnMainThread.allSatisfy { $0 == false })
     }
 
     @Test func backfillLeavesSidecarUntouchedWhenAPIReturnsNoPublishedAt() async throws {

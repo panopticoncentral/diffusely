@@ -1,6 +1,53 @@
 import Foundation
 import SwiftData
 
+/// Sidecar-store seam for `LibraryDateBackfillService`. Implementations are
+/// responsible for performing the actual file I/O off the main thread; the
+/// service awaits these calls from `@MainActor` so it can drive `@Published`
+/// state, but the disk work must not block the UI.
+protocol LibraryBackfillSidecarStore: Sendable {
+    /// Returns the metadata for every sidecar JSON that is missing `publishedAt`.
+    func pendingItems() async throws -> [LibraryItemMetadata]
+    /// Atomically rewrites the sidecar JSON for an already-committed item.
+    func rewriteMetadata(_ metadata: LibraryItemMetadata) async throws
+}
+
+/// Default file-backed implementation. Both methods hop to a detached task so
+/// the directory walk + JSON decode (pending enumeration) and the
+/// `NSFileCoordinator`-bound atomic write (rewrite) never run on the caller's
+/// actor. With iCloud-backed `itemsDirectory`s the coordinator can block for
+/// hundreds of ms while iCloud arbitrates access — keeping that off `@MainActor`
+/// is what fixes the per-item Library hitch.
+struct FileLibraryBackfillSidecarStore: LibraryBackfillSidecarStore {
+    let itemsDirectory: URL
+
+    func pendingItems() async throws -> [LibraryItemMetadata] {
+        let directory = itemsDirectory
+        return await Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            var pending: [LibraryItemMetadata] = []
+            for url in urls where url.pathExtension == "json" {
+                guard
+                    let data = try? Data(contentsOf: url),
+                    let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data),
+                    metadata.publishedAt == nil
+                else { continue }
+                pending.append(metadata)
+            }
+            return pending
+        }.value
+    }
+
+    func rewriteMetadata(_ metadata: LibraryItemMetadata) async throws {
+        let directory = itemsDirectory
+        try await Task.detached(priority: .utility) {
+            let writer = LibraryFileWriter(itemsDirectory: directory)
+            try writer.rewriteMetadata(metadata)
+        }.value
+    }
+}
+
 /// One-shot serial backfill: for every sidecar with no `publishedAt`,
 /// re-fetch the image from Civitai, rewrite the JSON in place, and update
 /// the corresponding index row. Failures are swallowed per-item so a
@@ -9,7 +56,9 @@ import SwiftData
 /// Designed for view-driven on-demand triggering (mirrors how
 /// `CollectionDetailView` runs its own date-backfill exactly once per view
 /// instance). `@MainActor` so it can be observed by SwiftUI for the
-/// "Backfilling publish dates… N remaining" indicator.
+/// "Backfilling publish dates… N remaining" indicator — but file I/O is
+/// delegated to a `LibraryBackfillSidecarStore` so the heavy work stays off
+/// the main thread.
 @MainActor
 final class LibraryDateBackfillService: ObservableObject {
 
@@ -22,17 +71,31 @@ final class LibraryDateBackfillService: ObservableObject {
     @Published private(set) var isRunning: Bool = false
 
     private let indexService: LibraryIndexService
-    private let itemsDirectory: URL
+    private let sidecarStore: LibraryBackfillSidecarStore
     private let fetcher: FetchImageProvider
 
     init(
         indexService: LibraryIndexService,
-        itemsDirectory: URL,
+        sidecarStore: LibraryBackfillSidecarStore,
         fetcher: FetchImageProvider
     ) {
         self.indexService = indexService
-        self.itemsDirectory = itemsDirectory
+        self.sidecarStore = sidecarStore
         self.fetcher = fetcher
+    }
+
+    /// Convenience initializer that constructs the default file-backed
+    /// sidecar store. Keeps existing call sites (Views, older tests) working.
+    convenience init(
+        indexService: LibraryIndexService,
+        itemsDirectory: URL,
+        fetcher: FetchImageProvider
+    ) {
+        self.init(
+            indexService: indexService,
+            sidecarStore: FileLibraryBackfillSidecarStore(itemsDirectory: itemsDirectory),
+            fetcher: fetcher
+        )
     }
 
     /// Walk the sidecar directory once, backfill every item whose JSON has
@@ -43,8 +106,7 @@ final class LibraryDateBackfillService: ObservableObject {
         isRunning = true
         defer { isRunning = false }
 
-        let writer = LibraryFileWriter(itemsDirectory: itemsDirectory)
-        let pending = enumeratePendingItems()
+        let pending = (try? await sidecarStore.pendingItems()) ?? []
         remaining = pending.count
 
         for metadata in pending {
@@ -79,7 +141,7 @@ final class LibraryDateBackfillService: ObservableObject {
                     savedByAppVersion: metadata.savedByAppVersion
                 )
 
-                try writer.rewriteMetadata(updated)
+                try await sidecarStore.rewriteMetadata(updated)
                 let status = await indexService.currentDownloadStatus(itemID: metadata.itemID) ?? .downloaded
                 await indexService.ingest(metadata: updated, downloadStatus: status)
             } catch {
@@ -87,22 +149,5 @@ final class LibraryDateBackfillService: ObservableObject {
                 continue
             }
         }
-    }
-
-    /// Read every sidecar JSON in the directory and return those missing
-    /// `publishedAt`. This is the source of truth; the index is just a cache.
-    private func enumeratePendingItems() -> [LibraryItemMetadata] {
-        let fm = FileManager.default
-        let urls = (try? fm.contentsOfDirectory(at: itemsDirectory, includingPropertiesForKeys: nil)) ?? []
-        var pending: [LibraryItemMetadata] = []
-        for url in urls where url.pathExtension == "json" {
-            guard
-                let data = try? Data(contentsOf: url),
-                let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data),
-                metadata.publishedAt == nil
-            else { continue }
-            pending.append(metadata)
-        }
-        return pending
     }
 }

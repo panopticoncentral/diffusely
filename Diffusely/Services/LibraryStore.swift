@@ -16,6 +16,12 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var isReady = false
     /// itemID -> download progress (0...1) while a media file is materializing.
     @Published private(set) var downloadProgress: [Int: Double] = [:]
+    /// Session-scoped gate for the publish-date backfill. Lives here (not in
+    /// `LibraryView`'s `@State`) so navigating into and out of the Library tab
+    /// doesn't restart the backfill — that was making the spinner banner
+    /// reappear on every visit even though the work was already complete or
+    /// in progress.
+    @Published private(set) var didRunDateBackfillThisSession: Bool = false
 
     static let cacheLimitDefaultsKey = "library_cache_limit_bytes"
     static let defaultCacheLimitBytes = 2 * 1024 * 1024 * 1024  // 2 GB
@@ -24,10 +30,20 @@ final class LibraryStore: ObservableObject {
 
     private let metadataQuery = NSMetadataQuery()
     private var observers: [NSObjectProtocol] = []
+    /// Debounces `NSMetadataQueryDidUpdate` notifications. During the date
+    /// backfill, every sidecar rewrite would otherwise re-trigger a full
+    /// `reconcileNow()` (a directory walk + per-item re-ingest), turning K
+    /// backfill items into O(K × N) work. 750ms is long enough to absorb the
+    /// burst from a backfill loop yet short enough that a legitimate iCloud
+    /// arrival is still picked up quickly.
+    private var reconcileScheduler: ReconcileScheduler?
 
     init(modelContainer: ModelContainer) {
         self.indexService = LibraryIndexService(modelContainer: modelContainer)
         LibrarySaveService.shared.indexService = indexService
+        self.reconcileScheduler = ReconcileScheduler(debounce: .milliseconds(750)) { [weak self] in
+            await self?.reconcileNow()
+        }
     }
 
     var cacheLimitBytes: Int {
@@ -50,6 +66,12 @@ final class LibraryStore: ObservableObject {
             await enforceCacheLimit()
         }
         configureMetadataQuery()
+    }
+
+    /// Flips `didRunDateBackfillThisSession` so subsequent `LibraryView` mounts
+    /// during the same session skip re-running the backfill.
+    func markDateBackfillRanThisSession() {
+        didRunDateBackfillThisSession = true
     }
 
     func reconcileNow() async {
@@ -146,6 +168,6 @@ final class LibraryStore: ObservableObject {
         }
         downloadProgress = progress
         metadataQuery.enableUpdates()
-        Task { await reconcileNow() }
+        reconcileScheduler?.schedule()
     }
 }

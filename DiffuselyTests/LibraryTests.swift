@@ -336,3 +336,27 @@ private func makeMetadata(
         #expect(byID[3] == .downloaded)
     }
 }
+
+/// Session-scoped flags on `LibraryStore` — currently the date-backfill gate.
+/// Lives on `LibraryStore` (not `@State` on a view) so navigating into and out
+/// of the Library tab does not re-trigger backfill, which was making the
+/// "Backfilling publish dates…" spinner appear every time.
+@Suite struct LibraryStoreSessionStateTests {
+    private func makeContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: PersistedLibraryItem.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+    }
+
+    @MainActor @Test func dateBackfillSessionFlagStartsFalseAndCanBeMarked() async throws {
+        let container = try makeContainer()
+        let store = LibraryStore(modelContainer: container)
+
+        #expect(store.didRunDateBackfillThisSession == false)
+
+        store.markDateBackfillRanThisSession()
+
+        #expect(store.didRunDateBackfillThisSession == true)
+    }
+}

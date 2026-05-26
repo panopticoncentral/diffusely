@@ -14,7 +14,6 @@ struct LibraryView: View {
     @State private var selectedSort: LibrarySort = .dateNewest
     @State private var expandedGroups: Set<String> = []
     @State private var didSeedGroups = false
-    @State private var didRequestDateBackfill = false
 
     var body: some View {
         content(for: content)
@@ -279,19 +278,21 @@ struct LibraryView: View {
         content = newContent
     }
 
-    /// Kick off the publish-date backfill once per `LibraryView` lifetime if
-    /// there are items without `publishedAt`. Triggered on first load and on
-    /// every sort change (cheap guard: `didRequestDateBackfill`).
+    /// Kick off the publish-date backfill at most once per app session if there
+    /// are items without `publishedAt`. The gate lives on `LibraryStore` so it
+    /// survives `LibraryView` rebuilds (every navigation into the Library tab
+    /// would otherwise restart the backfill and re-show the spinner banner).
     private func maybeStartBackfill() async {
-        guard !didRequestDateBackfill,
+        guard !store.didRunDateBackfillThisSession,
               let sortService else { return }
         guard sortService.countItemsMissingPublishedDate() > 0 else { return }
-        didRequestDateBackfill = true
 
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else {
-            didRequestDateBackfill = false   // try again later
-            return
-        }
+        // Resolve the container *before* claiming the gate so a cold-launch
+        // race where `itemsDirectory()` isn't ready yet still lets a later
+        // view mount retry. Once we have a directory, we're committed.
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        guard !store.didRunDateBackfillThisSession else { return }
+        store.markDateBackfillRanThisSession()
         let service = LibraryDateBackfillService(
             indexService: store.indexService,
             itemsDirectory: dir,
