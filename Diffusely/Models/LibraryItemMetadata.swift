@@ -23,7 +23,7 @@ struct LibraryAuthor: Codable, Hashable {
 /// cache rebuilt entirely from these files (including ones synced from other
 /// devices), so every field needed to render and re-link an item lives here.
 struct LibraryItemMetadata: Codable, Equatable {
-    static let currentSchemaVersion = 3   // was 2
+    static let currentSchemaVersion = 4   // v3 added publishedAt; v4 added publishedAtBackfillAttemptedAt
 
     var schemaVersion: Int
     /// Civitai image id. Also the filename stem for both the media and this JSON.
@@ -54,16 +54,78 @@ struct LibraryItemMetadata: Codable, Equatable {
     /// when the source image is itself missing it. Backfilled on demand
     /// via `LibraryDateBackfillService`.
     let publishedAt: Date?
+    /// Set by `LibraryDateBackfillService` when an API call returns the image
+    /// but with `publishedAt: null` (drafts, deleted/unpublished, moderation).
+    /// Background backfill skips items with this stamp so we don't re-ask
+    /// every Library visit forever. Only the user-initiated catchup path
+    /// (opening the detail view, or an explicit refresh) retries.
+    let publishedAtBackfillAttemptedAt: Date?
     let savedAt: Date
     let savedByAppVersion: String
 
     static func == (lhs: LibraryItemMetadata, rhs: LibraryItemMetadata) -> Bool {
+        // `publishedAtBackfillAttemptedAt` is intentionally excluded: it's
+        // bookkeeping for the background scanner, not a meaningful identity
+        // field, and including it would make every backfill attempt look like
+        // a "real change" to the index and trigger extra ingests.
         lhs.itemID == rhs.itemID
             && lhs.schemaVersion == rhs.schemaVersion
             && lhs.contentSHA256 == rhs.contentSHA256
             && lhs.mediaFileName == rhs.mediaFileName
             && lhs.savedAt == rhs.savedAt
             && lhs.publishedAt == rhs.publishedAt
+    }
+
+    /// Explicit memberwise init so the v4 `publishedAtBackfillAttemptedAt`
+    /// field can default to nil — keeps every existing call site (save, tests,
+    /// reconcile) source-compatible without sprinkling `attemptedAt: nil`
+    /// everywhere.
+    init(
+        schemaVersion: Int,
+        itemID: Int,
+        sourcePostID: Int?,
+        sourcePostTitle: String?,
+        canonicalPostURL: String?,
+        canonicalPageURL: String,
+        sourceDomain: String,
+        originalCDNURL: String,
+        mediaType: LibraryMediaType,
+        mediaFileName: String,
+        fileByteSize: Int,
+        contentSHA256: String,
+        width: Int,
+        height: Int,
+        nsfwLevel: Int,
+        author: LibraryAuthor,
+        stats: ImageStats?,
+        generationData: GenerationData?,
+        publishedAt: Date?,
+        publishedAtBackfillAttemptedAt: Date? = nil,
+        savedAt: Date,
+        savedByAppVersion: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.itemID = itemID
+        self.sourcePostID = sourcePostID
+        self.sourcePostTitle = sourcePostTitle
+        self.canonicalPostURL = canonicalPostURL
+        self.canonicalPageURL = canonicalPageURL
+        self.sourceDomain = sourceDomain
+        self.originalCDNURL = originalCDNURL
+        self.mediaType = mediaType
+        self.mediaFileName = mediaFileName
+        self.fileByteSize = fileByteSize
+        self.contentSHA256 = contentSHA256
+        self.width = width
+        self.height = height
+        self.nsfwLevel = nsfwLevel
+        self.author = author
+        self.stats = stats
+        self.generationData = generationData
+        self.publishedAt = publishedAt
+        self.publishedAtBackfillAttemptedAt = publishedAtBackfillAttemptedAt
+        self.savedAt = savedAt
+        self.savedByAppVersion = savedByAppVersion
     }
 }
 

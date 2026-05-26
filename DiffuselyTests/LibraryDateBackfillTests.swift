@@ -8,7 +8,8 @@ import SwiftData
 private func makeMeta(
     itemID: Int,
     mediaType: LibraryMediaType = .image,
-    publishedAt: Date? = nil
+    publishedAt: Date? = nil,
+    publishedAtBackfillAttemptedAt: Date? = nil
 ) -> LibraryItemMetadata {
     LibraryItemMetadata(
         schemaVersion: LibraryItemMetadata.currentSchemaVersion,
@@ -28,6 +29,7 @@ private func makeMeta(
         stats: nil,
         generationData: nil,
         publishedAt: publishedAt,
+        publishedAtBackfillAttemptedAt: publishedAtBackfillAttemptedAt,
         savedAt: Date(),
         savedByAppVersion: "t"
     )
@@ -281,7 +283,7 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
         #expect(store.rewriteRanOnMainThread.allSatisfy { $0 == false })
     }
 
-    @Test func backfillLeavesSidecarUntouchedWhenAPIReturnsNoPublishedAt() async throws {
+    @Test func backfillStampsAttemptedMarkerWhenAPIReturnsNoPublishedAt() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -294,7 +296,7 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
         await index.reconcile(itemsDirectory: dir)
 
         let stub = StubFetchImageProvider()
-        // API returns the image but with no publishedAt.
+        // API returns the image but with no publishedAt (draft, deleted, etc.).
         stub.responses[60] = civitaiImage(id: 60, publishedAtISO: nil)
 
         let svc = await LibraryDateBackfillService(
@@ -304,11 +306,145 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
         )
         await svc.runOnce()
 
-        // Stub WAS called…
         #expect(stub.requestedIDs == [60])
-        // …but the sidecar wasn't rewritten because there was no publishedAt to add.
+
+        // publishedAt stays nil (there was no date to write) but the marker is
+        // now set so subsequent background backfills skip this item instead of
+        // re-asking the API on every Library visit forever. We don't assert
+        // the marker's exact value — the production code only checks for
+        // presence, and the JSON `.iso8601` strategy strips fractional
+        // seconds, which would make a `>= now` comparison flaky.
         let data = try Data(contentsOf: dir.appendingPathComponent("60.json"))
         let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
         #expect(decoded.publishedAt == nil)
+        #expect(decoded.publishedAtBackfillAttemptedAt != nil)
+    }
+
+    @Test func backfillSkipsItemsThatAlreadyHaveAttemptedMarker() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Item 80: never attempted (no marker) — should be picked up.
+        let m1 = makeMeta(itemID: 80, publishedAt: nil)
+        try LibraryItemMetadata.encoder().encode(m1).write(to: dir.appendingPathComponent("80.json"))
+        try Data("x".utf8).write(to: dir.appendingPathComponent("80.jpeg"))
+
+        // Item 81: previously attempted (marker set, publishedAt still nil) —
+        // background backfill must not retry it.
+        let m2 = makeMeta(
+            itemID: 81,
+            publishedAt: nil,
+            publishedAtBackfillAttemptedAt: Date(timeIntervalSinceNow: -3600)
+        )
+        try LibraryItemMetadata.encoder().encode(m2).write(to: dir.appendingPathComponent("81.json"))
+        try Data("x".utf8).write(to: dir.appendingPathComponent("81.jpeg"))
+
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.reconcile(itemsDirectory: dir)
+
+        let stub = StubFetchImageProvider()
+        stub.responses[80] = civitaiImage(id: 80, publishedAtISO: "2024-03-22T10:52:00.000Z")
+        stub.responses[81] = civitaiImage(id: 81, publishedAtISO: "2024-03-22T10:52:00.000Z")
+
+        let svc = await LibraryDateBackfillService(
+            indexService: index,
+            itemsDirectory: dir,
+            fetcher: stub
+        )
+        await svc.runOnce()
+
+        // Only the un-attempted item was queried; the marked one was skipped.
+        #expect(stub.requestedIDs == [80])
+    }
+
+    @Test func attemptCatchupWritesPublishedAtWhenLateDateArrives() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Previously attempted (marker set), publishedAt still nil — i.e. the
+        // background scan gave up. User opens the item; API now has a date.
+        let m = makeMeta(
+            itemID: 100,
+            publishedAt: nil,
+            publishedAtBackfillAttemptedAt: Date(timeIntervalSinceNow: -3600)
+        )
+        try LibraryItemMetadata.encoder().encode(m).write(to: dir.appendingPathComponent("100.json"))
+        try Data("x".utf8).write(to: dir.appendingPathComponent("100.jpeg"))
+
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.reconcile(itemsDirectory: dir)
+
+        let stub = StubFetchImageProvider()
+        stub.responses[100] = civitaiImage(id: 100, publishedAtISO: "2024-03-22T10:52:00.000Z")
+
+        let svc = await LibraryDateBackfillService(
+            indexService: index,
+            itemsDirectory: dir,
+            fetcher: stub
+        )
+        let updated = await svc.attemptCatchup(for: m)
+
+        #expect(updated?.publishedAt != nil)
+        let data = try Data(contentsOf: dir.appendingPathComponent("100.json"))
+        let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
+        #expect(decoded.publishedAt != nil)
+        // The marker is irrelevant once we have publishedAt; we clear it on
+        // the success path so the sidecar reflects "we know the date now".
+        #expect(decoded.publishedAtBackfillAttemptedAt == nil)
+    }
+
+    @Test func attemptCatchupNoopsWhenSidecarAlreadyHasPublishedAt() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let already = Date(timeIntervalSince1970: 1_700_000_000)
+        let m = makeMeta(itemID: 110, publishedAt: already)
+
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+
+        let stub = StubFetchImageProvider()
+        let svc = await LibraryDateBackfillService(
+            indexService: index,
+            itemsDirectory: dir,
+            fetcher: stub
+        )
+        let result = await svc.attemptCatchup(for: m)
+
+        // No API call is made and no rewrite happens — there's nothing to do.
+        #expect(result == nil)
+        #expect(stub.requestedIDs.isEmpty)
+    }
+
+    @Test func backfillDoesNotStampMarkerOnTransientFetchError() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let m = makeMeta(itemID: 90, publishedAt: nil)
+        try LibraryItemMetadata.encoder().encode(m).write(to: dir.appendingPathComponent("90.json"))
+        try Data("x".utf8).write(to: dir.appendingPathComponent("90.jpeg"))
+
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.reconcile(itemsDirectory: dir)
+
+        let stub = StubFetchImageProvider()
+        stub.errorForID = [90]   // simulates network failure
+
+        let svc = await LibraryDateBackfillService(
+            indexService: index,
+            itemsDirectory: dir,
+            fetcher: stub
+        )
+        await svc.runOnce()
+
+        // Network failure must not poison the marker, otherwise an offline
+        // first-run would permanently retire every item.
+        let data = try Data(contentsOf: dir.appendingPathComponent("90.json"))
+        let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
+        #expect(decoded.publishedAt == nil)
+        #expect(decoded.publishedAtBackfillAttemptedAt == nil)
     }
 }

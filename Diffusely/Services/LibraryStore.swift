@@ -74,6 +74,22 @@ final class LibraryStore: ObservableObject {
         didRunDateBackfillThisSession = true
     }
 
+    /// User-initiated publish-date catchup for a single item. Called from
+    /// `LibraryDetailView` when the user opens an item whose `publishedAt`
+    /// is still nil — this is the explicit recovery path for items the
+    /// background scan has given up on (marker set). One API call, silent
+    /// failure if anything goes wrong.
+    func attemptPublishDateCatchup(for metadata: LibraryItemMetadata) async -> LibraryItemMetadata? {
+        guard metadata.publishedAt == nil else { return nil }
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return nil }
+        let svc = LibraryDateBackfillService(
+            indexService: indexService,
+            sidecarStore: FileLibraryBackfillSidecarStore(itemsDirectory: dir),
+            fetcher: CivitaiServiceFetchImageAdapter()
+        )
+        return await svc.attemptCatchup(for: metadata)
+    }
+
     func reconcileNow() async {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
         iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable

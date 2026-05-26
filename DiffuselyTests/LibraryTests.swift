@@ -100,8 +100,44 @@ private func makeMetadata(
         #expect(decoded.generationData?.resources?.first?.modelName == "M")
     }
 
-    @Test func currentSchemaVersionIsThree() {
-        #expect(LibraryItemMetadata.currentSchemaVersion == 3)
+    @Test func currentSchemaVersionIsFour() {
+        // v4 added publishedAtBackfillAttemptedAt so background backfill can
+        // stop re-asking the API for items that came back with a null date.
+        #expect(LibraryItemMetadata.currentSchemaVersion == 4)
+    }
+
+    @Test func decodesV3JSONMissingBackfillMarkerAsNil() throws {
+        // A v3 sidecar (publishedAt present, marker absent) must decode with
+        // publishedAtBackfillAttemptedAt == nil. Adding the new field is a
+        // non-breaking optional addition — sidecars synced from devices on
+        // older app versions must still load.
+        let legacy = """
+        {
+            "schemaVersion": 3,
+            "itemID": 800,
+            "sourcePostID": null,
+            "sourcePostTitle": null,
+            "canonicalPostURL": null,
+            "canonicalPageURL": "https://civitai.com/images/800",
+            "sourceDomain": "civitai.com",
+            "originalCDNURL": "https://image.civitai.com/x/u/original=true/800.jpeg",
+            "mediaType": "image",
+            "mediaFileName": "800.jpeg",
+            "fileByteSize": 0,
+            "contentSHA256": "x",
+            "width": 1, "height": 1, "nsfwLevel": 1,
+            "author": { "id": null, "username": null, "avatarURL": null },
+            "stats": null,
+            "generationData": null,
+            "publishedAt": "2024-03-22T10:52:00Z",
+            "savedAt": "2024-03-22T10:52:00Z",
+            "savedByAppVersion": "old"
+        }
+        """.data(using: .utf8)!
+        let decoded = try LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: legacy)
+        #expect(decoded.itemID == 800)
+        #expect(decoded.publishedAt != nil)
+        #expect(decoded.publishedAtBackfillAttemptedAt == nil)
     }
 
     @Test func roundTripsPublishedAt() throws {

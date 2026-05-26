@@ -325,14 +325,3 @@ struct LibraryView: View {
         return abs(hasher.finalize() & 0x7FFF_FFFF)
     }
 }
-
-/// Bridges the live `CivitaiService` to `LibraryDateBackfillService.FetchImageProvider`.
-/// `@MainActor` because `CivitaiService` is itself main-actor isolated; the backfill
-/// service is also main-actor so the hop is free.
-@MainActor
-private final class CivitaiServiceFetchImageAdapter: LibraryDateBackfillService.FetchImageProvider {
-    private let service = CivitaiService()
-    func fetchImage(imageId: Int) async throws -> CivitaiImage {
-        try await service.fetchImage(imageId: imageId)
-    }
-}

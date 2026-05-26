@@ -157,5 +157,15 @@ struct LibraryDetailView: View {
         }
         metadata = decoded
         await store.indexService.recordAccess(itemID: itemID)
+
+        // Opportunistic publish-date catchup: if this item's date is still
+        // nil (e.g. it was a draft when saved and the background scan gave
+        // up), try one fresh fetch now. The user is explicitly looking at
+        // this item so the API cost is justified. Updates the displayed
+        // metadata if the fetch succeeded.
+        if decoded.publishedAt == nil,
+           let updated = await store.attemptPublishDateCatchup(for: decoded) {
+            metadata = updated
+        }
     }
 }
