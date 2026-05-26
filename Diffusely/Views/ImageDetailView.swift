@@ -21,12 +21,30 @@ struct ImageDetailView: View {
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
     var body: some View {
+        // iOS presents this via fullScreenCover and needs its own NavigationStack
+        // to host inner pushes (e.g. View Post). On Mac the view is pushed onto
+        // the parent's NavigationStack, so an inner NavigationStack here would
+        // be nested — and a nested NavigationStack on macOS clobbers the outer
+        // path when an inner-stack push is popped, so back blows past every
+        // intermediate view all the way to root. Render bare on Mac so
+        // $navigateToPost / $pushedUser attach to the outer stack and back
+        // walks the path one level at a time, like the other detail views.
+        #if os(iOS)
         NavigationStack {
-            ZStack {
-                Color(.systemBackground)
-                    .ignoresSafeArea()
+            coreBody
+        }
+        #else
+        coreBody
+        #endif
+    }
 
-                VStack(spacing: 0) {
+    @ViewBuilder
+    private var coreBody: some View {
+        ZStack {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
                 // Header
                 HStack {
                     Button(action: {
@@ -172,7 +190,6 @@ struct ImageDetailView: View {
                 }
             }
             #endif
-        }
     }
 
     private func loadGenerationData() async {
