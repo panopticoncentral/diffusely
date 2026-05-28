@@ -163,7 +163,7 @@ class MediaCacheService: ObservableObject {
 
             let task = Task(priority: priority) {
                 await loadVideoAsync(url: url)
-                await videoLoadCompleted()
+                videoLoadCompleted()
             }
             entry.loadingTask = task
         } else {
@@ -193,7 +193,7 @@ class MediaCacheService: ObservableObject {
 
             let task = Task(priority: next.priority) {
                 await loadVideoAsync(url: next.url)
-                await videoLoadCompleted()
+                videoLoadCompleted()
             }
             entry.loadingTask = task
         }
