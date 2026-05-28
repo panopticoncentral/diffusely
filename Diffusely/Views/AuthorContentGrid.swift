@@ -27,6 +27,7 @@ struct AuthorContentGrid: View {
                     preserveAspectRatio: true,
                     onSelectImage: onSelectImage.map { selector in { selector(image) } },
                     onSelectUser: onSelectUser,
+                    onSelectPost: onSelectPost,
                     showsContextMenu: showsItemContextMenus
                 )
             }

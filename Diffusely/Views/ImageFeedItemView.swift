@@ -16,6 +16,14 @@ struct ImageFeedItemView: View {
     /// stack slot when a thumbnail's username is tapped, because the default
     /// path calls `feedNavigator.push(user)`.
     var onSelectUser: ((CivitaiUser) -> Void)? = nil
+    /// Same story for the "View Post" entry in the ellipsis / context menu.
+    /// When this view is hosted inside an intermediate pushed view (e.g.
+    /// `UserContentView` opened from a collection author header, or the
+    /// `CollectionDetailView` image grid), the default `feedNavigator.push(post)`
+    /// fires the root-level navigationDestination and collapses every view
+    /// between the root and the new post — so back returns to the section
+    /// root instead of where the user came from.
+    var onSelectPost: ((CivitaiPost) -> Void)? = nil
     /// When true, the item gains a right-click / long-press context menu
     /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
     /// false elsewhere keeps the main feed and author profile context-menu-free.
@@ -110,11 +118,15 @@ struct ImageFeedItemView: View {
         isLoadingPost = true
         do {
             let post = try await civitaiService.getPost(postId: postId)
-            #if os(macOS)
-            feedNavigator.push(post)
-            #else
-            navigateToPost = post
-            #endif
+            if let onSelectPost = onSelectPost {
+                onSelectPost(post)
+            } else {
+                #if os(macOS)
+                feedNavigator.push(post)
+                #else
+                navigateToPost = post
+                #endif
+            }
         } catch {
             // Silently fail
         }

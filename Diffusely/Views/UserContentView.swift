@@ -29,6 +29,11 @@ struct UserContentView: View {
     // instead of this user content. Matches the pushed*-local pattern in
     // CollectionDetailView / ImageDetailView / PostDetailView.
     @State private var pushedImage: CivitaiImage?
+    // Same rationale for "View Post" on a thumbnail's ellipsis menu: without
+    // a local push, ImageFeedItemView.loadPost would route through
+    // feedNavigator.push(post) and collapse this view (and any view we were
+    // pushed under, like CollectionDetailView).
+    @State private var pushedPost: CivitaiPost?
     #endif
 
     private var hasAPIKey: Bool {
@@ -140,6 +145,9 @@ struct UserContentView: View {
         .navigationDestination(item: $pushedImage) { image in
             ImageDetailView(image: image)
         }
+        .navigationDestination(item: $pushedPost) { post in
+            PostDetailView(post: post)
+        }
         #endif
     }
 
@@ -162,7 +170,11 @@ struct UserContentView: View {
                 // so the username overlay tap is a no-op rather than pushing
                 // a duplicate of this same view onto the stack. Also dodges
                 // the feedNavigator.push(user) collapse-the-stack bug.
-                onSelectUser: { _ in }
+                onSelectUser: { _ in },
+                // Same reason as onSelectImage: keep "View Post" pushes local
+                // so back returns here (and to whatever pushed us) instead of
+                // jumping past every intermediate view to the section root.
+                onSelectPost: { pushedPost = $0 }
             )
                 .onAppear {
                     if image.id == civitaiService.images.last?.id {
