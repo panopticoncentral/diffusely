@@ -120,42 +120,39 @@ struct ImageFeedView: View {
             aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
         ) { image in
             ImageFeedItemView(image: image, isGridMode: true, preserveAspectRatio: true)
-                .onAppear {
-                    if image.id == civitaiService.images.last?.id {
-                        Task { await loadMoreImages() }
-                    }
-                }
+                .onAppear { maybeLoadMore(for: image) }
         }
         #else
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                ForEach(civitaiService.images, id: \.id) { image in
                     ImageFeedItemView(image: image, isGridMode: true)
-                        .onAppear {
-                            if image.id == civitaiService.images.last?.id {
-                                Task {
-                                    await loadMoreImages()
-                                }
-                            }
-                        }
+                        .onAppear { maybeLoadMore(for: image) }
                 }
             }
             .padding(.horizontal, 2)
         } else {
             LazyVStack(spacing: 0) {
-                ForEach(Array(civitaiService.images.enumerated()), id: \.element.id) { index, image in
+                ForEach(civitaiService.images, id: \.id) { image in
                     ImageFeedItemView(image: image, isGridMode: false)
-                        .onAppear {
-                            if image.id == civitaiService.images.last?.id {
-                                Task {
-                                    await loadMoreImages()
-                                }
-                            }
-                        }
+                        .onAppear { maybeLoadMore(for: image) }
                 }
             }
         }
         #endif
+    }
+
+    /// Kicks off the next page when `image` is the prefetch trigger (≈5 items
+    /// from the end) or the very last item. The 5-from-end trigger gives the
+    /// network a head start so the user rarely hits the bottom spinner; the
+    /// last-item check is a backstop in case fast scrolling skips the trigger's
+    /// onAppear. loadMoreImages' own !isLoading guard dedups the two.
+    private func maybeLoadMore(for image: CivitaiImage) {
+        let items = civitaiService.images
+        let prefetchTriggerID = items.count > 5 ? items[items.count - 5].id : items.first?.id
+        if image.id == prefetchTriggerID || image.id == items.last?.id {
+            Task { await loadMoreImages() }
+        }
     }
 
     private func loadImages() async {

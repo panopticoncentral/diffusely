@@ -100,6 +100,11 @@ struct CachedVideoPlayer: View {
         .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
             state = newState
         }
+        .onDisappear {
+            // No-op for an already-loaded video (its player is kept cached and
+            // paused by the inner onDisappear); drops a still-queued load.
+            mediaCache.cancelLoad(url: url)
+        }
     }
 }
 

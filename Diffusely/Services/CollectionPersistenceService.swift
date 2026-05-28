@@ -48,18 +48,54 @@ class CollectionPersistenceService: ObservableObject {
         return new
     }
 
+    /// Fetches every author whose id is in `userIds` in a single query and
+    /// returns an id→author map for O(1) lookup. Used by the page-add paths
+    /// to avoid a per-item author fetch (the old N+1).
+    private func authorMap(forUserIds userIds: [Int]) -> [Int: PersistedAuthor] {
+        guard !userIds.isEmpty else { return [:] }
+        let descriptor = FetchDescriptor<PersistedAuthor>(
+            predicate: #Predicate { userIds.contains($0.id) }
+        )
+        let existing = (try? modelContext.fetch(descriptor)) ?? []
+        return Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Resolves the `PersistedAuthor` for `user` from an in-memory `cache`,
+    /// updating mutable fields on a hit and inserting + caching on a miss.
+    /// Mirrors `getOrCreateAuthor` but does no per-call fetch.
+    private func resolveAuthor(
+        from user: CivitaiUser,
+        cache: inout [Int: PersistedAuthor]
+    ) -> PersistedAuthor {
+        if let existing = cache[user.id] {
+            // Update username/image in case they changed
+            existing.username = user.username
+            existing.imageURL = user.image
+            return existing
+        }
+        let new = PersistedAuthor(from: user)
+        modelContext.insert(new)
+        cache[user.id] = new
+        return new
+    }
+
     // MARK: - Image Operations
 
     func addImages(_ images: [CivitaiImage], to collection: PersistedCollection) {
         let generation = collection.syncGeneration
+
+        // Dedup against the in-memory relationship rather than a per-item SQL
+        // fetch. The old path ran one FetchDescriptor per image (N+1) plus a
+        // per-author fetch — ~200 main-thread queries per 100-item page.
+        var existingById = Dictionary(
+            collection.images.map { ($0.id, $0) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        // Prefetch every author this page references in one query.
+        var authors = authorMap(forUserIds: Array(Set(images.compactMap { $0.user?.id })))
+
         for image in images {
-            // Check if image already exists in this collection
-            let imageId = image.id
-            let collectionId = collection.id
-            let descriptor = FetchDescriptor<PersistedImage>(
-                predicate: #Predicate { $0.id == imageId && $0.collection?.id == collectionId }
-            )
-            if let existing = try? modelContext.fetch(descriptor).first {
+            if let existing = existingById[image.id] {
                 // Update stats if needed
                 if let stats = image.stats {
                     existing.likeCount = stats.likeCountAllTime
@@ -77,11 +113,12 @@ class CollectionPersistenceService: ObservableObject {
             persisted.lastSeenGeneration = generation
 
             if let user = image.user {
-                persisted.author = getOrCreateAuthor(from: user)
+                persisted.author = resolveAuthor(from: user, cache: &authors)
             }
 
             modelContext.insert(persisted)
             collection.images.append(persisted)
+            existingById[image.id] = persisted
         }
         try? modelContext.save()
     }
@@ -90,14 +127,16 @@ class CollectionPersistenceService: ObservableObject {
 
     func addPosts(_ posts: [CivitaiPost], to collection: PersistedCollection) {
         let generation = collection.syncGeneration
+
+        // See addImages: dedup in-memory and prefetch authors to avoid N+1.
+        var existingById = Dictionary(
+            collection.posts.map { ($0.id, $0) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        var authors = authorMap(forUserIds: Array(Set(posts.map { $0.user.id })))
+
         for post in posts {
-            // Check if post already exists in this collection
-            let postId = post.id
-            let collectionId = collection.id
-            let descriptor = FetchDescriptor<PersistedPost>(
-                predicate: #Predicate { $0.id == postId && $0.collection?.id == collectionId }
-            )
-            if let existing = try? modelContext.fetch(descriptor).first {
+            if let existing = existingById[post.id] {
                 // Update stats if needed
                 if let stats = post.stats {
                     existing.likeCount = stats.likeCount
@@ -113,7 +152,7 @@ class CollectionPersistenceService: ObservableObject {
             let persisted = PersistedPost(from: post)
             persisted.collection = collection
             persisted.lastSeenGeneration = generation
-            persisted.author = getOrCreateAuthor(from: post.user)
+            persisted.author = resolveAuthor(from: post.user, cache: &authors)
 
             // Add post images
             for image in post.safeImages {
@@ -125,6 +164,7 @@ class CollectionPersistenceService: ObservableObject {
 
             modelContext.insert(persisted)
             collection.posts.append(persisted)
+            existingById[post.id] = persisted
         }
         try? modelContext.save()
     }

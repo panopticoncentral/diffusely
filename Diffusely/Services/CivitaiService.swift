@@ -52,6 +52,14 @@ fileprivate enum Cursor: Codable {
     }
 }
 
+/// Thrown when an HTTP response carries a non-2xx status code. Surfacing the
+/// status this way (rather than letting the error body fail JSON decoding as a
+/// `DecodingError`) lets the sync retry classifier back off on 429/5xx instead
+/// of treating a rate-limit or transient server error as fatal.
+struct HTTPStatusError: Error, Equatable {
+    let statusCode: Int
+}
+
 @MainActor
 class CivitaiService: ObservableObject {
     @Published var images: [CivitaiImage] = []
@@ -75,8 +83,17 @@ class CivitaiService: ObservableObject {
     private var currentTask: Task<Void, Never>?
     private let mediaCacheService = MediaCacheService.shared
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = .civitai) {
         self.session = session
+    }
+
+    /// Throws `HTTPStatusError` when `response` is a non-2xx HTTP response so
+    /// callers fail fast with the status code instead of decoding an error body.
+    private func validateStatus(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else { return }
+        guard (200...299).contains(http.statusCode) else {
+            throw HTTPStatusError(statusCode: http.statusCode)
+        }
     }
 
     func clear() {
@@ -88,10 +105,14 @@ class CivitaiService: ObservableObject {
     }
     
     func fetchImages(videos: Bool, limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
-        // Cancel any existing request
-        currentTask?.cancel()
-
-        guard !isLoading else { return }
+        // Cancel any in-flight request and wait for it to fully unwind before
+        // starting a new one. Cancellation is cooperative, so `isLoading` and the
+        // task aren't settled the instant we call cancel(); awaiting the old task
+        // here avoids the race where a refresh (clear + immediate refetch) got
+        // dropped by a still-true `isLoading` guard and left the feed blank.
+        let inFlight = currentTask
+        inFlight?.cancel()
+        await inFlight?.value
 
         currentTask = Task {
             isLoading = true
@@ -179,15 +200,20 @@ class CivitaiService: ObservableObject {
     }
     
     func loadMoreImages(videos: Bool, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
-        guard nextCursor != nil else { return }
+        // Skip if there's no next page or a load is already running. The latter
+        // dedups the burst of prefetch triggers the feed fires as the user nears
+        // the end, so we don't cancel-and-restart an in-flight page repeatedly.
+        guard nextCursor != nil, !isLoading else { return }
         await fetchImages(videos: videos, period: period, sort: sort, collectionId: collectionId, username: username)
     }
 
     func fetchPosts(limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
-        // Cancel any existing request
-        currentTask?.cancel()
-
-        guard !isLoading else { return }
+        // Cancel any in-flight request and wait for it to fully unwind before
+        // starting a new one — see fetchImages for why awaiting (rather than a
+        // stale `isLoading` guard) is what keeps a refresh from blanking the feed.
+        let inFlight = currentTask
+        inFlight?.cancel()
+        await inFlight?.value
 
         currentTask = Task {
             isLoading = true
@@ -265,7 +291,7 @@ class CivitaiService: ObservableObject {
     }
 
     func loadMorePosts(period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
-        guard nextPostCursor != nil else { return }
+        guard nextPostCursor != nil, !isLoading else { return }
         await fetchPosts(period: period, sort: sort, collectionId: collectionId)
     }
 
@@ -1015,7 +1041,8 @@ class CivitaiService: ObservableObject {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, _) = try await session.data(for: request)
+        let (data, httpResponse) = try await session.data(for: request)
+        try validateStatus(httpResponse)
         let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
         let response = tRPCResponse[0].result.data.json
 
@@ -1065,7 +1092,8 @@ class CivitaiService: ObservableObject {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, _) = try await session.data(for: request)
+        let (data, httpResponse) = try await session.data(for: request)
+        try validateStatus(httpResponse)
         let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
         let response = tRPCResponse[0].result.data.json
 

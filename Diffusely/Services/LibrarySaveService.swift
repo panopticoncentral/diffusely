@@ -204,7 +204,7 @@ final class LibrarySaveService: ObservableObject {
             throw LibrarySaveError.downloadFailed
         }
 
-        let (tempURL, response) = try await URLSession.shared.download(from: url)
+        let (tempURL, response) = try await URLSession.civitai.download(from: url)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             try? FileManager.default.removeItem(at: tempURL)
             throw LibrarySaveError.downloadFailed

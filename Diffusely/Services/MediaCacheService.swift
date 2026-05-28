@@ -30,6 +30,12 @@ class MediaCacheService: ObservableObject {
 
     // Limit concurrent video loads to prevent network connection exhaustion
     private let maxConcurrentVideoLoads = 3
+
+    // A player item that never reaches .readyToPlay or .failed (e.g. a stalled
+    // connection sitting at .unknown) would otherwise leave its load task
+    // suspended forever and permanently consume one of the concurrency slots
+    // above. Fail the load after this interval so the slot is released.
+    private static let videoLoadTimeout: TimeInterval = 30
     private var activeVideoLoads = 0
     private var pendingVideoLoads: [(url: String, priority: TaskPriority)] = []
 
@@ -193,6 +199,34 @@ class MediaCacheService: ObservableObject {
         }
     }
 
+    /// Cancels an in-flight load for `url` when its view scrolls off-screen, so we
+    /// stop fetching media the user has already scrolled past while media that's
+    /// actually on screen waits in the connection queue. Anything already loaded
+    /// is left cached; a reappearing view re-triggers the load via `onAppear`.
+    func cancelLoad(url: String) {
+        guard let entry = entries[url] else { return }
+        // `content` is non-nil once an image is decoded or a video's player has
+        // been attached (even before it's ready), so this guard naturally keeps
+        // loaded images and in-flight video loads — the latter can't be resumed
+        // by cancellation anyway and are bounded by `videoLoadTimeout`.
+        guard entry.content == nil else { return }
+
+        // A video still waiting in the throttle queue never started — just drop it.
+        if let queueIndex = pendingVideoLoads.firstIndex(where: { $0.url == url }) {
+            pendingVideoLoads.remove(at: queueIndex)
+            entry.state = .idle
+            return
+        }
+
+        // Otherwise it's an in-flight image fetch; cancelling the task cancels
+        // the underlying URLSession data task.
+        if let task = entry.loadingTask {
+            task.cancel()
+            entry.loadingTask = nil
+            entry.state = .idle
+        }
+    }
+
     func retryFailed(url: String, isVideo: Bool) {
         let currentState = getMediaState(for: url)
         guard case .failed = currentState else { return }
@@ -244,7 +278,7 @@ class MediaCacheService: ObservableObject {
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: imageURL)
+            let (data, response) = try await URLSession.civitai.data(from: imageURL)
 
             guard !Task.isCancelled else { return }
 
@@ -294,8 +328,15 @@ class MediaCacheService: ObservableObject {
                 return
             }
 
-            // Downsample the image to reduce memory usage
-            guard let image = downsampleImage(data: data, maxDimension: maxImageDimension) else {
+            // Downsample the image to reduce memory usage. This is CPU-bound
+            // (ImageIO thumbnail decode), so run it off the main actor — this
+            // method is MainActor-isolated and would otherwise block scrolling.
+            let maxDimension = maxImageDimension
+            let image = await Task.detached(priority: .utility) {
+                ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
+            }.value
+
+            guard let image else {
                 logMediaFailure(
                     url: url,
                     isVideo: false,
@@ -405,7 +446,11 @@ class MediaCacheService: ObservableObject {
             .appendingPathExtension(ext)
 
         do {
-            try data.write(to: tempURL, options: .atomic)
+            // Staging up to 50 MB to disk; keep this sync I/O off the main actor.
+            let target = tempURL
+            try await Task.detached(priority: .utility) {
+                try data.write(to: target, options: .atomic)
+            }.value
         } catch {
             logMediaFailure(
                 url: url,
@@ -457,10 +502,6 @@ class MediaCacheService: ObservableObject {
         return nil
     }
 
-    private func downsampleImage(data: Data, maxDimension: CGFloat) -> PlatformImage? {
-        ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
-    }
-
     private func loadVideoAsync(url: String) async {
         guard let videoURL = URL(string: url) else {
             logMediaFailure(url: url, isVideo: true, reason: "Invalid URL")
@@ -488,24 +529,46 @@ class MediaCacheService: ObservableObject {
             var cancellables = Set<AnyCancellable>()
             var hasResumed = false
 
+            // Fired if the item never resolves to ready/failed within the timeout.
+            // Everything here runs on the main queue, matching the sink's queue,
+            // so `hasResumed` is mutated from a single context without a race.
+            let timeoutWork = DispatchWorkItem { [weak self] in
+                guard !hasResumed else { return }
+                hasResumed = true
+                self?.logMediaFailure(url: url, isVideo: true, reason: "Timed out waiting for video to become ready")
+                if let entry = self?.entries[url] {
+                    entry.state = .failed(URLError(.timedOut))
+                    entry.loadingTask = nil
+                    entry.content = nil
+                }
+                player.replaceCurrentItem(with: nil)
+                continuation.resume()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.videoLoadTimeout, execute: timeoutWork)
+
             // Monitor player item status
             item.publisher(for: \.status)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] status in
                     guard let self = self else { return }
+                    // Ignore any late status changes once the load has resolved
+                    // (including via timeout) so we never flip a failed/torn-down
+                    // entry back to loaded.
+                    guard !hasResumed else { return }
 
                     switch status {
                     case .readyToPlay:
+                        hasResumed = true
+                        timeoutWork.cancel()
                         if let entry = self.entries[url] {
                             entry.state = .loaded(content)
                             entry.loadingTask = nil
                         }
-                        if !hasResumed {
-                            hasResumed = true
-                            continuation.resume()
-                        }
+                        continuation.resume()
 
                     case .failed:
+                        hasResumed = true
+                        timeoutWork.cancel()
                         let error = item.error ?? URLError(.unknown)
                         self.logMediaFailure(url: url, isVideo: true, reason: self.describe(error: error))
                         if let entry = self.entries[url] {
@@ -513,15 +576,16 @@ class MediaCacheService: ObservableObject {
                             entry.loadingTask = nil
                             entry.content = nil
                         }
-                        if !hasResumed {
-                            hasResumed = true
-                            continuation.resume()
-                        }
+                        continuation.resume()
 
                     case .unknown:
+                        // Still resolving — keep waiting; the timeout guards a
+                        // permanent stall here.
                         break
 
                     @unknown default:
+                        hasResumed = true
+                        timeoutWork.cancel()
                         let error = URLError(.unknown)
                         self.logMediaFailure(url: url, isVideo: true, reason: "Unknown player item status")
                         if let entry = self.entries[url] {
@@ -529,10 +593,7 @@ class MediaCacheService: ObservableObject {
                             entry.loadingTask = nil
                             entry.content = nil
                         }
-                        if !hasResumed {
-                            hasResumed = true
-                            continuation.resume()
-                        }
+                        continuation.resume()
                     }
                 }
                 .store(in: &cancellables)

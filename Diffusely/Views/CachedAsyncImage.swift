@@ -45,6 +45,9 @@ struct CachedAsyncImage: View {
         .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
             state = newState
         }
+        .onDisappear {
+            mediaCache.cancelLoad(url: url)
+        }
     }
 
     @ViewBuilder

@@ -9,12 +9,21 @@ enum SyncErrorClassification: Equatable {
 
 /// Classifies an error thrown by a collection page fetch.
 ///
-/// Known limitation: `fetchImagesPage`/`fetchPostsPage` don't inspect HTTP
-/// status, so a 429/5xx that returns a body surfaces as a `DecodingError`
-/// and is classified `.fatal`. HTTP-status-aware classification is out of
-/// scope (see spec).
+/// `fetchImagesPage`/`fetchPostsPage` validate HTTP status and throw
+/// `HTTPStatusError`, so rate-limiting (429), request timeout (408), and
+/// server errors (5xx) are treated as transient and retried with backoff.
+/// Other 4xx codes are client errors that won't fix themselves, so they're
+/// fatal.
 func classifySyncError(_ error: Error) -> SyncErrorClassification {
     if error is CancellationError { return .cancellation }
+    if let httpError = error as? HTTPStatusError {
+        switch httpError.statusCode {
+        case 408, 429, 500...599:
+            return .transient
+        default:
+            return .fatal
+        }
+    }
     if let urlError = error as? URLError {
         switch urlError.code {
         case .timedOut,

@@ -33,6 +33,20 @@ struct SyncRetryPolicyTests {
         #expect(classifySyncError(CancellationError()) == .cancellation)
     }
 
+    @Test func rateLimitAndServerErrorsClassifyAsTransient() {
+        let transientCodes = [408, 429, 500, 502, 503, 504, 599]
+        for code in transientCodes {
+            #expect(classifySyncError(HTTPStatusError(statusCode: code)) == .transient)
+        }
+    }
+
+    @Test func clientHTTPErrorsClassifyAsFatal() {
+        let fatalCodes = [400, 401, 403, 404, 422]
+        for code in fatalCodes {
+            #expect(classifySyncError(HTTPStatusError(statusCode: code)) == .fatal)
+        }
+    }
+
     @Test func backoffScheduleMatchesSpec() {
         #expect(syncRetryDelay(forAttempt: 1) == 5)
         #expect(syncRetryDelay(forAttempt: 2) == 15)
