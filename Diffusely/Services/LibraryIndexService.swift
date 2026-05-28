@@ -11,29 +11,38 @@ actor LibraryIndexService {
     // MARK: - Upsert
 
     func ingest(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
-        let id = metadata.itemID
-        if let existing = fetchItem(itemID: id) {
-            existing.mediaType = metadata.mediaType.rawValue
-            existing.mediaFileName = metadata.mediaFileName
-            existing.width = metadata.width
-            existing.height = metadata.height
-            existing.nsfwLevel = metadata.nsfwLevel
-            existing.authorUsername = metadata.author.username
-            existing.authorAvatarURL = metadata.author.avatarURL
-            existing.sourcePostID = metadata.sourcePostID
-            existing.canonicalPageURL = metadata.canonicalPageURL
-            existing.fileByteSize = metadata.fileByteSize
-            existing.savedAt = metadata.savedAt
-            existing.publishedAt = metadata.publishedAt
-            existing.checkpointName = metadata.generationData?
-                .resources?
-                .first(where: { $0.modelType == "Checkpoint" })?
-                .modelName
-            existing.downloadStatus = downloadStatus
+        if let existing = fetchItem(itemID: metadata.itemID) {
+            apply(metadata, downloadStatus: downloadStatus, to: existing)
         } else {
             modelContext.insert(PersistedLibraryItem(metadata: metadata, downloadStatus: downloadStatus))
         }
         try? modelContext.save()
+    }
+
+    /// Copies the mutable fields from a freshly-read sidecar onto an existing
+    /// index row. Pure in-memory work — no fetch, no save.
+    private func apply(
+        _ metadata: LibraryItemMetadata,
+        downloadStatus: LibraryDownloadStatus,
+        to row: PersistedLibraryItem
+    ) {
+        row.mediaType = metadata.mediaType.rawValue
+        row.mediaFileName = metadata.mediaFileName
+        row.width = metadata.width
+        row.height = metadata.height
+        row.nsfwLevel = metadata.nsfwLevel
+        row.authorUsername = metadata.author.username
+        row.authorAvatarURL = metadata.author.avatarURL
+        row.sourcePostID = metadata.sourcePostID
+        row.canonicalPageURL = metadata.canonicalPageURL
+        row.fileByteSize = metadata.fileByteSize
+        row.savedAt = metadata.savedAt
+        row.publishedAt = metadata.publishedAt
+        row.checkpointName = metadata.generationData?
+            .resources?
+            .first(where: { $0.modelType == "Checkpoint" })?
+            .modelName
+        row.downloadStatus = downloadStatus
     }
 
     func remove(itemID: Int) {
@@ -65,7 +74,48 @@ actor LibraryIndexService {
     /// Diffs the container against the index: ingests every readable sidecar
     /// (including ones synced from other devices), drops rows whose sidecar
     /// vanished, and ignores media without a committed JSON.
-    func reconcile(itemsDirectory: URL) {
+    ///
+    /// The directory walk, per-sidecar `Data(contentsOf:)` reads, and per-media
+    /// iCloud status lookups are all blocking syscalls — and the iCloud ones
+    /// round-trip to the FileProvider daemon. They ran on the main thread for a
+    /// full library on launch and froze the UI (beachball), so the scan is now
+    /// done on a detached background task; only the SwiftData writes touch the
+    /// model actor.
+    func reconcile(itemsDirectory: URL) async {
+        let scan = await Task.detached(priority: .utility) {
+            Self.scanContainer(itemsDirectory: itemsDirectory)
+        }.value
+
+        // Fetch the index once and upsert from an in-memory map rather than a
+        // per-item fetch + per-item save (was N queries + N saves).
+        let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
+
+        for (metadata, status) in scan.items {
+            if let row = byID[metadata.itemID] {
+                apply(metadata, downloadStatus: status, to: row)
+            } else {
+                let row = PersistedLibraryItem(metadata: metadata, downloadStatus: status)
+                modelContext.insert(row)
+                byID[metadata.itemID] = row
+            }
+        }
+
+        // Drop rows whose sidecar no longer exists.
+        for item in existing where !scan.seenIDs.contains(item.itemID) {
+            modelContext.delete(item)
+        }
+        try? modelContext.save()
+    }
+
+    /// Reads the container off the model actor: walks the directory, reads and
+    /// decodes every sidecar, and resolves each media file's download status.
+    /// All blocking file I/O lives here, so it must only be called from a
+    /// background task (never the main actor). `nonisolated` + `static` so it
+    /// carries no actor isolation and the detached caller doesn't hop back.
+    nonisolated static func scanContainer(
+        itemsDirectory: URL
+    ) -> (items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)], seenIDs: Set<Int>) {
         let fileManager = FileManager.default
         let contents = (try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
@@ -74,6 +124,7 @@ actor LibraryIndexService {
 
         let jsonURLs = contents.filter { $0.pathExtension == "json" }
         var seenIDs = Set<Int>()
+        var items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)] = []
 
         for jsonURL in jsonURLs {
             guard
@@ -83,23 +134,17 @@ actor LibraryIndexService {
 
             seenIDs.insert(metadata.itemID)
             let mediaURL = itemsDirectory.appendingPathComponent(metadata.mediaFileName)
-            let status = Self.downloadStatus(for: mediaURL, fileManager: fileManager)
-            ingest(metadata: metadata, downloadStatus: status)
+            let status = downloadStatus(for: mediaURL, fileManager: fileManager)
+            items.append((metadata: metadata, status: status))
         }
-
-        // Drop rows whose sidecar no longer exists.
-        let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
-        for item in existing where !seenIDs.contains(item.itemID) {
-            modelContext.delete(item)
-        }
-        try? modelContext.save()
+        return (items: items, seenIDs: seenIDs)
     }
 
-    func rebuild(itemsDirectory: URL) {
+    func rebuild(itemsDirectory: URL) async {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         for item in existing { modelContext.delete(item) }
         try? modelContext.save()
-        reconcile(itemsDirectory: itemsDirectory)
+        await reconcile(itemsDirectory: itemsDirectory)
     }
 
     /// Deletes every index row without reconciling. Used by Reset Library after
