@@ -30,19 +30,38 @@ final class LibraryMediaLoader: ObservableObject {
     private var loadTask: Task<Void, Never>?
 
     func load(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat) {
-        guard case .idle = state else { return }
+        // Already showing this media — nothing to do.
+        switch state {
+        case .image, .video: return
+        default: break
+        }
+        // A load is already in flight; don't start a second one.
+        guard loadTask == nil else { return }
         loadTask = Task { await run(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo, maxDimension: maxDimension) }
     }
 
     func cancel() {
         loadTask?.cancel()
         loadTask = nil
+        // A view that scrolls off (or is torn down by a grid re-layout) cancels
+        // the in-flight load. Return to `.idle` unless the media already loaded,
+        // so the next `onAppear` cleanly restarts it. Leaving a stranded
+        // `.downloading` here — combined with the old `guard case .idle` in
+        // `load()` — made thumbnails spin forever until the view was destroyed
+        // and recreated (e.g. by navigating away and back).
+        switch state {
+        case .image, .video: break
+        default: state = .idle
+        }
     }
 
     private func run(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat) async {
         guard
             let dir = try? await LibraryContainer.shared.itemsDirectory()
         else {
+            // A cancellation can surface as a nil here; don't mark it failed —
+            // leave it for `cancel()` to reset so a re-appear retries cleanly.
+            if Task.isCancelled { return }
             logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: "Library items directory unavailable")
             state = .failed
             return
@@ -52,10 +71,11 @@ final class LibraryMediaLoader: ObservableObject {
         do {
             try await ensureDownloaded(url: url)
         } catch {
-            if !(error is CancellationError) {
-                logFailure(itemID: itemID, mediaFileName: mediaFileName,
-                           reason: "Download failed — \((error as NSError).localizedDescription)")
-            }
+            // A cancelled load must not strand as `.failed` (it would block the
+            // `load()` retry on the next onAppear); only real errors fail.
+            if error is CancellationError || Task.isCancelled { return }
+            logFailure(itemID: itemID, mediaFileName: mediaFileName,
+                       reason: "Download failed — \((error as NSError).localizedDescription)")
             state = .failed
             return
         }

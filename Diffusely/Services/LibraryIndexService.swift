@@ -86,8 +86,19 @@ actor LibraryIndexService {
             Self.scanContainer(itemsDirectory: itemsDirectory)
         }.value
 
-        // Fetch the index once and upsert from an in-memory map rather than a
-        // per-item fetch + per-item save (was N queries + N saves).
+        // Fast path: upsert everything from an in-memory map and save once
+        // (one query + one save instead of N + N). If that batched save throws,
+        // fall back to a resilient per-item pass — a single all-or-nothing save
+        // that silently failed is exactly what stranded the whole index empty
+        // after a rebuild, so one poison row must never lose the other 1024.
+        if reconcileBatched(scan) { return }
+        print("[LibraryIndex] batched reconcile save failed; retrying per-item")
+        modelContext.rollback()
+        reconcilePerItem(scan)
+    }
+
+    /// One in-memory diff + a single batched save. Returns `true` on success.
+    private func reconcileBatched(_ scan: ScanResult) -> Bool {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
 
@@ -100,12 +111,44 @@ actor LibraryIndexService {
                 byID[metadata.itemID] = row
             }
         }
-
-        // Drop rows whose sidecar no longer exists.
         for item in existing where !scan.seenIDs.contains(item.itemID) {
             modelContext.delete(item)
         }
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            return true
+        } catch {
+            print("[LibraryIndex] batched reconcile save threw (\(scan.items.count) sidecars): \(error)")
+            return false
+        }
+    }
+
+    /// Slow, resilient recovery: save after every row so a single bad sidecar
+    /// (or a constraint hiccup) is rolled back and skipped instead of taking the
+    /// entire batch down with it. Only runs when the fast path's save failed.
+    private func reconcilePerItem(_ scan: ScanResult) {
+        let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
+
+        for item in existing where !scan.seenIDs.contains(item.itemID) {
+            modelContext.delete(item)
+            if (try? modelContext.save()) == nil { modelContext.rollback() }
+        }
+        for (metadata, status) in scan.items {
+            if let row = byID[metadata.itemID] {
+                apply(metadata, downloadStatus: status, to: row)
+            } else {
+                let row = PersistedLibraryItem(metadata: metadata, downloadStatus: status)
+                modelContext.insert(row)
+                byID[metadata.itemID] = row
+            }
+            do {
+                try modelContext.save()
+            } catch {
+                print("[LibraryIndex] skipping item \(metadata.itemID): \(error)")
+                modelContext.rollback()
+            }
+        }
     }
 
     /// Reads the container off the model actor: walks the directory, reads and
@@ -113,9 +156,14 @@ actor LibraryIndexService {
     /// All blocking file I/O lives here, so it must only be called from a
     /// background task (never the main actor). `nonisolated` + `static` so it
     /// carries no actor isolation and the detached caller doesn't hop back.
-    nonisolated static func scanContainer(
-        itemsDirectory: URL
-    ) -> (items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)], seenIDs: Set<Int>) {
+    /// Result of an off-actor container scan: every readable sidecar paired with
+    /// its media download status, plus the set of itemIDs seen (for pruning).
+    typealias ScanResult = (
+        items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)],
+        seenIDs: Set<Int>
+    )
+
+    nonisolated static func scanContainer(itemsDirectory: URL) -> ScanResult {
         let fileManager = FileManager.default
         let contents = (try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
@@ -140,10 +188,17 @@ actor LibraryIndexService {
         return (items: items, seenIDs: seenIDs)
     }
 
+    /// Rebuilds the index from the container. Despite the name this no longer
+    /// wipes-then-reinserts: deleting every row and immediately re-inserting new
+    /// objects with the *same* `@Attribute(.unique) itemID` values on this one
+    /// `@ModelActor` context (within the same session) made the re-insert `save()`
+    /// throw a unique-constraint violation — the uniquing index still carried the
+    /// just-deleted keys — which `try?` then swallowed, stranding the store empty.
+    /// `reconcile` already re-reads every sidecar, re-applies all mutable fields
+    /// (healing field-level corruption), inserts brand-new sidecars, and deletes
+    /// rows whose sidecar has vanished. That is a full rebuild from the source of
+    /// truth, without the destructive empty window or the re-insert hazard.
     func rebuild(itemsDirectory: URL) async {
-        let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
-        for item in existing { modelContext.delete(item) }
-        try? modelContext.save()
         await reconcile(itemsDirectory: itemsDirectory)
     }
 
