@@ -9,9 +9,18 @@ import CoreGraphics
 struct RemoteThumbnailFetcher {
     typealias Fetch = (URL) async throws -> (Data, URLResponse)
 
+    /// Thumbnails are tiny, so a CDN URL that hasn't responded in this many
+    /// seconds is treated as dead — the caller then falls back to the iCloud
+    /// original / poster frame instead of hanging on URLSession's 60s default.
+    /// (Some video transcode URLs never return.)
+    static let timeout: TimeInterval = 10
+
     let fetch: Fetch
 
-    init(fetch: @escaping Fetch = { try await URLSession.civitai.data(from: $0) }) {
+    init(fetch: @escaping Fetch = { url in
+        let request = URLRequest(url: url, timeoutInterval: RemoteThumbnailFetcher.timeout)
+        return try await URLSession.civitai.data(for: request)
+    }) {
         self.fetch = fetch
     }
 
