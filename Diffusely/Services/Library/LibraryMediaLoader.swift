@@ -197,8 +197,14 @@ final class LibraryMediaLoader: ObservableObject {
     }
 
     private func persistThumbnail(_ image: PlatformImage, itemID: Int, mediaFileName: String, maxDimension: CGFloat) {
-        LibraryThumbnailStore.shared.store(image, itemID: itemID)
+        // RAM insert is cheap; do it on the main actor so the next appearance
+        // hits instantly. The disk write (JPEG encode + file I/O) is expensive —
+        // run it off the main actor so encoding hundreds of thumbnails during a
+        // scroll doesn't stutter the UI.
         LibraryImageCache.shared.insert(image, fileName: mediaFileName, maxDimension: maxDimension)
+        Task.detached(priority: .utility) {
+            LibraryThumbnailStore.shared.store(image, itemID: itemID)
+        }
     }
 
     /// Builds a thumbnail from the already-local original: ImageIO downsample for
