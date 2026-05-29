@@ -74,11 +74,7 @@ final class LibraryMediaLoader: ObservableObject {
     }
 
     private func run(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat, output: Output) async {
-        guard
-            let dir = try? await LibraryContainer.shared.itemsDirectory()
-        else {
-            // A cancellation can surface as a nil here; don't mark it failed —
-            // leave it for `cancel()` to reset so a re-appear retries cleanly.
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else {
             if Task.isCancelled { return }
             logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: "Library items directory unavailable")
             state = .failed
@@ -86,91 +82,139 @@ final class LibraryMediaLoader: ObservableObject {
         }
         let url = dir.appendingPathComponent(mediaFileName)
 
+        switch output {
+        case .player:
+            await runVideoPlayer(itemID: itemID, mediaFileName: mediaFileName, url: url)
+        case .image where maxDimension <= LibraryThumbnailStore.gridThumbnailDimension:
+            await runGridThumbnail(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo,
+                                   maxDimension: maxDimension, dir: dir, originalURL: url)
+        case .image:
+            await runFullImage(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo,
+                               maxDimension: maxDimension, originalURL: url)
+        }
+    }
+
+    /// Grid path: disk thumbnail → CDN → iCloud original. Never downloads the
+    /// full original unless both the disk cache and the CDN fail.
+    private func runGridThumbnail(itemID: Int, mediaFileName: String, isVideo: Bool,
+                                  maxDimension: CGFloat, dir: URL, originalURL: URL) async {
+        // 1. Disk thumbnail hit — no download.
+        if let cached = await Task.detached(priority: .userInitiated, operation: {
+            LibraryThumbnailStore.shared.thumbnail(itemID: itemID)
+        }).value {
+            if Task.isCancelled { return }
+            LibraryImageCache.shared.insert(cached, fileName: mediaFileName, maxDimension: maxDimension)
+            state = .image(cached)
+            return
+        }
+
+        // 2. CDN-first — fetch a static thumbnail without downloading the original.
+        let cdnImage = await Task.detached(priority: .userInitiated, operation: { () -> PlatformImage? in
+            guard let original = Self.originalCDNURL(itemID: itemID, in: dir),
+                  let thumbURL = CivitaiThumbnailURL.thumbnail(fromOriginal: original, isVideo: isVideo, width: Int(maxDimension))
+            else { return nil }
+            return await RemoteThumbnailFetcher().image(from: thumbURL, maxDimension: maxDimension)
+        }).value
+        if Task.isCancelled { return }
+        if let cdnImage {
+            persistThumbnail(cdnImage, itemID: itemID, mediaFileName: mediaFileName, maxDimension: maxDimension)
+            state = .image(cdnImage)
+            return
+        }
+
+        // 3. Fallback: download the iCloud original and build the thumbnail from it.
         let didDownload: Bool
         do {
-            didDownload = try await ensureDownloaded(url: url)
+            didDownload = try await ensureDownloaded(url: originalURL)
         } catch {
-            // A cancelled load must not strand as `.failed` (it would block the
-            // `load()` retry on the next onAppear); only real errors fail.
             if error is CancellationError || Task.isCancelled { return }
             logFailure(itemID: itemID, mediaFileName: mediaFileName,
                        reason: "Download failed — \((error as NSError).localizedDescription)")
             state = .failed
             return
         }
-
         if Task.isCancelled { return }
-
-        // If we just materialized a previously-evicted file, record it in the
-        // index so its persisted status reflects reality (accurate Downloaded
-        // total, correct cloud badge on the next fetch/launch) instead of
-        // lingering as .evicted until the next reconcile. recordAccess also
-        // bumps lastAccessedAt, protecting just-viewed items from eviction.
         if didDownload {
             await LibrarySaveService.shared.indexService?.recordAccess(itemID: itemID, status: .downloaded)
         }
 
-        if isVideo {
-            switch output {
-            case .player:
-                state = .video(AVPlayer(url: url))
-                return
-            case .image:
-                // The grid renders videos as a still poster frame, not a player.
-                let frame = await Self.extractPosterFrame(path: url.path, maxDimension: maxDimension)
-                if Task.isCancelled { return }
-                if let frame {
-                    LibraryImageCache.shared.insert(frame, fileName: mediaFileName, maxDimension: maxDimension)
-                    state = .image(frame)
-                } else {
-                    logFailure(itemID: itemID, mediaFileName: mediaFileName,
-                               reason: "Could not extract a poster frame from the video")
-                    state = .failed
-                }
-                return
-            }
-        }
-
-        // Run the file-coordinator read + ImageIO decode off the main actor.
-        // The class is @MainActor for `state` plumbing, but doing the
-        // synchronous Data(contentsOf:) + downsample here would serialize
-        // every visible thumbnail on the main thread and freeze the UI when
-        // a Library full of items appears at once.
-        let outcome: LoadOutcome = await Task.detached(priority: .userInitiated) {
-            var data: Data?
-            var coordError: NSError?
-            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordError) { readURL in
-                data = try? Data(contentsOf: readURL)
-            }
-            if let data, let image = ImageDownsampler.downsample(data: data, maxDimension: maxDimension) {
-                return .success(image)
-            }
-            let detail: String
-            if let coordError {
-                detail = "File coordination error — \(coordError.localizedDescription)"
-            } else if data == nil {
-                detail = "Could not read file at \(url.path)"
-            } else {
-                detail = "Could not decode \(data?.count ?? 0) bytes as an image"
-            }
-            return .failure(detail)
-        }.value
-
+        let image = await Self.thumbnailFromLocalOriginal(url: originalURL, isVideo: isVideo, maxDimension: maxDimension)
         if Task.isCancelled { return }
-
-        switch outcome {
-        case .success(let image):
-            LibraryImageCache.shared.insert(image, fileName: mediaFileName, maxDimension: maxDimension)
+        if let image {
+            persistThumbnail(image, itemID: itemID, mediaFileName: mediaFileName, maxDimension: maxDimension)
             state = .image(image)
-        case .failure(let detail):
-            logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: detail)
+        } else {
+            logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: "Could not build a thumbnail from the original")
             state = .failed
         }
     }
 
-    private enum LoadOutcome {
-        case success(PlatformImage)
-        case failure(String)
+    /// Detail path: full-resolution image. Downloads the original and decodes at
+    /// the requested (large) size. Deliberately does NOT touch the grid
+    /// thumbnail store — that holds only 600 px thumbnails. RAM-cached by
+    /// dimension, as before.
+    private func runFullImage(itemID: Int, mediaFileName: String, isVideo: Bool,
+                              maxDimension: CGFloat, originalURL: URL) async {
+        let didDownload: Bool
+        do {
+            didDownload = try await ensureDownloaded(url: originalURL)
+        } catch {
+            if error is CancellationError || Task.isCancelled { return }
+            logFailure(itemID: itemID, mediaFileName: mediaFileName,
+                       reason: "Download failed — \((error as NSError).localizedDescription)")
+            state = .failed
+            return
+        }
+        if Task.isCancelled { return }
+        if didDownload {
+            await LibrarySaveService.shared.indexService?.recordAccess(itemID: itemID, status: .downloaded)
+        }
+
+        let image = await Self.thumbnailFromLocalOriginal(url: originalURL, isVideo: isVideo, maxDimension: maxDimension)
+        if Task.isCancelled { return }
+        if let image {
+            LibraryImageCache.shared.insert(image, fileName: mediaFileName, maxDimension: maxDimension)
+            state = .image(image)
+        } else {
+            logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: "Could not decode the original")
+            state = .failed
+        }
+    }
+
+    /// Player path: unchanged — download the original and hand back an AVPlayer.
+    private func runVideoPlayer(itemID: Int, mediaFileName: String, url: URL) async {
+        do {
+            _ = try await ensureDownloaded(url: url)
+        } catch {
+            if error is CancellationError || Task.isCancelled { return }
+            logFailure(itemID: itemID, mediaFileName: mediaFileName,
+                       reason: "Download failed — \((error as NSError).localizedDescription)")
+            state = .failed
+            return
+        }
+        if Task.isCancelled { return }
+        state = .video(AVPlayer(url: url))
+    }
+
+    private func persistThumbnail(_ image: PlatformImage, itemID: Int, mediaFileName: String, maxDimension: CGFloat) {
+        LibraryThumbnailStore.shared.store(image, itemID: itemID)
+        LibraryImageCache.shared.insert(image, fileName: mediaFileName, maxDimension: maxDimension)
+    }
+
+    /// Builds a thumbnail from the already-local original: ImageIO downsample for
+    /// images, AVAssetImageGenerator poster frame for videos. Off the main actor.
+    nonisolated static func thumbnailFromLocalOriginal(url: URL, isVideo: Bool, maxDimension: CGFloat) async -> PlatformImage? {
+        if isVideo {
+            return await extractPosterFrame(path: url.path, maxDimension: maxDimension)
+        }
+        return await Task.detached(priority: .userInitiated) {
+            var data: Data?
+            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: nil) { readURL in
+                data = try? Data(contentsOf: readURL)
+            }
+            guard let data else { return nil }
+            return ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
+        }.value
     }
 
     /// Extracts a poster frame from a local video file, downsampled toward
@@ -272,5 +316,19 @@ final class LibraryMediaLoader: ObservableObject {
             return .ready
         }
         return .needsDownload
+    }
+
+    /// Reads `originalCDNURL` from the item's local sidecar JSON. `nonisolated`
+    /// so it runs off the main actor; sidecars are local and never evicted.
+    nonisolated private static func originalCDNURL(itemID: Int, in dir: URL) -> String? {
+        let jsonURL = dir.appendingPathComponent("\(itemID).json")
+        var data: Data?
+        NSFileCoordinator().coordinate(readingItemAt: jsonURL, options: [], error: nil) { url in
+            data = try? Data(contentsOf: url)
+        }
+        guard let data,
+              let meta = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
+        else { return nil }
+        return meta.originalCDNURL
     }
 }
