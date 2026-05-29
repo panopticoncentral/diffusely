@@ -227,34 +227,60 @@ actor LibraryIndexService {
     /// Evicts least-recently-accessed media until the downloaded total is at or
     /// below `maxBytes`. Sidecar JSON is never evicted. Cooperative, not exact -
     /// iCloud may also evict independently.
-    func enforceCacheLimit(maxBytes: Int, itemsDirectory: URL) {
+    func enforceCacheLimit(maxBytes: Int, itemsDirectory: URL) async {
         guard maxBytes > 0 else { return }
-        var items = ((try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? [])
+        let downloaded = ((try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? [])
             .filter { $0.downloadStatus == .downloaded }
-        var total = items.reduce(0) { $0 + $1.fileByteSize }
+        var total = downloaded.reduce(0) { $0 + $1.fileByteSize }
         guard total > maxBytes else { return }
 
-        items.sort { $0.lastAccessedAt < $1.lastAccessedAt }
-        let coordinator = NSFileCoordinator()
-        for item in items {
+        // Pick least-recently-accessed victims down to the limit. Pure read of
+        // index state — we only need the filenames for the file I/O below.
+        var victimIDs: [Int] = []
+        var victimFiles: [String] = []
+        for item in downloaded.sorted(by: { $0.lastAccessedAt < $1.lastAccessedAt }) {
             if total <= maxBytes { break }
-            let mediaURL = itemsDirectory.appendingPathComponent(item.mediaFileName)
-            var coordinationError: NSError?
-            coordinator.coordinate(
-                writingItemAt: mediaURL,
-                options: .forDeleting,
-                error: &coordinationError
-            ) { url in
-                try? FileManager.default.evictUbiquitousItem(at: url)
-            }
-            item.downloadStatus = .evicted
+            victimIDs.append(item.itemID)
+            victimFiles.append(item.mediaFileName)
             total -= item.fileByteSize
+        }
+        guard !victimIDs.isEmpty else { return }
+
+        // `evictUbiquitousItem` is a blocking XPC round-trip to fileproviderd.
+        // Run every eviction on a detached task so a slow or unresponsive daemon
+        // can't wedge the model actor — which serializes all index reads/writes
+        // — and beachball the whole app (it did, at ~1k items). Only the
+        // SwiftData status flip below touches the actor.
+        let dir = itemsDirectory
+        let files = victimFiles
+        await Task.detached(priority: .utility) {
+            let coordinator = NSFileCoordinator()
+            for name in files {
+                let mediaURL = dir.appendingPathComponent(name)
+                var coordinationError: NSError?
+                coordinator.coordinate(
+                    writingItemAt: mediaURL,
+                    options: .forDeleting,
+                    error: &coordinationError
+                ) { url in
+                    try? FileManager.default.evictUbiquitousItem(at: url)
+                }
+            }
+        }.value
+
+        // Re-fetch after the suspension (the actor is reentrant — another call
+        // may have run while we awaited), then flip the evicted rows and save
+        // once.
+        let evicted = Set(victimIDs)
+        let rows = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        for item in rows where evicted.contains(item.itemID) {
+            item.downloadStatus = .evicted
         }
         try? modelContext.save()
     }
 
-    func evictAllDownloaded(itemsDirectory: URL) {
-        enforceCacheLimit(maxBytes: 1, itemsDirectory: itemsDirectory)
+    func evictAllDownloaded(itemsDirectory: URL) async {
+        await enforceCacheLimit(maxBytes: 1, itemsDirectory: itemsDirectory)
     }
 
     // MARK: - Helpers
