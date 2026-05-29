@@ -125,6 +125,7 @@ final class LibraryStore: ObservableObject {
             }
         }
         await indexService.remove(itemID: itemID)
+        LibraryThumbnailStore.shared.remove(itemID: itemID)
         await refreshTotals()
     }
 
@@ -140,6 +141,7 @@ final class LibraryStore: ObservableObject {
             }
         }
         await indexService.wipe()
+        LibraryThumbnailStore.shared.removeAll()
         await refreshTotals()
     }
 
