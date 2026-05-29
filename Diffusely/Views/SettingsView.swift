@@ -118,7 +118,12 @@ struct SettingsView: View {
             HStack {
                 Text("Downloaded on This Device")
                 Spacer()
-                Text(ByteCountFormatter.string(fromByteCount: Int64(libraryStore.downloadedBytes), countStyle: .file))
+                // `downloadedBytes` is 0 until the first reconcile + refresh
+                // completes; show "Calculating…" rather than a misleading
+                // "Zero KB" while the total is still being tallied.
+                Text(libraryStore.isReady
+                     ? ByteCountFormatter.string(fromByteCount: Int64(libraryStore.downloadedBytes), countStyle: .file)
+                     : "Calculating…")
                     .foregroundColor(.secondary)
             }
 
