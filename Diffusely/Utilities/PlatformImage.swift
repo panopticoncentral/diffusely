@@ -25,3 +25,13 @@ extension NSColor {
     static var tertiarySystemBackground: NSColor { .textBackgroundColor }
 }
 #endif
+
+#if canImport(AppKit)
+extension NSImage {
+    func jpegData(compressionQuality: CGFloat) -> Data? {
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: compressionQuality])
+    }
+}
+#endif
