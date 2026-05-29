@@ -86,8 +86,9 @@ final class LibraryMediaLoader: ObservableObject {
         }
         let url = dir.appendingPathComponent(mediaFileName)
 
+        let didDownload: Bool
         do {
-            try await ensureDownloaded(url: url)
+            didDownload = try await ensureDownloaded(url: url)
         } catch {
             // A cancelled load must not strand as `.failed` (it would block the
             // `load()` retry on the next onAppear); only real errors fail.
@@ -99,6 +100,15 @@ final class LibraryMediaLoader: ObservableObject {
         }
 
         if Task.isCancelled { return }
+
+        // If we just materialized a previously-evicted file, record it in the
+        // index so its persisted status reflects reality (accurate Downloaded
+        // total, correct cloud badge on the next fetch/launch) instead of
+        // lingering as .evicted until the next reconcile. recordAccess also
+        // bumps lastAccessedAt, protecting just-viewed items from eviction.
+        if didDownload {
+            await LibrarySaveService.shared.indexService?.recordAccess(itemID: itemID, status: .downloaded)
+        }
 
         if isVideo {
             switch output {
@@ -201,14 +211,16 @@ final class LibraryMediaLoader: ObservableObject {
         print("[MediaError]   \(reason)")
     }
 
-    private func ensureDownloaded(url: URL) async throws {
+    /// Returns `true` if it had to materialize the file (it was evicted),
+    /// `false` if it was already local.
+    private func ensureDownloaded(url: URL) async throws -> Bool {
         // `URL.resourceValues(forKeys:)` for the ubiquity keys can perform
         // blocking iCloud metadata lookups under a cold cache; keep them off
         // the main actor so they don't pile up there.
         let initial = await Task.detached(priority: .userInitiated) {
             Self.checkLocalReadiness(at: url)
         }.value
-        if initial == .ready { return }
+        if initial == .ready { return false }
 
         state = .downloading(nil)
         try FileManager.default.startDownloadingUbiquitousItem(at: url)
@@ -231,7 +243,7 @@ final class LibraryMediaLoader: ObservableObject {
                     .ubiquitousItemDownloadingStatus
                 return status == .current || status == .downloaded
             }.value
-            if downloaded { return }
+            if downloaded { return true }
         }
         throw URLError(.timedOut)
     }
