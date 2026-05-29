@@ -90,7 +90,7 @@ final class LibraryStore: ObservableObject {
         return await svc.attemptCatchup(for: metadata)
     }
 
-    func reconcileNow() async {
+    private func reconcileNow() async {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
         iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
         await indexService.reconcile(itemsDirectory: dir)
