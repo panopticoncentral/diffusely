@@ -35,6 +35,13 @@ final class LibraryMediaLoader: ObservableObject {
         case .image, .video: return
         default: break
         }
+        // Memory-cache hit: skip the disk read + decode entirely. A cell that
+        // scrolled off and back gets its decoded thumbnail back synchronously
+        // here instead of re-reading the file.
+        if !isVideo, let cached = LibraryImageCache.shared.image(fileName: mediaFileName, maxDimension: maxDimension) {
+            state = .image(cached)
+            return
+        }
         // A load is already in flight; don't start a second one.
         guard loadTask == nil else { return }
         loadTask = Task { await run(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo, maxDimension: maxDimension) }
@@ -116,6 +123,7 @@ final class LibraryMediaLoader: ObservableObject {
 
         switch outcome {
         case .success(let image):
+            LibraryImageCache.shared.insert(image, fileName: mediaFileName, maxDimension: maxDimension)
             state = .image(image)
         case .failure(let detail):
             logFailure(itemID: itemID, mediaFileName: mediaFileName, reason: detail)
