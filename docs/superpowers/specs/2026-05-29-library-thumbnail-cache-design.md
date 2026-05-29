@@ -35,7 +35,7 @@ RAM: LibraryImageCache  →  Disk: LibraryThumbnailStore  →  Generate (CDN-fir
 - One thumbnail per item at the **grid size (600 px)**, JPEG ~0.8 quality.
 - All file I/O is safe to call off the main actor.
 
-**Shared CDN helper** (refactor) — extract the existing "fetch a CDN URL → produce a downsampled `PlatformImage`, handling the case where the CDN serves a video instead of a still frame" logic out of `MediaCacheService` into a shared function (`CDN URL + isVideo + maxDimension → PlatformImage?`). Both `MediaCacheService` and the thumbnail-generation path call it. Avoids duplicating the tricky video-served-as-video fallback.
+**CDN thumbnail fetcher.** *(Implementation note: this diverged from the original plan to refactor `MediaCacheService`.)* The library's CDN thumbnail URL requests a **static JPEG frame** (`CivitaiThumbnailURL` forces `anim=false` / `transcode=…,skip=4` and a `.jpeg` extension), so the fetcher never receives raw video bytes and does **not** need `MediaCacheService`'s "CDN served a video instead of a frame" fallback. It is therefore a small, focused `RemoteThumbnailFetcher` (fetch URL → `ImageDownsampler.downsample`) with an injectable fetch closure, and `MediaCacheService` is left untouched — lower risk to the feed, no duplicated logic.
 
 **Unchanged:**
 - `LibraryImageCache` (in-memory) stays as the RAM tier in front of the disk store.
