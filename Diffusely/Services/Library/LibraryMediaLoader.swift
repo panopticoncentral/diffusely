@@ -156,13 +156,22 @@ final class LibraryMediaLoader: ObservableObject {
         try FileManager.default.startDownloadingUbiquitousItem(at: url)
 
         // Poll until the file is current/downloaded (~2 min ceiling).
+        let path = url.path
         for _ in 0..<240 {
             if Task.isCancelled { throw CancellationError() }
             try await Task.sleep(nanoseconds: 500_000_000)
             let downloaded = await Task.detached(priority: .userInitiated) {
-                let v = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-                return v?.ubiquitousItemDownloadingStatus == .current
-                    || v?.ubiquitousItemDownloadingStatus == .downloaded
+                // Read through a freshly-constructed URL each iteration. `URL`
+                // caches resource values on its backing object, so reusing one
+                // `url` here returns the status captured on the first read
+                // (.notDownloaded) forever — the poll would never observe the
+                // download completing, leaving the thumbnail spinning until the
+                // 2-minute timeout even though the file had already arrived. A
+                // fresh URL has no cache and reports the true current status.
+                let probe = URL(fileURLWithPath: path)
+                let status = (try? probe.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?
+                    .ubiquitousItemDownloadingStatus
+                return status == .current || status == .downloaded
             }.value
             if downloaded { return }
         }
