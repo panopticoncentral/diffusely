@@ -135,11 +135,15 @@ final class LibrarySaveService: ObservableObject {
     /// title is passed through to avoid a per-image post fetch.
     func savePost(_ post: CivitaiPost) {
         for image in post.safeImages {
-            save(image, knownPostTitle: post.title)
+            // Post-endpoint image objects don't carry `publishedAt` (only the
+            // post does), so pass the post's date down as a fallback. Without
+            // this, every post-saved image would be written with a nil date and
+            // need a `LibraryDateBackfillService` round-trip to fill it in.
+            save(image, knownPostTitle: post.title, knownPublishedAt: post.publishedAtDate)
         }
     }
 
-    func save(_ image: CivitaiImage, knownPostTitle: String? = nil) {
+    func save(_ image: CivitaiImage, knownPostTitle: String? = nil, knownPublishedAt: Date? = nil) {
         let itemID = image.id
         guard !inFlight.contains(itemID) else { return }
 
@@ -167,6 +171,7 @@ final class LibrarySaveService: ObservableObject {
                     canonicalPageURL: canonicalPageURL,
                     canonicalPostURL: canonicalPostURL,
                     knownPostTitle: knownPostTitle,
+                    knownPublishedAt: knownPublishedAt,
                     sourceDomain: domain,
                     mediaType: mediaType,
                     author: author
@@ -189,6 +194,7 @@ final class LibrarySaveService: ObservableObject {
         canonicalPageURL: String,
         canonicalPostURL: String?,
         knownPostTitle: String?,
+        knownPublishedAt: Date?,
         sourceDomain: String,
         mediaType: LibraryMediaType,
         author: LibraryAuthor
@@ -242,7 +248,7 @@ final class LibrarySaveService: ObservableObject {
             author: author,
             stats: image.stats,
             generationData: generationData,
-            publishedAt: image.publishedAtDate,
+            publishedAt: image.publishedAtDate ?? knownPublishedAt,
             savedAt: Date(),
             savedByAppVersion: Self.appVersion
         )

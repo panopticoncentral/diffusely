@@ -317,7 +317,7 @@ struct PostDetailView: View {
         if let currentImage = currentImage {
             let isSavingCurrent = librarySaveService.isSaving(itemID: currentImage.id)
             Button(action: {
-                librarySaveService.save(currentImage, knownPostTitle: post.title)
+                librarySaveService.save(currentImage, knownPostTitle: post.title, knownPublishedAt: post.publishedAtDate)
             }) {
                 Label(
                     isSavingCurrent ? "Saving Image…" : "Save Image to Library",
