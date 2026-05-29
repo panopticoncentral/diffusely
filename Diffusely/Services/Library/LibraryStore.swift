@@ -14,8 +14,6 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var downloadedBytes = 0
     @Published private(set) var itemCount = 0
     @Published private(set) var isReady = false
-    /// itemID -> download progress (0...1) while a media file is materializing.
-    @Published private(set) var downloadProgress: [Int: Double] = [:]
     /// Session-scoped gate for the publish-date backfill. Lives here (not in
     /// `LibraryView`'s `@State`) so navigating into and out of the Library tab
     /// doesn't restart the backfill — that was making the spinner banner
@@ -142,7 +140,6 @@ final class LibraryStore: ObservableObject {
             }
         }
         await indexService.wipe()
-        downloadProgress = [:]
         await refreshTotals()
     }
 
@@ -172,18 +169,8 @@ final class LibraryStore: ObservableObject {
     }
 
     private func handleQueryUpdate() {
-        metadataQuery.disableUpdates()
-        var progress: [Int: Double] = [:]
-        for i in 0..<metadataQuery.resultCount {
-            guard let item = metadataQuery.result(at: i) as? NSMetadataItem else { continue }
-            if let name = item.value(forAttribute: NSMetadataItemFSNameKey) as? String,
-               let pct = item.value(forAttribute: NSMetadataUbiquitousItemPercentDownloadedKey) as? Double {
-                let stem = (name as NSString).deletingPathExtension
-                if let id = Int(stem), pct < 100 { progress[id] = pct / 100.0 }
-            }
-        }
-        downloadProgress = progress
-        metadataQuery.enableUpdates()
+        // A sidecar appeared or changed in iCloud (e.g. an item saved on
+        // another device synced in). Coalesce the bursts into a single reconcile.
         reconcileScheduler?.schedule()
     }
 }
