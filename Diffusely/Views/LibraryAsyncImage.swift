@@ -7,7 +7,10 @@ struct LibraryAsyncImage: View {
     let itemID: Int
     let mediaFileName: String
     var isVideo: Bool = false
-    var maxDimension: CGFloat = 800
+    // Default to the grid thumbnail size so the safe (cache-served) path is the
+    // default — a larger default would silently route callers to the
+    // full-original download path. Detail view passes an explicit larger value.
+    var maxDimension: CGFloat = LibraryThumbnailStore.gridThumbnailDimension
     var contentMode: ContentMode = .fill
 
     @StateObject private var loader = LibraryMediaLoader()
