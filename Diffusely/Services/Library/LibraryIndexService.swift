@@ -87,6 +87,22 @@ actor LibraryIndexService {
             Self.scanContainer(itemsDirectory: itemsDirectory)
         }.value
 
+        guard let scan else {
+            print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
+            return
+        }
+
+        // Guard against a readable-but-empty listing (e.g. iCloud hasn't
+        // materialized the directory yet) wiping a populated index. A genuine
+        // "delete everything" goes through Reset Library (wipe()), not reconcile.
+        if scan.seenIDs.isEmpty {
+            let count = (try? modelContext.fetchCount(FetchDescriptor<PersistedLibraryItem>())) ?? 0
+            if count > 0 {
+                print("[LibraryIndex] scan found no sidecars but index has \(count) rows; skipping prune")
+                return
+            }
+        }
+
         // Fast path: upsert everything from an in-memory map and save once
         // (one query + one save instead of N + N). If that batched save throws,
         // fall back to a resilient per-item pass — a single all-or-nothing save
@@ -164,12 +180,17 @@ actor LibraryIndexService {
         seenIDs: Set<Int>
     )
 
-    nonisolated static func scanContainer(itemsDirectory: URL) -> ScanResult {
+    nonisolated static func scanContainer(itemsDirectory: URL) -> ScanResult? {
         let fileManager = FileManager.default
-        let contents = (try? fileManager.contentsOfDirectory(
+        guard let contents = try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
             includingPropertiesForKeys: nil
-        )) ?? []
+        ) else {
+            // Couldn't read the directory (transient iCloud/filesystem error).
+            // Returning an empty scan would make reconcile prune the entire
+            // index; signal failure so the caller leaves it intact instead.
+            return nil
+        }
 
         let jsonURLs = contents.filter { $0.pathExtension == "json" }
         var seenIDs = Set<Int>()
