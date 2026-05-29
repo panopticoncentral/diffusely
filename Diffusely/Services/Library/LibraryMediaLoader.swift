@@ -1,5 +1,10 @@
 import Foundation
 import AVFoundation
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// Loads a personal-library media file from the iCloud container, transparently
 /// triggering an on-demand download when the file has been evicted, and produces
@@ -25,11 +30,16 @@ final class LibraryMediaLoader: ObservableObject {
         }
     }
 
+    /// What the caller wants produced. The grid (`LibraryAsyncImage`) wants a
+    /// still image even for videos (a poster frame); the detail player
+    /// (`LibraryVideoPlayer`) wants a live `AVPlayer`.
+    enum Output { case image, player }
+
     @Published private(set) var state: State = .idle
 
     private var loadTask: Task<Void, Never>?
 
-    func load(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat) {
+    func load(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat, as output: Output = .image) {
         // Already showing this media — nothing to do.
         switch state {
         case .image, .video: return
@@ -37,14 +47,15 @@ final class LibraryMediaLoader: ObservableObject {
         }
         // Memory-cache hit: skip the disk read + decode entirely. A cell that
         // scrolled off and back gets its decoded thumbnail back synchronously
-        // here instead of re-reading the file.
-        if !isVideo, let cached = LibraryImageCache.shared.image(fileName: mediaFileName, maxDimension: maxDimension) {
+        // here instead of re-reading the file. Applies to video poster frames
+        // too, but not the `.player` path (which wants a live AVPlayer).
+        if output == .image, let cached = LibraryImageCache.shared.image(fileName: mediaFileName, maxDimension: maxDimension) {
             state = .image(cached)
             return
         }
         // A load is already in flight; don't start a second one.
         guard loadTask == nil else { return }
-        loadTask = Task { await run(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo, maxDimension: maxDimension) }
+        loadTask = Task { await run(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo, maxDimension: maxDimension, output: output) }
     }
 
     func cancel() {
@@ -62,7 +73,7 @@ final class LibraryMediaLoader: ObservableObject {
         }
     }
 
-    private func run(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat) async {
+    private func run(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat, output: Output) async {
         guard
             let dir = try? await LibraryContainer.shared.itemsDirectory()
         else {
@@ -90,8 +101,24 @@ final class LibraryMediaLoader: ObservableObject {
         if Task.isCancelled { return }
 
         if isVideo {
-            state = .video(AVPlayer(url: url))
-            return
+            switch output {
+            case .player:
+                state = .video(AVPlayer(url: url))
+                return
+            case .image:
+                // The grid renders videos as a still poster frame, not a player.
+                let frame = await Self.extractPosterFrame(path: url.path, maxDimension: maxDimension)
+                if Task.isCancelled { return }
+                if let frame {
+                    LibraryImageCache.shared.insert(frame, fileName: mediaFileName, maxDimension: maxDimension)
+                    state = .image(frame)
+                } else {
+                    logFailure(itemID: itemID, mediaFileName: mediaFileName,
+                               reason: "Could not extract a poster frame from the video")
+                    state = .failed
+                }
+                return
+            }
         }
 
         // Run the file-coordinator read + ImageIO decode off the main actor.
@@ -134,6 +161,37 @@ final class LibraryMediaLoader: ObservableObject {
     private enum LoadOutcome {
         case success(PlatformImage)
         case failure(String)
+    }
+
+    /// Extracts a poster frame from a local video file, downsampled toward
+    /// `maxDimension`. Mirrors `MediaCacheService`'s frame fallback but skips
+    /// the temp-file staging since library media is already a local file URL.
+    /// `nonisolated` so the AVFoundation work stays off the main actor.
+    nonisolated private static func extractPosterFrame(path: String, maxDimension: CGFloat) async -> PlatformImage? {
+        let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        if maxDimension > 0 {
+            generator.maximumSize = CGSize(width: maxDimension, height: maxDimension)
+        }
+        // Frame-accurate seeking fails on some codecs; let AVFoundation snap to
+        // the nearest decodable frame. Prefer a small offset (skip black opening
+        // frames), then fall back to frame 0 for very short clips.
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+        let candidateTimes: [CMTime] = [
+            CMTime(seconds: 0.5, preferredTimescale: 600),
+            .zero
+        ]
+        for time in candidateTimes {
+            guard let cgImage = try? await generator.image(at: time).image else { continue }
+            #if canImport(UIKit)
+            return PlatformImage(cgImage: cgImage)
+            #elseif canImport(AppKit)
+            return PlatformImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            #endif
+        }
+        return nil
     }
 
     /// Logs a local-library load failure with the same `[MediaError]` tag used by

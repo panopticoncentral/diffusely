@@ -186,6 +186,7 @@ struct LibraryView: View {
                 LibraryAsyncImage(
                     itemID: item.itemID,
                     mediaFileName: item.mediaFileName,
+                    isVideo: item.isVideo,
                     maxDimension: 600,
                     contentMode: .fill
                 )

@@ -60,7 +60,7 @@ struct LibraryVideoPlayer: View {
             }
         }
         .onAppear {
-            loader.load(itemID: itemID, mediaFileName: mediaFileName, isVideo: true, maxDimension: 0)
+            loader.load(itemID: itemID, mediaFileName: mediaFileName, isVideo: true, maxDimension: 0, as: .player)
         }
         .onDisappear { loader.cancel() }
     }

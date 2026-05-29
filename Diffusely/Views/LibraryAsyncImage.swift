@@ -6,6 +6,7 @@ import SwiftUI
 struct LibraryAsyncImage: View {
     let itemID: Int
     let mediaFileName: String
+    var isVideo: Bool = false
     var maxDimension: CGFloat = 800
     var contentMode: ContentMode = .fill
 
@@ -29,7 +30,7 @@ struct LibraryAsyncImage: View {
             }
         }
         .onAppear {
-            loader.load(itemID: itemID, mediaFileName: mediaFileName, isVideo: false, maxDimension: maxDimension)
+            loader.load(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo, maxDimension: maxDimension)
         }
         .onDisappear { loader.cancel() }
     }
