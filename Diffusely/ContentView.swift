@@ -40,6 +40,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 struct ContentView: View {
     @State private var selectedPeriod: Timeframe = .week
     @State private var selectedSort: FeedSort = .mostReactions
+    @EnvironmentObject private var libraryStore: LibraryStore
 
     #if os(macOS)
     @State private var selectedSection: SidebarSection? = .images
@@ -92,6 +93,10 @@ struct ContentView: View {
             }
         }
         .environmentObject(feedNavigator)
+        // Start the library subsystem at launch so its iCloud/totals state is
+        // accurate no matter which section opens first (not only the Library
+        // tab). start() is idempotent, so LibraryView's own call is a no-op.
+        .task { libraryStore.start() }
         #else
         TabView(selection: $selectedTab) {
             ImageFeedView(
@@ -139,6 +144,7 @@ struct ContentView: View {
                 }
                 .tag(3)
         }
+        .task { libraryStore.start() }
         #endif
     }
 }
