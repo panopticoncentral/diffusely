@@ -87,20 +87,15 @@ actor LibraryIndexService {
             Self.scanContainer(itemsDirectory: itemsDirectory)
         }.value
 
+        // A nil scan means the directory read *threw* (transient iCloud/filesystem
+        // error). Treating that as "empty" would prune the whole index, so we
+        // skip reconcile entirely and leave the index intact. A successfully-read
+        // but empty directory still prunes normally — that's a legitimate
+        // "every sidecar is gone" and the suite's reconcileDropsRowsWhoseSidecarVanished
+        // depends on it.
         guard let scan else {
             print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
             return
-        }
-
-        // Guard against a readable-but-empty listing (e.g. iCloud hasn't
-        // materialized the directory yet) wiping a populated index. A genuine
-        // "delete everything" goes through Reset Library (wipe()), not reconcile.
-        if scan.seenIDs.isEmpty {
-            let count = (try? modelContext.fetchCount(FetchDescriptor<PersistedLibraryItem>())) ?? 0
-            if count > 0 {
-                print("[LibraryIndex] scan found no sidecars but index has \(count) rows; skipping prune")
-                return
-            }
         }
 
         // Fast path: upsert everything from an in-memory map and save once
