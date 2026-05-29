@@ -418,6 +418,41 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
         #expect(stub.requestedIDs.isEmpty)
     }
 
+    @Test func needsDateBackfillCountExcludesDatedAndAlreadyAttemptedItems() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A: no date, no marker → genuinely needs a backfill.
+        let a = makeMeta(itemID: 200, publishedAt: nil)
+        // B: no date but marker set → the API already confirmed null; the
+        // background scan must treat this as drained, not pending.
+        let b = makeMeta(
+            itemID: 201,
+            publishedAt: nil,
+            publishedAtBackfillAttemptedAt: Date(timeIntervalSinceNow: -3600)
+        )
+        // C: has a date → nothing to do.
+        let c = makeMeta(itemID: 202, publishedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        for m in [a, b, c] {
+            try LibraryItemMetadata.encoder().encode(m)
+                .write(to: dir.appendingPathComponent("\(m.itemID).json"))
+            try Data("x".utf8).write(to: dir.appendingPathComponent("\(m.itemID).jpeg"))
+        }
+
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.reconcile(itemsDirectory: dir)
+
+        let count = await MainActor.run {
+            LibrarySortService(modelContext: container.mainContext)
+                .countItemsNeedingDateBackfill()
+        }
+
+        // Only A counts. The naive `publishedAt == nil` predicate would return 2
+        // and re-run the directory walk every session forever.
+        #expect(count == 1)
+    }
+
     @Test func backfillDoesNotStampMarkerOnTransientFetchError() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

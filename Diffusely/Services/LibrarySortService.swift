@@ -60,9 +60,13 @@ final class LibrarySortService {
         }
     }
 
-    func countItemsMissingPublishedDate() -> Int {
+    /// Cheap, index-only count of items the publish-date backfill would act on:
+    /// no `publishedAt` and no recorded attempt. Items the API already confirmed
+    /// have no date (marker set) are excluded, so a fully-drained library
+    /// returns 0 and `LibraryView` skips the sidecar directory walk entirely.
+    func countItemsNeedingDateBackfill() -> Int {
         let descriptor = FetchDescriptor<PersistedLibraryItem>(
-            predicate: #Predicate { $0.publishedAt == nil }
+            predicate: #Predicate { $0.needsDateBackfill }
         )
         return (try? modelContext.fetchCount(descriptor)) ?? 0
     }

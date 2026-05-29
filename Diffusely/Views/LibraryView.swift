@@ -285,7 +285,7 @@ struct LibraryView: View {
     private func maybeStartBackfill() async {
         guard !store.didRunDateBackfillThisSession,
               let sortService else { return }
-        guard sortService.countItemsMissingPublishedDate() > 0 else { return }
+        guard sortService.countItemsNeedingDateBackfill() > 0 else { return }
 
         // Resolve the container *before* claiming the gate so a cold-launch
         // race where `itemsDirectory()` isn't ready yet still lets a later

@@ -222,7 +222,8 @@ private func gen(checkpointModelType: String? = "Checkpoint",
             publishedAt: publishedAt,
             checkpointName: checkpoint,
             lastAccessedAt: Date(),
-            downloadStatus: .downloaded
+            downloadStatus: .downloaded,
+            needsDateBackfill: publishedAt == nil
         )
         ctx.insert(row)
     }
@@ -348,11 +349,11 @@ private func gen(checkpointModelType: String? = "Checkpoint",
     }
 
     @MainActor
-    @Test func countItemsMissingPublishedDateCountsOnlyNils() throws {
+    @Test func countItemsNeedingDateBackfillCountsUndatedItems() throws {
         let (svc, ctx) = try makeService()
         insert(ctx, id: 1, publishedAt: Date(), author: "a")
         insert(ctx, id: 2, publishedAt: nil,    author: "a")
         insert(ctx, id: 3, publishedAt: nil,    author: "b")
-        #expect(svc.countItemsMissingPublishedDate() == 2)
+        #expect(svc.countItemsNeedingDateBackfill() == 2)
     }
 }

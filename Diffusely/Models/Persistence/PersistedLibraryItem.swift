@@ -39,6 +39,14 @@ final class PersistedLibraryItem {
     var checkpointName: String?
     var lastAccessedAt: Date
     var downloadStatusRaw: String
+    /// True while this item still needs a publish-date backfill: it has no
+    /// `publishedAt` AND the background scan hasn't yet recorded an attempt.
+    /// Lets the `LibraryView` gate skip the expensive sidecar directory walk
+    /// when nothing is pending. Defaults to `true` so a freshly-migrated store
+    /// over-runs the backfill once (harmless) rather than wrongly skipping it
+    /// before the first reconcile re-derives the flag. Kept in sync by
+    /// `LibraryIndexService.apply`.
+    var needsDateBackfill: Bool = true
 
     init(
         itemID: Int,
@@ -56,7 +64,8 @@ final class PersistedLibraryItem {
         publishedAt: Date?,
         checkpointName: String?,
         lastAccessedAt: Date,
-        downloadStatus: LibraryDownloadStatus
+        downloadStatus: LibraryDownloadStatus,
+        needsDateBackfill: Bool
     ) {
         self.itemID = itemID
         self.mediaType = mediaType
@@ -74,6 +83,14 @@ final class PersistedLibraryItem {
         self.checkpointName = checkpointName
         self.lastAccessedAt = lastAccessedAt
         self.downloadStatusRaw = downloadStatus.rawValue
+        self.needsDateBackfill = needsDateBackfill
+    }
+
+    /// Single source of truth for "this item still needs a publish-date
+    /// backfill": no date yet, and the background scan hasn't recorded an
+    /// attempt. Mirrors the pending filter in `FileLibraryBackfillSidecarStore`.
+    static func computeNeedsDateBackfill(for metadata: LibraryItemMetadata) -> Bool {
+        metadata.publishedAt == nil && metadata.publishedAtBackfillAttemptedAt == nil
     }
 
     convenience init(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
@@ -97,7 +114,8 @@ final class PersistedLibraryItem {
             publishedAt: metadata.publishedAt,
             checkpointName: checkpoint,
             lastAccessedAt: metadata.savedAt,
-            downloadStatus: downloadStatus
+            downloadStatus: downloadStatus,
+            needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata)
         )
     }
 
