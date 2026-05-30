@@ -4,8 +4,18 @@ struct CachedAsyncImage: View {
     let url: String
     var expectedAspectRatio: CGFloat?
 
-    @State private var state: MediaLoadingState = .idle
+    @State private var state: MediaLoadingState
     private let mediaCache = MediaCacheService.shared
+
+    init(url: String, expectedAspectRatio: CGFloat? = nil) {
+        self.url = url
+        self.expectedAspectRatio = expectedAspectRatio
+        // Seed from the in-memory cache so an already-loaded tile renders its image
+        // on the first frame. Without this, a recycled LazyVGrid cell starts at
+        // .idle and flashes the grey spinner placeholder for a frame before
+        // onAppear swaps in the cached image — visible as jitter on fast scrolls.
+        _state = State(initialValue: MediaCacheService.shared.getMediaState(for: url))
+    }
 
     var body: some View {
         Group {
@@ -42,11 +52,14 @@ struct CachedAsyncImage: View {
                     }
             }
         }
+        // Mirror the cache entry's state. We deliberately do NOT cancel the load on
+        // disappear: cancelling on SwiftUI's unreliable LazyVGrid disappear events
+        // created a cancel→reload storm that saturated the CDN connection and wedged
+        // requests on a permanent spinner. Instead an in-flight thumbnail load is
+        // bounded by MediaCacheService's per-request timeout, runs to completion, and
+        // is cached — ready instantly if the cell scrolls back into view.
         .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
             state = newState
-        }
-        .onDisappear {
-            mediaCache.cancelLoad(url: url)
         }
     }
 

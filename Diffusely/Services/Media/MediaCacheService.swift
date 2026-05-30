@@ -39,6 +39,12 @@ class MediaCacheService: ObservableObject {
     private var activeVideoLoads = 0
     private var pendingVideoLoads: [(url: String, priority: TaskPriority)] = []
 
+    // A wedged CDN request (e.g. one that never gets a QUIC stream) can sit live
+    // without ever delivering data or erroring, leaving the cell on a permanent
+    // spinner. This hard wall-clock deadline guarantees such a request fails
+    // (→ retryable orange tile) instead of spinning indefinitely.
+    private static let imageLoadTimeout: TimeInterval = 15
+
     // Maximum pixel dimension for downsampled images (screens are ~400pt wide, 3 columns = ~133pt per image, @3x = ~400px)
     // Using 600px gives some headroom for detail view and retina displays
     private let maxImageDimension: CGFloat = {
@@ -167,6 +173,10 @@ class MediaCacheService: ObservableObject {
             }
             entry.loadingTask = task
         } else {
+            // Images are not concurrency-capped: a cap with no off-screen
+            // cancellation starves on-screen cells behind already-scrolled-past
+            // loads. Each fetch is bounded instead by `fetchImageWithTimeout`, and
+            // HTTP/3 multiplexes them over a single persistent connection.
             let task = Task(priority: priority) {
                 await loadImageAsync(url: url)
             }
@@ -211,15 +221,15 @@ class MediaCacheService: ObservableObject {
         // by cancellation anyway and are bounded by `videoLoadTimeout`.
         guard entry.content == nil else { return }
 
-        // A video still waiting in the throttle queue never started — just drop it.
+        // Still waiting in a throttle queue (never started) — just drop it.
         if let queueIndex = pendingVideoLoads.firstIndex(where: { $0.url == url }) {
             pendingVideoLoads.remove(at: queueIndex)
             entry.state = .idle
             return
         }
 
-        // Otherwise it's an in-flight image fetch; cancelling the task cancels
-        // the underlying URLSession data task.
+        // Otherwise it's an in-flight fetch; cancelling the task cancels the
+        // underlying URLSession data task.
         if let task = entry.loadingTask {
             task.cancel()
             entry.loadingTask = nil
@@ -264,6 +274,33 @@ class MediaCacheService: ObservableObject {
         }
     }
 
+    /// Fetches image bytes with a hard wall-clock deadline. URLSession's own
+    /// request timeout doesn't reliably fire for a request that never gets a
+    /// connection/stream (the wedged-on-saturated-QUIC case), so we race the fetch
+    /// against an explicit timeout and cancel the loser. A timed-out fetch throws
+    /// `URLError(.timedOut)`, which `loadImageAsync`'s catch turns into a retryable
+    /// `.failed` state — never an eternal spinner.
+    private func fetchImageWithTimeout(_ url: URL) async throws -> (Data, URLResponse) {
+        let timeout = Self.imageLoadTimeout
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        return try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            group.addTask {
+                try await URLSession.civitai.data(for: request)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            // First child to finish wins; the other is cancelled by the defer.
+            guard let result = try await group.next() else {
+                throw URLError(.timedOut)
+            }
+            return result
+        }
+    }
+
     private func loadImageAsync(url: String) async {
         guard let imageURL = URL(string: url) else {
             logMediaFailure(url: url, isVideo: false, reason: "Invalid URL")
@@ -278,7 +315,7 @@ class MediaCacheService: ObservableObject {
         }
 
         do {
-            let (data, response) = try await URLSession.civitai.data(from: imageURL)
+            let (data, response) = try await fetchImageWithTimeout(imageURL)
 
             guard !Task.isCancelled else { return }
 
