@@ -23,6 +23,7 @@ struct DiffuselyApp: App {
     @StateObject private var libraryStore: LibraryStore
 
     init() {
+        AppImagePipeline.configure()
         let container = Self.makeModelContainer()
         self.sharedModelContainer = container
         _libraryStore = StateObject(wrappedValue: LibraryStore(modelContainer: container))

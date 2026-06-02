@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		8B618FAE2E58CD0400EC66FD /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = 8B618FAD2E58CD0400EC66FD /* CLAUDE.md */; };
 		8B618FB02E58CD8A00EC66FD /* CivitaiApi.md in Resources */ = {isa = PBXBuildFile; fileRef = 8B618FAF2E58CD7D00EC66FD /* CivitaiApi.md */; };
+		8BFEC40B2FCF3D310038A9C7 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = 8BFEC40A2FCF3D310038A9C7 /* Nuke */; };
+		8BFEC40D2FCF3D310038A9C7 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = 8BFEC40C2FCF3D310038A9C7 /* NukeUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +74,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8BFEC40B2FCF3D310038A9C7 /* Nuke in Frameworks */,
+				8BFEC40D2FCF3D310038A9C7 /* NukeUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -134,6 +138,8 @@
 			);
 			name = Diffusely;
 			packageProductDependencies = (
+				8BFEC40A2FCF3D310038A9C7 /* Nuke */,
+				8BFEC40C2FCF3D310038A9C7 /* NukeUI */,
 			);
 			productName = Diffusely;
 			productReference = 8BF6D0E32E54DA960040BD41 /* Diffusely.app */;
@@ -217,6 +223,9 @@
 			);
 			mainGroup = 8BF6D0DA2E54DA960040BD41;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8BFEC4092FCF3D310038A9C7 /* XCRemoteSwiftPackageReference "Nuke" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8BF6D0E42E54DA960040BD41 /* Products */;
 			projectDirPath = "";
@@ -600,6 +609,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8BFEC4092FCF3D310038A9C7 /* XCRemoteSwiftPackageReference "Nuke" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kean/Nuke";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8BFEC40A2FCF3D310038A9C7 /* Nuke */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8BFEC4092FCF3D310038A9C7 /* XCRemoteSwiftPackageReference "Nuke" */;
+			productName = Nuke;
+		};
+		8BFEC40C2FCF3D310038A9C7 /* NukeUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8BFEC4092FCF3D310038A9C7 /* XCRemoteSwiftPackageReference "Nuke" */;
+			productName = NukeUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8BF6D0DB2E54DA960040BD41 /* Project object */;
 }

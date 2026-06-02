@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 import Combine
-import ImageIO
+import Nuke
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -39,25 +39,14 @@ class MediaCacheService: ObservableObject {
     private var activeVideoLoads = 0
     private var pendingVideoLoads: [(url: String, priority: TaskPriority)] = []
 
-    // A wedged CDN request (e.g. one that never gets a QUIC stream) can sit live
-    // without ever delivering data or erroring, leaving the cell on a permanent
-    // spinner. This hard wall-clock deadline guarantees such a request fails
-    // (→ retryable orange tile) instead of spinning indefinitely.
-    private static let imageLoadTimeout: TimeInterval = 15
-
-    // Maximum pixel dimension for downsampled images (screens are ~400pt wide, 3 columns = ~133pt per image, @3x = ~400px)
-    // Using 600px gives some headroom for detail view and retina displays
-    private let maxImageDimension: CGFloat = {
-        #if os(macOS)
-        return 1200
-        #else
-        return 600
-        #endif
-    }()
-
     #if !canImport(UIKit)
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     #endif
+
+    private lazy var imagePrefetcher = ImagePrefetcher(
+        pipeline: .shared,
+        destination: .diskCache   // warm the durable cache without holding decoded images in memory
+    )
 
     private init() {
         setupMemoryPressureHandling()
@@ -87,26 +76,10 @@ class MediaCacheService: ObservableObject {
     }
 
     private func handleMemoryPressure() {
-        // Evict oldest image entries to free memory, keeping videos (more expensive to reload)
-        let imageEntries = entries.filter { entry in
-            if let content = entry.value.content, case .image = content {
-                return true
-            }
-            return false
-        }
-
-        // Sort by last access time and remove the oldest half
-        let sortedEntries = imageEntries.sorted { $0.value.lastAccessTime < $1.value.lastAccessTime }
-        let countToRemove = max(sortedEntries.count / 2, 1)
-
-        for (url, entry) in sortedEntries.prefix(countToRemove) {
-            entry.loadingTask?.cancel()
-            entry.content = nil
-            entry.state = .idle
-            entries.removeValue(forKey: url)
-        }
-
-        print("[MediaCache] Memory pressure: evicted \(countToRemove) image entries")
+        // Images live in Nuke's ImageCache, which clears itself on memory
+        // warnings automatically. This service now only holds video players,
+        // which are intentionally retained (expensive to recreate) — matching
+        // the prior "keep videos" policy. Nothing to evict here.
     }
 
     func getStatePublisher(for url: String) -> AnyPublisher<MediaLoadingState, Never> {
@@ -117,14 +90,6 @@ class MediaCacheService: ObservableObject {
         return entries[url]?.state ?? .idle
     }
 
-    func getImage(for url: String) -> PlatformImage? {
-        if let entry = entries[url] {
-            entry.lastAccessTime = Date()
-            return entry.content?.image
-        }
-        return nil
-    }
-
     func getPlayer(for url: String) -> AVPlayer? {
         return entries[url]?.content?.player
     }
@@ -133,55 +98,32 @@ class MediaCacheService: ObservableObject {
         if let entry = entries[url] {
             return entry
         }
-
         let entry = CacheEntry()
         entries[url] = entry
         return entry
     }
 
-    private func updateState(for url: String, to state: MediaLoadingState) {
-        let entry = getOrCreateEntry(for: url)
-        entry.state = state
-    }
-
     func loadMedia(url: String, isVideo: Bool, priority: TaskPriority = .medium) {
-        let entry = getOrCreateEntry(for: url)
+        // Images are handled by the Nuke pipeline (see CachedAsyncImage). This
+        // service is video-only; ignore any non-video request defensively.
+        guard isVideo else { return }
 
-        // Don't reload if already cached or currently loading
+        let entry = getOrCreateEntry(for: url)
         guard entry.content == nil else { return }
         guard entry.loadingTask == nil else { return }
+        if pendingVideoLoads.contains(where: { $0.url == url }) { return }
 
         entry.state = .loading
-
-        if isVideo {
-            // Check if already in pending queue
-            if pendingVideoLoads.contains(where: { $0.url == url }) {
-                return
-            }
-
-            // Throttle video loads
-            if activeVideoLoads >= maxConcurrentVideoLoads {
-                pendingVideoLoads.append((url: url, priority: priority))
-                return
-            }
-
-            activeVideoLoads += 1
-
-            let task = Task(priority: priority) {
-                await loadVideoAsync(url: url)
-                videoLoadCompleted()
-            }
-            entry.loadingTask = task
-        } else {
-            // Images are not concurrency-capped: a cap with no off-screen
-            // cancellation starves on-screen cells behind already-scrolled-past
-            // loads. Each fetch is bounded instead by `fetchImageWithTimeout`, and
-            // HTTP/3 multiplexes them over a single persistent connection.
-            let task = Task(priority: priority) {
-                await loadImageAsync(url: url)
-            }
-            entry.loadingTask = task
+        if activeVideoLoads >= maxConcurrentVideoLoads {
+            pendingVideoLoads.append((url: url, priority: priority))
+            return
         }
+        activeVideoLoads += 1
+        let task = Task(priority: priority) {
+            await loadVideoAsync(url: url)
+            videoLoadCompleted()
+        }
+        entry.loadingTask = task
     }
 
     private func videoLoadCompleted() {
@@ -259,168 +201,22 @@ class MediaCacheService: ObservableObject {
     }
 
     func preloadImages(_ images: [CivitaiImage]) {
-        let urls = images.map { $0.detailURL }
-        let isVideo = images.map { $0.isVideo }
-
-        for (url, isVid) in zip(urls, isVideo) {
-            let currentState = getMediaState(for: url)
-            guard currentState == .idle else {
-                if case .failed = currentState {
-                    loadMedia(url: url, isVideo: isVid, priority: .utility)
+        var imageRequests: [ImageRequest] = []
+        for image in images {
+            let url = image.detailURL
+            if image.isVideo {
+                let currentState = getMediaState(for: url)
+                if currentState == .idle {
+                    loadMedia(url: url, isVideo: true, priority: .utility)
+                } else if case .failed = currentState {
+                    loadMedia(url: url, isVideo: true, priority: .utility)
                 }
-                continue
+            } else if let u = URL(string: url) {
+                imageRequests.append(ImageRequest(url: u, processors: [.resize(width: AppImagePipeline.maxDimension)]))
             }
-            loadMedia(url: url, isVideo: isVid, priority: .utility)
         }
-    }
-
-    /// Fetches image bytes with a hard wall-clock deadline. URLSession's own
-    /// request timeout doesn't reliably fire for a request that never gets a
-    /// connection/stream (the wedged-on-saturated-QUIC case), so we race the fetch
-    /// against an explicit timeout and cancel the loser. A timed-out fetch throws
-    /// `URLError(.timedOut)`, which `loadImageAsync`'s catch turns into a retryable
-    /// `.failed` state — never an eternal spinner.
-    private func fetchImageWithTimeout(_ url: URL) async throws -> (Data, URLResponse) {
-        let timeout = Self.imageLoadTimeout
-        var request = URLRequest(url: url)
-        request.timeoutInterval = timeout
-        return try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
-            group.addTask {
-                try await URLSession.civitai.data(for: request)
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw URLError(.timedOut)
-            }
-            defer { group.cancelAll() }
-            // First child to finish wins; the other is cancelled by the defer.
-            guard let result = try await group.next() else {
-                throw URLError(.timedOut)
-            }
-            return result
-        }
-    }
-
-    private func loadImageAsync(url: String) async {
-        guard let imageURL = URL(string: url) else {
-            logMediaFailure(url: url, isVideo: false, reason: "Invalid URL")
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                if let entry = entries[url] {
-                    entry.state = .failed(URLError(.badURL))
-                    entry.loadingTask = nil
-                }
-            }
-            return
-        }
-
-        do {
-            let (data, response) = try await fetchImageWithTimeout(imageURL)
-
-            guard !Task.isCancelled else { return }
-
-            // Force-cache the immutable thumbnail so a later launch serves it from
-            // disk with no network. No-ops for video/oversized/non-200 bodies.
-            ImageResponseCacheForcer.storeIfCacheable(
-                data: data,
-                response: response,
-                for: URLRequest(url: imageURL),
-                in: URLSession.civitai.configuration.urlCache
-            )
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                let statusCode = (response as? HTTPURLResponse)?.statusCode
-                logMediaFailure(
-                    url: url,
-                    isVideo: false,
-                    reason: "Bad HTTP response — status \(statusCode.map(String.init) ?? "n/a"), "
-                        + "content-type \(contentType(of: response) ?? "n/a"), \(data.count) bytes"
-                        + bodySnippet(data: data, response: response)
-                )
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    if let entry = entries[url] {
-                        entry.state = .failed(URLError(.badServerResponse))
-                        entry.loadingTask = nil
-                    }
-                }
-                return
-            }
-
-            // Sometimes the Civitai/Cloudflare CDN ignores our `transcode=true,anim=false`
-            // request and serves the raw video instead of an extracted JPEG frame. When
-            // that happens, fall back to extracting a still frame locally with AVFoundation
-            // so the caller still gets a usable thumbnail.
-            let responseContentType = contentType(of: response) ?? ""
-            if responseContentType.hasPrefix("video/") {
-                let frame = await extractFrameFromVideoResponse(
-                    url: url,
-                    data: data,
-                    contentType: responseContentType
-                )
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    guard let entry = entries[url] else { return }
-                    if let frame {
-                        let content = MediaContent.image(frame)
-                        entry.content = content
-                        entry.state = .loaded(content)
-                    } else {
-                        entry.state = .failed(URLError(.cannotDecodeContentData))
-                    }
-                    entry.loadingTask = nil
-                }
-                return
-            }
-
-            // Downsample the image to reduce memory usage. This is CPU-bound
-            // (ImageIO thumbnail decode), so run it off the main actor — this
-            // method is MainActor-isolated and would otherwise block scrolling.
-            let maxDimension = maxImageDimension
-            let image = await Task.detached(priority: .utility) {
-                ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
-            }.value
-
-            guard let image else {
-                logMediaFailure(
-                    url: url,
-                    isVideo: false,
-                    reason: "Could not decode \(data.count) bytes as an image "
-                        + "(content-type \(contentType(of: response) ?? "n/a"))"
-                        + bodySnippet(data: data, response: response)
-                )
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    if let entry = entries[url] {
-                        entry.state = .failed(URLError(.cannotDecodeContentData))
-                        entry.loadingTask = nil
-                    }
-                }
-                return
-            }
-
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                let content = MediaContent.image(image)
-                if let entry = entries[url] {
-                    entry.content = content
-                    entry.state = .loaded(content)
-                    entry.loadingTask = nil
-                }
-            }
-
-        } catch {
-            if !Task.isCancelled {
-                logMediaFailure(url: url, isVideo: false, reason: describe(error: error))
-            }
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                if let entry = entries[url] {
-                    entry.state = .failed(error)
-                    entry.loadingTask = nil
-                }
-            }
+        if !imageRequests.isEmpty {
+            imagePrefetcher.startPrefetching(with: imageRequests)
         }
     }
 
@@ -428,25 +224,9 @@ class MediaCacheService: ObservableObject {
 
     /// Logs a media load failure with a consistent `[MediaError]` tag so the
     /// cause behind the orange "failed" thumbnail can be diagnosed from the console.
-    private func logMediaFailure(url: String, isVideo: Bool, reason: String) {
-        let kind = isVideo ? "video" : "image"
-        print("[MediaError] Failed to load \(kind): \(url)")
+    private func logMediaFailure(url: String, reason: String) {
+        print("[MediaError] Failed to load video: \(url)")
         print("[MediaError]   \(reason)")
-    }
-
-    private func contentType(of response: URLResponse?) -> String? {
-        (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")
-    }
-
-    /// Returns a short text snippet of the response body when it looks like text
-    /// (e.g. an HTML/JSON error page returned instead of image bytes). Empty otherwise.
-    private func bodySnippet(data: Data, response: URLResponse?) -> String {
-        let type = contentType(of: response) ?? ""
-        guard type.contains("text") || type.contains("json") || type.contains("html") else { return "" }
-        guard !data.isEmpty, let text = String(data: data.prefix(200), encoding: .utf8) else { return "" }
-        let collapsed = text.replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return collapsed.isEmpty ? "" : "\n[MediaError]   body: \(collapsed)"
     }
 
     private func describe(error: Error) -> String {
@@ -457,100 +237,9 @@ class MediaCacheService: ObservableObject {
         return "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
     }
 
-    // MARK: - Video → image fallback
-
-    /// Maximum video payload we'll stage to disk for local thumbnail extraction
-    /// when the CDN serves a video instead of the requested image. Larger payloads
-    /// bail to a logged failure rather than wasting memory on a multi-minute upload.
-    private static let maxVideoBytesForThumbnailExtraction = 50 * 1024 * 1024  // 50 MB
-
-    /// Writes the video bytes to a temp file and uses AVAssetImageGenerator to
-    /// extract a single still frame, downsampled to `maxImageDimension`. Returns
-    /// nil on any failure; failures are logged via `logMediaFailure`.
-    private func extractFrameFromVideoResponse(url: String, data: Data, contentType: String) async -> PlatformImage? {
-        guard data.count <= Self.maxVideoBytesForThumbnailExtraction else {
-            logMediaFailure(
-                url: url,
-                isVideo: false,
-                reason: "CDN served \(contentType) (\(data.count) bytes) instead of an image; "
-                    + "exceeds \(Self.maxVideoBytesForThumbnailExtraction)-byte local-extraction cap"
-            )
-            return nil
-        }
-
-        let ext: String
-        if contentType.contains("quicktime") {
-            ext = "mov"
-        } else if contentType.contains("webm") {
-            ext = "webm"
-        } else {
-            ext = "mp4"
-        }
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("media-thumb-\(UUID().uuidString)")
-            .appendingPathExtension(ext)
-
-        do {
-            // Staging up to 50 MB to disk; keep this sync I/O off the main actor.
-            let target = tempURL
-            try await Task.detached(priority: .utility) {
-                try data.write(to: target, options: .atomic)
-            }.value
-        } catch {
-            logMediaFailure(
-                url: url,
-                isVideo: false,
-                reason: "Failed to stage video for thumbnail extraction: \(error.localizedDescription)"
-            )
-            return nil
-        }
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let asset = AVURLAsset(url: tempURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: maxImageDimension, height: maxImageDimension)
-        // Frame-accurate seeking fails on some codecs; let AVFoundation snap to the
-        // nearest decodable frame in either direction.
-        generator.requestedTimeToleranceBefore = .positiveInfinity
-        generator.requestedTimeToleranceAfter = .positiveInfinity
-
-        // Prefer a small positive offset (skip black opening frames), then fall
-        // back to frame 0 for very short or single-frame videos.
-        let candidateTimes: [CMTime] = [
-            CMTime(seconds: 0.5, preferredTimescale: 600),
-            .zero
-        ]
-
-        for time in candidateTimes {
-            do {
-                let result = try await generator.image(at: time)
-                let cgImage = result.image
-                #if canImport(UIKit)
-                return PlatformImage(cgImage: cgImage)
-                #elseif canImport(AppKit)
-                return PlatformImage(
-                    cgImage: cgImage,
-                    size: NSSize(width: cgImage.width, height: cgImage.height)
-                )
-                #endif
-            } catch {
-                continue
-            }
-        }
-
-        logMediaFailure(
-            url: url,
-            isVideo: false,
-            reason: "AVAssetImageGenerator could not extract a frame from \(data.count)-byte \(contentType)"
-        )
-        return nil
-    }
-
     private func loadVideoAsync(url: String) async {
         guard let videoURL = URL(string: url) else {
-            logMediaFailure(url: url, isVideo: true, reason: "Invalid URL")
+            logMediaFailure(url: url, reason: "Invalid URL")
             if let entry = entries[url] {
                 entry.state = .failed(URLError(.badURL))
                 entry.loadingTask = nil
@@ -581,7 +270,7 @@ class MediaCacheService: ObservableObject {
             let timeoutWork = DispatchWorkItem { [weak self] in
                 guard !hasResumed else { return }
                 hasResumed = true
-                self?.logMediaFailure(url: url, isVideo: true, reason: "Timed out waiting for video to become ready")
+                self?.logMediaFailure(url: url, reason: "Timed out waiting for video to become ready")
                 if let entry = self?.entries[url] {
                     entry.state = .failed(URLError(.timedOut))
                     entry.loadingTask = nil
@@ -616,7 +305,7 @@ class MediaCacheService: ObservableObject {
                         hasResumed = true
                         timeoutWork.cancel()
                         let error = item.error ?? URLError(.unknown)
-                        self.logMediaFailure(url: url, isVideo: true, reason: self.describe(error: error))
+                        self.logMediaFailure(url: url, reason: self.describe(error: error))
                         if let entry = self.entries[url] {
                             entry.state = .failed(error)
                             entry.loadingTask = nil
@@ -633,7 +322,7 @@ class MediaCacheService: ObservableObject {
                         hasResumed = true
                         timeoutWork.cancel()
                         let error = URLError(.unknown)
-                        self.logMediaFailure(url: url, isVideo: true, reason: "Unknown player item status")
+                        self.logMediaFailure(url: url, reason: "Unknown player item status")
                         if let entry = self.entries[url] {
                             entry.state = .failed(error)
                             entry.loadingTask = nil

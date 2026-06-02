@@ -1,79 +1,59 @@
 import SwiftUI
+import Nuke
+import NukeUI
 
+/// Loads a remote image through the shared Nuke pipeline. `LazyImage` provides
+/// bounded, prioritized loading with automatic cancellation when the cell scrolls
+/// off-screen — replacing the bespoke MediaCacheService image path.
 struct CachedAsyncImage: View {
     let url: String
     var expectedAspectRatio: CGFloat?
 
-    @State private var state: MediaLoadingState
-    private let mediaCache = MediaCacheService.shared
+    /// Bumping this id rebuilds the LazyImage, which re-issues the request — used
+    /// for tap-to-retry after a failure.
+    @State private var reloadToken = 0
 
     init(url: String, expectedAspectRatio: CGFloat? = nil) {
         self.url = url
         self.expectedAspectRatio = expectedAspectRatio
-        // Seed from the in-memory cache so an already-loaded tile renders its image
-        // on the first frame. Without this, a recycled LazyVGrid cell starts at
-        // .idle and flashes the grey spinner placeholder for a frame before
-        // onAppear swaps in the cached image — visible as jitter on fast scrolls.
-        _state = State(initialValue: MediaCacheService.shared.getMediaState(for: url))
     }
 
     var body: some View {
-        Group {
-            switch state {
-            case .idle:
-                placeholder
-                    .onAppear {
-                        state = mediaCache.getMediaState(for: url)
-                        mediaCache.loadMedia(url: url, isVideo: false)
+        LazyImage(request: request) { state in
+            if let image = state.image {
+                image.resizable()
+            } else if state.error != nil {
+                placeholder(showsProgress: false).overlay(
+                    VStack {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 30))
+                            .foregroundColor(.orange)
+                        Text("Tap to retry").font(.caption)
                     }
-
-            case .loading:
-                placeholder
-
-            case .loaded(let content):
-                if let platformImage = content.image {
-                    Image(platformImage: platformImage)
-                        .resizable()
-                }
-
-            case .failed:
-                placeholder
-                    .overlay(
-                        VStack {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 30))
-                                .foregroundColor(.orange)
-                            Text("Tap to retry")
-                                .font(.caption)
-                        }
-                    )
-                    .onTapGesture {
-                        mediaCache.retryFailed(url: url, isVideo: false)
-                    }
+                )
+                .contentShape(Rectangle())
+                .onTapGesture { reloadToken += 1 }
+            } else {
+                placeholder()
             }
         }
-        // Mirror the cache entry's state. We deliberately do NOT cancel the load on
-        // disappear: cancelling on SwiftUI's unreliable LazyVGrid disappear events
-        // created a cancel→reload storm that saturated the CDN connection and wedged
-        // requests on a permanent spinner. Instead an in-flight thumbnail load is
-        // bounded by MediaCacheService's per-request timeout, runs to completion, and
-        // is cached — ready instantly if the cell scrolls back into view.
-        .onReceive(mediaCache.getStatePublisher(for: url)) { newState in
-            state = newState
-        }
+        .id(reloadToken)
+    }
+
+    private var request: ImageRequest? {
+        guard let u = URL(string: url) else { return nil }
+        return ImageRequest(url: u, processors: [.resize(width: AppImagePipeline.maxDimension)])
     }
 
     @ViewBuilder
-    private var placeholder: some View {
+    private func placeholder(showsProgress: Bool = true) -> some View {
         if let ratio = expectedAspectRatio {
-            Rectangle()
-                .fill(Color.gray.opacity(0.1))
+            Rectangle().fill(Color.gray.opacity(0.1))
                 .aspectRatio(ratio, contentMode: .fit)
-                .overlay(state.isFailed ? nil : ProgressView())
+                .overlay { if showsProgress { ProgressView() } }
         } else {
-            Rectangle()
-                .fill(Color.gray.opacity(0.1))
-                .overlay(state.isFailed ? nil : ProgressView())
+            Rectangle().fill(Color.gray.opacity(0.1))
+                .overlay { if showsProgress { ProgressView() } }
         }
     }
 }

@@ -350,14 +350,20 @@ struct CollectionDetailView: View {
         guard let syncService = syncService else { return }
         syncService.startSync(for: collection)
 
-        // Observe sync progress changes
+        // Wait for the sync to finish, then refresh ONCE.
+        //
+        // We deliberately do NOT rebuild the grid on a timer while syncing.
+        // `reloadContent()` reassigns `content`, which re-packs the MasonryGrid and
+        // restarts every in-flight image load. The sync grows/re-sorts the item set
+        // and runs for tens of seconds (it retries and individual page fetches can
+        // time out), so a per-second reload caught on-screen cells in a relentless
+        // rebuild storm — their image loads never settled and the tiles stayed on a
+        // permanent grey spinner. Cached items are already on screen from the
+        // initial `.task` load; synced updates land when the sync completes.
         Task {
-            // Periodically refresh while syncing
             while syncService.isSyncing(collectionId: collection.id) {
                 try? await Task.sleep(for: .seconds(1))
-                await reloadContent()
             }
-            // Final refresh when sync completes
             await reloadContent()
         }
     }
