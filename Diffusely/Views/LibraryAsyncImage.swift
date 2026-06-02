@@ -1,56 +1,54 @@
 import SwiftUI
+import Nuke
+import NukeUI
 
-/// Renders a personal-library image from the local/iCloud container, downloading
-/// it on demand if it has been evicted. Mirrors `CachedAsyncImage` but adds a
-/// `.downloading` state.
+/// Renders a personal-library image from the local / iCloud container through the
+/// shared Nuke pipeline. The CDN→iCloud materialization cascade lives in
+/// `LibraryImageRequest`'s data closure; `LazyImage` provides bounded, prioritized
+/// loading with automatic off-screen cancellation. Mirrors `CachedAsyncImage`.
 struct LibraryAsyncImage: View {
     let itemID: Int
     let mediaFileName: String
     var isVideo: Bool = false
-    // Default to the grid thumbnail size so the safe (cache-served) path is the
-    // default — a larger default would silently route callers to the
-    // full-original download path. Detail view passes an explicit larger value.
-    var maxDimension: CGFloat = LibraryThumbnailStore.gridThumbnailDimension
+    // Default to the grid thumbnail size so the safe (disk-cached) path is the
+    // default — a larger default would silently route callers to the full-original
+    // download path. The detail view passes an explicit larger value.
+    var maxDimension: CGFloat = LibraryImageRequest.gridDimension
     var contentMode: ContentMode = .fill
 
-    @StateObject private var loader = LibraryMediaLoader()
+    /// Bumping this id rebuilds the LazyImage, re-issuing the request — used for
+    /// tap-to-retry after a failure.
+    @State private var reloadToken = 0
 
     var body: some View {
-        Group {
-            switch loader.state {
-            case .idle, .downloading:
-                placeholder
-            case .image(let platformImage):
-                Image(platformImage: platformImage)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
-            case .video, .failed:
+        LazyImage(request: request) { state in
+            if let image = state.image {
+                image.resizable().aspectRatio(contentMode: contentMode)
+            } else if state.error != nil {
                 placeholder.overlay(
                     Image(systemName: "exclamationmark.triangle")
                         .font(.title3)
                         .foregroundColor(.orange)
                 )
+                .contentShape(Rectangle())
+                .onTapGesture { reloadToken += 1 }
+            } else {
+                placeholder
             }
         }
-        .onAppear {
-            loader.load(itemID: itemID, mediaFileName: mediaFileName, isVideo: isVideo, maxDimension: maxDimension)
-        }
-        .onDisappear { loader.cancel() }
+        .id(reloadToken)
     }
 
-    @ViewBuilder
+    private var request: ImageRequest {
+        LibraryImageRequest.request(
+            itemID: itemID, mediaFileName: mediaFileName,
+            isVideo: isVideo, maxDimension: maxDimension)
+    }
+
     private var placeholder: some View {
         ZStack {
             Rectangle().fill(Color.gray.opacity(0.1))
-            if case .downloading = loader.state {
-                VStack(spacing: 6) {
-                    Image(systemName: "icloud.and.arrow.down")
-                        .foregroundColor(.secondary)
-                    ProgressView()
-                }
-            } else {
-                ProgressView()
-            }
+            ProgressView()
         }
     }
 }

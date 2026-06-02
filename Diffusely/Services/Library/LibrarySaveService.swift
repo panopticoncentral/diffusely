@@ -1,4 +1,5 @@
 import Foundation
+import Nuke
 import CryptoKit
 
 enum LibrarySaveError: LocalizedError {
@@ -264,13 +265,18 @@ final class LibrarySaveService: ObservableObject {
             await indexService.ingest(metadata: metadata, downloadStatus: .downloaded)
         }
 
-        // Generate the grid thumbnail now, while the original is local — free,
-        // no extra download. Off the main actor (ImageIO / AVAssetImageGenerator).
+        // Prime Nuke's cache now, while the original is local — free, no extra
+        // download. The first grid appearance then hits the cache instead of the
+        // CDN-first tier. Off the main actor (ImageIO / AVAssetImageGenerator).
         let finalMediaURL = itemsDirectory.appendingPathComponent(metadata.mediaFileName)
         let isVideo = metadata.mediaType == .video
-        if let thumb = await LibraryMediaLoader.thumbnailFromLocalOriginal(
-            url: finalMediaURL, isVideo: isVideo, maxDimension: LibraryThumbnailStore.gridThumbnailDimension) {
-            LibraryThumbnailStore.shared.store(thumb, itemID: metadata.itemID)
+        if let thumb = await LibraryImageRequest.thumbnailImage(
+            localURL: finalMediaURL, isVideo: isVideo, maxDimension: LibraryImageRequest.gridDimension) {
+            let request = LibraryImageRequest.request(
+                itemID: metadata.itemID, mediaFileName: metadata.mediaFileName,
+                isVideo: isVideo, maxDimension: LibraryImageRequest.gridDimension)
+            ImagePipeline.shared.cache.storeCachedImage(
+                ImageContainer(image: thumb), for: request, caches: .all)
         }
     }
 

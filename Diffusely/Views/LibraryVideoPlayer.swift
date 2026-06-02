@@ -49,7 +49,7 @@ struct LibraryVideoPlayer: View {
                             loopObserver = nil
                         }
                     }
-            case .image, .failed:
+            case .failed:
                 Rectangle()
                     .fill(Color.gray.opacity(0.3))
                     .overlay(
@@ -60,7 +60,7 @@ struct LibraryVideoPlayer: View {
             }
         }
         .onAppear {
-            loader.load(itemID: itemID, mediaFileName: mediaFileName, isVideo: true, maxDimension: 0, as: .player)
+            loader.load(itemID: itemID, mediaFileName: mediaFileName)
         }
         .onDisappear { loader.cancel() }
     }

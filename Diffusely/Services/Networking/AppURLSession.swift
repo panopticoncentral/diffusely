@@ -1,9 +1,10 @@
 import Foundation
 
 extension URLSession {
-    /// Shared session for the Civitai JSON API (and, until the Library migration,
-    /// the Library's CDN thumbnail fallback). Image loading uses Nuke's own
-    /// pipeline/session.
+    /// Shared session for the Civitai tRPC JSON API. Image loading no longer uses
+    /// this session: the feed goes through Nuke's pipeline (`AppImagePipeline`),
+    /// and the Library's CDN thumbnail fallback uses its own dedicated session in
+    /// `LibraryImageRequest`.
     ///
     /// `URLSession.shared` defaults to a 7-day `timeoutIntervalForResource`, so a
     /// stalled connection can hang far longer than any retry/loading logic expects:

@@ -187,7 +187,7 @@ struct LibraryView: View {
                     itemID: item.itemID,
                     mediaFileName: item.mediaFileName,
                     isVideo: item.isVideo,
-                    maxDimension: LibraryThumbnailStore.gridThumbnailDimension,
+                    maxDimension: LibraryImageRequest.gridDimension,
                     contentMode: .fill
                 )
             }
