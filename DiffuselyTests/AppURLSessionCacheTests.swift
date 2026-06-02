@@ -10,8 +10,12 @@ import Foundation
         #expect((cache?.memoryCapacity ?? 0) >= 50 * 1024 * 1024)
     }
 
-    @Test func civitaiSessionUsesForcingDelegate() {
-        #expect(URLSession.civitai.delegate is ImageCacheForcingDelegate)
+    @Test func civitaiSessionHasNoDelegate() {
+        // The session must stay delegate-less: a session-wide delegate forces a
+        // serial delegate queue that head-of-line-blocks high-concurrency image
+        // loads and strands cells on a permanent spinner. Durable caching is done
+        // by ImageResponseCacheForcer.storeIfCacheable instead. See AppURLSession.
+        #expect(URLSession.civitai.delegate == nil)
     }
 
     @Test func civitaiSessionUsesProtocolCachePolicy() {

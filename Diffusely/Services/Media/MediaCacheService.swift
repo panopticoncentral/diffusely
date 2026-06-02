@@ -319,6 +319,15 @@ class MediaCacheService: ObservableObject {
 
             guard !Task.isCancelled else { return }
 
+            // Force-cache the immutable thumbnail so a later launch serves it from
+            // disk with no network. No-ops for video/oversized/non-200 bodies.
+            ImageResponseCacheForcer.storeIfCacheable(
+                data: data,
+                response: response,
+                for: URLRequest(url: imageURL),
+                in: URLSession.civitai.configuration.urlCache
+            )
+
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 let statusCode = (response as? HTTPURLResponse)?.statusCode

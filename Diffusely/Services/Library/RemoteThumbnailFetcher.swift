@@ -19,7 +19,15 @@ struct RemoteThumbnailFetcher {
 
     init(fetch: @escaping Fetch = { url in
         let request = URLRequest(url: url, timeoutInterval: RemoteThumbnailFetcher.timeout)
-        return try await URLSession.civitai.data(for: request)
+        let (data, response) = try await URLSession.civitai.data(for: request)
+        // Force-cache the immutable thumbnail for zero-network reuse next launch.
+        ImageResponseCacheForcer.storeIfCacheable(
+            data: data,
+            response: response,
+            for: URLRequest(url: url),
+            in: URLSession.civitai.configuration.urlCache
+        )
+        return (data, response)
     }) {
         self.fetch = fetch
     }

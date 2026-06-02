@@ -13,24 +13,22 @@ extension URLSession {
     ///     enough for a large full-res library download but far short of 7 days.
     ///
     /// A disk-backed `URLCache` (in Application Support, so the OS does not purge
-    /// it under storage pressure) plus `ImageCacheForcingDelegate` give immutable
-    /// CDN thumbnails true zero-network reuse across launches. See
-    /// `ImageCacheForcingDelegate` for why force-caching is required.
+    /// it under storage pressure) gives immutable CDN thumbnails true zero-network
+    /// reuse across launches. Because the B2 origin sends no `Cache-Control`, the
+    /// freshness is forced by `ImageResponseCacheForcer.storeIfCacheable(...)`,
+    /// which each image fetch calls after it completes.
+    ///
+    /// The session intentionally has **no delegate**. A session-wide delegate forces
+    /// `delegateQueue: nil` to serialize every request's completion through one
+    /// queue, which head-of-line-blocks the feed's high-concurrency image loads and
+    /// strands cells on a permanent grey spinner. See `ImageResponseCacheForcer`.
     static let civitai: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 20
         config.timeoutIntervalForResource = 300
         config.urlCache = makeImageURLCache()
         config.requestCachePolicy = .useProtocolCachePolicy
-        // `ImageCacheForcingDelegate` implements only `willCacheResponse`; all other
-        // delegate callbacks (redirects, auth challenges, server-trust) are unimplemented
-        // and fall back to `URLSession`'s default handling, so attaching it does not change
-        // non-caching behavior.
-        return URLSession(
-            configuration: config,
-            delegate: ImageCacheForcingDelegate(),
-            delegateQueue: nil
-        )
+        return URLSession(configuration: config)
     }()
 
     /// The on-disk location for the image `URLCache`. Application Support (not
