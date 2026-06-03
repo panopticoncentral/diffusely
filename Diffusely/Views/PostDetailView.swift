@@ -13,11 +13,6 @@ struct PostDetailView: View {
     #if os(iOS)
     @State private var showingUserContent = false
     #endif
-    #if os(macOS)
-    // Tracks the paged ScrollView's snapped position so it stays in sync with
-    // currentImageIndex when arrow keys drive the change.
-    @State private var scrollPositionID: Int? = 0
-    #endif
     @FocusState private var carouselFocused: Bool
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
@@ -116,35 +111,63 @@ struct PostDetailView: View {
                                 // at the top, which clashes with the custom dot indicator
                                 // we render below; ScrollView paging gives a clean
                                 // trackpad/keyboard-driven carousel instead.
-                                ScrollView(.horizontal) {
-                                    LazyHStack(spacing: 0) {
-                                        ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
-                                            mediaCell(for: image, maxHeight: geometry.size.height)
-                                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                                .id(index)
+                                //
+                                // Position uses a clean read/write split: arrow keys *write*
+                                // via ScrollViewReader.scrollTo, while the visible page is
+                                // *read* back from the live scroll offset via
+                                // onScrollGeometryChange. The earlier `.scrollPosition(id:)`
+                                // two-way binding never wrote back on a Magic Mouse swipe, so
+                                // the dot indicator stayed frozen on the first image.
+                                ScrollViewReader { scrollProxy in
+                                    ScrollView(.horizontal) {
+                                        // Eager HStack (not Lazy): the paged scroller needs
+                                        // every cell's width measured up front so the content
+                                        // is genuinely wider than the viewport. With a
+                                        // LazyHStack on macOS the unrealized cells collapse the
+                                        // content width, so neither trackpad/Magic Mouse swipes
+                                        // nor scrollTo had anywhere to scroll — the carousel
+                                        // stayed pinned on the first image. Autoplay is gated to
+                                        // the active cell so eager rendering doesn't start every
+                                        // video at once.
+                                        HStack(spacing: 0) {
+                                            ForEach(Array(post.safeImages.enumerated()), id: \.element.id) { index, image in
+                                                mediaCell(for: image, maxHeight: geometry.size.height, isActive: index == currentImageIndex)
+                                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                                                    .id(index)
+                                            }
                                         }
+                                        .scrollTargetLayout()
                                     }
-                                    .scrollTargetLayout()
-                                }
-                                .scrollTargetBehavior(.paging)
-                                .scrollPosition(id: $scrollPositionID)
-                                .scrollIndicators(.hidden)
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .focusable()
-                                .focused($carouselFocused)
-                                .onKeyPress(.leftArrow) { advance(by: -1); return .handled }
-                                .onKeyPress(.rightArrow) { advance(by: 1); return .handled }
-                                .overlay(alignment: .bottom) {
-                                    // Float the indicator inside the carousel
-                                    // (which fills the window on macOS) so it's
-                                    // visible without scrolling. Capsule with a
-                                    // material backing keeps the dots legible
-                                    // over any image content beneath them.
-                                    pageIndicator
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(.thinMaterial, in: Capsule())
-                                        .padding(.bottom, 12)
+                                    .scrollTargetBehavior(.paging)
+                                    .scrollIndicators(.hidden)
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                                    .focusable()
+                                    .focused($carouselFocused)
+                                    .onKeyPress(.leftArrow) { scrollCarousel(to: currentImageIndex - 1, using: scrollProxy); return .handled }
+                                    .onKeyPress(.rightArrow) { scrollCarousel(to: currentImageIndex + 1, using: scrollProxy); return .handled }
+                                    .onScrollGeometryChange(for: Int.self) { geo in
+                                        // Round the leading content offset to the nearest
+                                        // page so the read-back follows the snap, whether the
+                                        // page change came from a swipe or arrow scrollTo.
+                                        let pageWidth = geo.containerSize.width
+                                        guard pageWidth > 0 else { return currentImageIndex }
+                                        return Int((geo.contentOffset.x / pageWidth).rounded())
+                                    } action: { _, page in
+                                        let clamped = max(0, min(page, post.safeImages.count - 1))
+                                        if clamped != currentImageIndex { currentImageIndex = clamped }
+                                    }
+                                    .overlay(alignment: .bottom) {
+                                        // Float the indicator inside the carousel
+                                        // (which fills the window on macOS) so it's
+                                        // visible without scrolling. Capsule with a
+                                        // material backing keeps the dots legible
+                                        // over any image content beneath them.
+                                        pageIndicator
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(.thinMaterial, in: Capsule())
+                                            .padding(.bottom, 12)
+                                    }
                                 }
                                 #else
                                 TabView(selection: $currentImageIndex) {
@@ -214,26 +237,10 @@ struct PostDetailView: View {
         .toolbar { macToolbar }
         #endif
         .onChange(of: currentImageIndex) { _, newIndex in
-            #if os(macOS)
-            // Keep the paged ScrollView in lockstep when arrow keys (or any
-            // future programmatic change) drive currentImageIndex.
-            if scrollPositionID != newIndex {
-                scrollPositionID = newIndex
-            }
-            #endif
             Task {
                 await loadGenerationData(for: newIndex)
             }
         }
-        #if os(macOS)
-        .onChange(of: scrollPositionID) { _, new in
-            // User-driven swipe/scroll: mirror back into currentImageIndex so
-            // the dot indicator and generation-data load follow the snap.
-            if let new, new != currentImageIndex {
-                currentImageIndex = new
-            }
-        }
-        #endif
         .task {
             MediaCacheService.shared.preloadImages(post.safeImages)
             await loadGenerationData(for: currentImageIndex)
@@ -277,12 +284,12 @@ struct PostDetailView: View {
     /// video vs image based on the media type. Extracted so the iOS TabView
     /// branch and the macOS ScrollView branch can share identical media body.
     @ViewBuilder
-    private func mediaCell(for image: CivitaiImage, maxHeight: CGFloat) -> some View {
+    private func mediaCell(for image: CivitaiImage, maxHeight: CGFloat, isActive: Bool = true) -> some View {
         let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
         if image.isVideo {
             CachedVideoPlayer(
                 url: image.detailURL,
-                autoPlay: true,
+                autoPlay: isActive,
                 isMuted: false
             )
             .aspectRatio(aspectRatio, contentMode: .fit)
@@ -307,6 +314,19 @@ struct PostDetailView: View {
         guard next != currentImageIndex else { return }
         withAnimation { currentImageIndex = next }
     }
+
+    #if os(macOS)
+    /// Arrow-key navigation for the macOS carousel: clamp to range, then scroll
+    /// the paged ScrollView to that page. currentImageIndex is *not* set here —
+    /// the onScrollGeometryChange read-back updates it once the scroll settles,
+    /// which keeps the dot indicator and generation-data load following the snap
+    /// regardless of whether the page changed via swipe or arrow key.
+    private func scrollCarousel(to index: Int, using proxy: ScrollViewProxy) {
+        let clamped = max(0, min(index, post.safeImages.count - 1))
+        guard clamped != currentImageIndex else { return }
+        withAnimation { proxy.scrollTo(clamped, anchor: .center) }
+    }
+    #endif
 
     /// Menu buttons shared between the iOS in-content menu and the macOS
     /// toolbar menu. Same actions, different chrome wrapping them. The
