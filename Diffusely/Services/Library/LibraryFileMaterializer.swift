@@ -24,6 +24,24 @@ enum LibraryFileMaterializer {
     /// `URLError(.timedOut)` if the ceiling is hit. Call only after `isReady`
     /// returned false.
     static func download(url: URL) async throws {
+        // Only a genuine iCloud (ubiquitous) item can be materialized on demand.
+        // A target that is absent and NOT a ubiquitous item — a local-only
+        // fallback file that was deleted, or a sidecar whose media was never
+        // written/uploaded — has nothing to fetch. Yet because the path lives
+        // inside the iCloud container, `startDownloadingUbiquitousItem` accepts
+        // it and asynchronously spawns a doomed in-process download task (logged
+        // as "LocalDownloadTask … finished with error [-1002] unsupported URL",
+        // keyed by the item's iCloud document UUID). The Library cascade re-runs
+        // on every grid/video reappearance, so that one impossible item becomes a
+        // console error storm. Probe the item's iCloud status first and fail fast
+        // for the impossible case instead of issuing the doomed task.
+        let isUbiquitous = await Task.detached(priority: .userInitiated) {
+            (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
+        }.value
+        guard isUbiquitous else {
+            throw URLError(.fileDoesNotExist)
+        }
+
         try FileManager.default.startDownloadingUbiquitousItem(at: url)
         let path = url.path
         for _ in 0..<240 {
