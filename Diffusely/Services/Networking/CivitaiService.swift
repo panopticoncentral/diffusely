@@ -96,6 +96,37 @@ class CivitaiService: ObservableObject {
         }
     }
 
+    /// Fetches `request` with a hard wall-clock deadline. The session's
+    /// `timeoutIntervalForRequest` does NOT fire while a request is waiting for a
+    /// connection/stream (e.g. a stalled HTTP/3/QUIC handshake), so a wedged
+    /// request can hang far longer than expected — leaving the feed blank with no
+    /// visible error. Racing the fetch against an explicit `Task.sleep` and
+    /// cancelling the loser guarantees a stuck request throws `URLError(.timedOut)`
+    /// instead of hanging indefinitely, routing into each caller's existing
+    /// `catch` (the feed surfaces it via `error`). Mirrors the pattern in
+    /// `MediaCacheService.fetchImageWithTimeout` for image bytes.
+    ///
+    /// `Foundation.Data` is spelled out because this file declares a generic
+    /// `Data` tRPC envelope type that would otherwise shadow it.
+    private func fetchWithTimeout(_ request: URLRequest, timeout: TimeInterval = 20) async throws -> (Foundation.Data, URLResponse) {
+        let session = self.session
+        return try await withThrowingTaskGroup(of: (Foundation.Data, URLResponse).self) { group in
+            group.addTask {
+                try await session.data(for: request)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            // First child to finish wins; the other is cancelled by the defer.
+            guard let result = try await group.next() else {
+                throw URLError(.timedOut)
+            }
+            return result
+        }
+    }
+
     func clear() {
         currentTask?.cancel()
         images.removeAll()
@@ -167,7 +198,7 @@ class CivitaiService: ObservableObject {
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
                 }
 
-                let (data, _) = try await session.data(for: request)
+                let (data, _) = try await fetchWithTimeout(request)
 
                 // Check if task was cancelled
                 try Task.checkCancellation()
@@ -262,7 +293,7 @@ class CivitaiService: ObservableObject {
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
                 }
 
-                let (data, _) = try await session.data(for: request)
+                let (data, _) = try await fetchWithTimeout(request)
 
                 // Check if task was cancelled
                 try Task.checkCancellation()
@@ -1041,7 +1072,7 @@ class CivitaiService: ObservableObject {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, httpResponse) = try await session.data(for: request)
+        let (data, httpResponse) = try await fetchWithTimeout(request)
         try validateStatus(httpResponse)
         let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
         let response = tRPCResponse[0].result.data.json
@@ -1092,7 +1123,7 @@ class CivitaiService: ObservableObject {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, httpResponse) = try await session.data(for: request)
+        let (data, httpResponse) = try await fetchWithTimeout(request)
         try validateStatus(httpResponse)
         let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
         let response = tRPCResponse[0].result.data.json
