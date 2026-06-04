@@ -88,11 +88,28 @@ final class LibraryStore: ObservableObject {
         return await svc.attemptCatchup(for: metadata)
     }
 
+    /// Guards against overlapping reconciles. A reconcile `await`s a container
+    /// scan that can take far longer than the scheduler's debounce window, so
+    /// iCloud churn would otherwise stack many concurrent reconciles. We collapse
+    /// any requests that arrive while one is running into a single trailing rerun.
+    private var reconcileInFlight = false
+    private var reconcileNeedsRerun = false
+
     private func reconcileNow() async {
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
-        await indexService.reconcile(itemsDirectory: dir)
-        await refreshTotals()
+        guard !reconcileInFlight else {
+            reconcileNeedsRerun = true
+            return
+        }
+        reconcileInFlight = true
+        defer { reconcileInFlight = false }
+
+        repeat {
+            reconcileNeedsRerun = false
+            guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+            iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
+            await indexService.reconcile(itemsDirectory: dir)
+            await refreshTotals()
+        } while reconcileNeedsRerun
     }
 
     func rebuildIndex() async {

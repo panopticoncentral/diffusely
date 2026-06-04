@@ -78,14 +78,19 @@ actor LibraryIndexService {
     ///
     /// The directory walk, per-sidecar `Data(contentsOf:)` reads, and per-media
     /// iCloud status lookups are all blocking syscalls — and the iCloud ones
-    /// round-trip to the FileProvider daemon. They ran on the main thread for a
-    /// full library on launch and froze the UI (beachball), so the scan is now
-    /// done on a detached background task; only the SwiftData writes touch the
-    /// model actor.
+    /// round-trip to the FileProvider daemon, blocking for a long time when a
+    /// sidecar is a not-yet-materialized placeholder. The scan therefore runs on
+    /// a dedicated serial queue (`scanQueue`), NOT `Task.detached`: a detached
+    /// task runs on the Swift concurrency cooperative pool, and a blocking
+    /// syscall there burns a cooperative thread. Overlapping reconciles (iCloud
+    /// churn) would then block every cooperative thread at once and starve all
+    /// `async` work app-wide — including image loading, which stranded the feed
+    /// on permanent grey spinners. `withCheckedContinuation` suspends the caller
+    /// without holding a cooperative thread, and the serial queue guarantees at
+    /// most one blocked scan thread ever. Only the SwiftData writes below touch
+    /// the model actor.
     func reconcile(itemsDirectory: URL) async {
-        let scan = await Task.detached(priority: .utility) {
-            Self.scanContainer(itemsDirectory: itemsDirectory)
-        }.value
+        let scan = await Self.runScan(itemsDirectory: itemsDirectory)
 
         // A nil scan means the directory read *threw* (transient iCloud/filesystem
         // error). Treating that as "empty" would prune the whole index, so we
@@ -175,6 +180,25 @@ actor LibraryIndexService {
         seenIDs: Set<Int>
     )
 
+    /// Dedicated serial queue for the blocking container scan. Keeps the
+    /// `Data(contentsOf:)` / FileProvider syscalls off the Swift concurrency
+    /// cooperative pool (see `reconcile`). Serial, so overlapping reconciles
+    /// can never block more than one thread.
+    private static let scanQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.scan",
+        qos: .utility
+    )
+
+    /// Runs `scanContainer` on `scanQueue` and suspends the caller until it
+    /// finishes — without occupying a cooperative thread.
+    nonisolated static func runScan(itemsDirectory: URL) async -> ScanResult? {
+        await withCheckedContinuation { continuation in
+            scanQueue.async {
+                continuation.resume(returning: scanContainer(itemsDirectory: itemsDirectory))
+            }
+        }
+    }
+
     nonisolated static func scanContainer(itemsDirectory: URL) -> ScanResult? {
         let fileManager = FileManager.default
         guard let contents = try? fileManager.contentsOfDirectory(
@@ -192,6 +216,19 @@ actor LibraryIndexService {
         var items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)] = []
 
         for jsonURL in jsonURLs {
+            // A sidecar whose bytes aren't materialized locally is an iCloud
+            // placeholder; calling `Data(contentsOf:)` on it would force a
+            // synchronous FileProvider download that can block for a long time.
+            // Request a non-blocking download and preserve the item instead:
+            // mark its ID seen so reconcile doesn't prune the row as "vanished",
+            // and skip reading this round. A later reconcile (the metadata query
+            // fires when the file materializes) ingests its fields.
+            if isDatalessPlaceholder(jsonURL) {
+                try? fileManager.startDownloadingUbiquitousItem(at: jsonURL)
+                if let id = sidecarItemID(from: jsonURL) { seenIDs.insert(id) }
+                continue
+            }
+
             guard
                 let data = try? Data(contentsOf: jsonURL),
                 let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
@@ -203,6 +240,30 @@ actor LibraryIndexService {
             items.append((metadata: metadata, status: status))
         }
         return (items: items, seenIDs: seenIDs)
+    }
+
+    /// True when `url` is an iCloud item whose contents are not yet downloaded —
+    /// reading it would force a blocking FileProvider materialization. Mirrors the
+    /// status check in `downloadStatus(for:fileManager:)`. A non-ubiquitous local
+    /// file returns `false` (safe to read directly).
+    nonisolated static func isDatalessPlaceholder(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ])
+        guard values?.isUbiquitousItem == true else { return false }
+        switch values?.ubiquitousItemDownloadingStatus {
+        case .some(.current), .some(.downloaded):
+            return false   // bytes are present locally
+        default:
+            return true    // placeholder; not yet materialized
+        }
+    }
+
+    /// Sidecars are named `{itemID}.json`, so the item ID is recoverable from the
+    /// filename without reading the (possibly not-yet-downloaded) contents.
+    nonisolated static func sidecarItemID(from jsonURL: URL) -> Int? {
+        Int(jsonURL.deletingPathExtension().lastPathComponent)
     }
 
     /// Rebuilds the index from the container. Despite the name this no longer

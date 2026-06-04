@@ -329,6 +329,26 @@ private func makeMetadata(
         #expect(items.isEmpty)
     }
 
+    @Test func sidecarItemIDParsesFilenameStem() {
+        // The no-prune-on-placeholder path recovers the item ID from the sidecar
+        // filename (without reading the file). If this contract breaks, a skipped
+        // placeholder would be pruned as "vanished".
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(LibraryIndexService.sidecarItemID(from: dir.appendingPathComponent("42.json")) == 42)
+        #expect(LibraryIndexService.sidecarItemID(from: dir.appendingPathComponent("not-a-number.json")) == nil)
+    }
+
+    @Test func nonUbiquitousLocalSidecarIsNotTreatedAsPlaceholder() {
+        // A plain local file (no iCloud) must read normally — isDatalessPlaceholder
+        // only skips un-materialized ubiquitous items.
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("7.json")
+        try? Data("{}".utf8).write(to: url)
+        #expect(LibraryIndexService.isDatalessPlaceholder(url) == false)
+    }
+
     @Test func wipeDeletesAllRowsAndItemCountTracksThem() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
