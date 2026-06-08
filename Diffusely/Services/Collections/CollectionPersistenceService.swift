@@ -370,11 +370,7 @@ class CollectionPersistenceService: ObservableObject {
                     posts: []
                 )
             }
-            .sorted { lhs, rhs in
-                let l = (lhs.author.username ?? "zzz").lowercased()
-                let r = (rhs.author.username ?? "zzz").lowercased()
-                return ascending ? l < r : l > r
-            }
+            .sorted { Self.compareByAuthor($0, $1, ascending: ascending) }
     }
 
     func getPostsGroupedByAuthor(for collectionId: Int, ascending: Bool = true) -> [AuthorGroup] {
@@ -400,11 +396,26 @@ class CollectionPersistenceService: ObservableObject {
                     posts: posts.map { $0.toCivitaiPost() }
                 )
             }
-            .sorted { lhs, rhs in
-                let l = (lhs.author.username ?? "zzz").lowercased()
-                let r = (rhs.author.username ?? "zzz").lowercased()
-                return ascending ? l < r : l > r
-            }
+            .sorted { Self.compareByAuthor($0, $1, ascending: ascending) }
+    }
+
+    /// Orders author groups by username (asc/desc), placing authors with no
+    /// username (deleted accounts) at the tail. Crucially, ties — including
+    /// every unknown author, which all share a nil username — are broken by the
+    /// stable, persistent author `id`. Without this tiebreaker the unknown
+    /// groups inherit the undefined iteration order of the backing dictionary
+    /// and reshuffle whenever the collection's contents change.
+    private static func compareByAuthor(
+        _ lhs: AuthorGroup, _ rhs: AuthorGroup, ascending: Bool
+    ) -> Bool {
+        switch (lhs.author.username?.lowercased(), rhs.author.username?.lowercased()) {
+        case let (l?, r?):
+            if l != r { return ascending ? l < r : l > r }
+            return lhs.author.id < rhs.author.id
+        case (_?, nil):  return true   // named author before unknown
+        case (nil, _?):  return false  // unknown after named author
+        case (nil, nil): return lhs.author.id < rhs.author.id
+        }
     }
 
     // MARK: - Sync State
