@@ -43,6 +43,26 @@ struct LibraryView: View {
 
     // MARK: - Render
 
+    // Photos-style: a single lazy grid of square thumbnails. Uniform cell size
+    // lets the grid compute its height without laying out every cell, so it
+    // virtualizes (only on-screen rows are realized) at any library size — no
+    // cap needed. A masonry (variable-height) grid can't virtualize this way.
+    private let gridSpacing: CGFloat = 10
+    private let gridEdgePadding: CGFloat = 16
+    // Column count = floor(viewportWidth / targetTileWidth), min 2. Deriving it
+    // from the viewport (not a fixed `adaptive(minimum:)`) keeps the tile size
+    // consistent across devices — ≈5 across on a Mac-sized window, ≈2 on a
+    // phone. Raise targetTileWidth for bigger pictures / fewer columns.
+    private let targetTileWidth: CGFloat = 300
+    // Tile shape (width / height). Portrait 3:4 suits a mostly-portrait library
+    // better than a square crop. Use 1 for square, 4.0/3.0 for landscape.
+    private let tileAspectRatio: CGFloat = 3.0 / 4.0
+    @State private var gridColumnCount: Int = 3
+
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: gridColumnCount)
+    }
+
     @ViewBuilder
     private func content(for content: LibrarySortService.LibrarySortedContent) -> some View {
         if content.isEmpty {
@@ -57,45 +77,46 @@ struct LibraryView: View {
                 }
                 switch content {
                 case .flat(let items):
-                    flatGrid(items: items)
+                    LazyVGrid(columns: gridColumns, spacing: gridSpacing) {
+                        cells(for: items)
+                    }
+                    .padding(.horizontal, gridEdgePadding)
                     footer(items: items)
                 case .grouped(let groups):
-                    groupedSections(groups: groups)
+                    LazyVGrid(columns: gridColumns, spacing: gridSpacing, pinnedViews: [.sectionHeaders]) {
+                        ForEach(groups) { group in
+                            Section {
+                                if expandedGroups.contains(group.id) {
+                                    cells(for: group.items)
+                                }
+                            } header: {
+                                header(for: group)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, gridEdgePadding)
                     footer(items: groups.flatMap { $0.items })
                 }
             }
             .background(Color(.systemBackground))
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                let count = max(2, Int(width / targetTileWidth))
+                if count != gridColumnCount { gridColumnCount = count }
+            }
         }
     }
 
     @ViewBuilder
-    private func flatGrid(items: [PersistedLibraryItem]) -> some View {
-        MasonryGrid(
-            items: items,
-            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
-        ) { item in
+    private func cells(for items: [PersistedLibraryItem]) -> some View {
+        ForEach(items) { item in
             NavigationLink {
                 LibraryDetailView(itemID: item.itemID)
             } label: {
                 thumbnail(for: item)
             }
             .buttonStyle(.plain)
-        }
-    }
-
-    @ViewBuilder
-    private func groupedSections(groups: [LibrarySortService.LibraryGroup]) -> some View {
-        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(groups) { group in
-                Section {
-                    if expandedGroups.contains(group.id) {
-                        flatGrid(items: group.items)
-                            .padding(.bottom, 8)
-                    }
-                } header: {
-                    header(for: group)
-                }
-            }
         }
     }
 
@@ -181,7 +202,7 @@ struct LibraryView: View {
 
     private func thumbnail(for item: PersistedLibraryItem) -> some View {
         Color(.secondarySystemBackground)
-            .aspectRatio(CGFloat(item.width) / max(1, CGFloat(item.height)), contentMode: .fit)
+            .aspectRatio(tileAspectRatio, contentMode: .fit)
             .overlay {
                 LibraryAsyncImage(
                     itemID: item.itemID,
@@ -257,9 +278,9 @@ struct LibraryView: View {
         guard let sortService else { return }
         let newContent = sortService.sortedLibraryContent(sort: selectedSort)
 
-        // Expansion state: on the first grouped view, seed all groups as
-        // expanded. On subsequent reloads keep existing state and auto-expand
-        // newly-seen groups.
+        // Seed all groups expanded on first grouped load, and auto-expand any
+        // newly-seen groups on later reloads. Safe now that the square LazyVGrid
+        // virtualizes — expanded sections only realize their on-screen rows.
         if case .grouped(let groups) = newContent {
             if !didSeedGroups {
                 expandedGroups = Set(groups.map { $0.id })

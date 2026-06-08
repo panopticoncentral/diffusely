@@ -11,7 +11,14 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
     private let spacing: CGFloat
     private let content: (Item) -> Content
 
-    @State private var containerWidth: CGFloat = 0
+    // Store the derived column count, not the raw measured width. Writing the
+    // measured width into state during layout caused a feedback loop: SwiftUI's
+    // multi-pass layout reports transient widths (32, 24, 402, …), each write
+    // re-evaluated the body and re-ran `itemColumns` over every item, which
+    // triggered another layout pass — an unbounded 100%-CPU spin on large
+    // libraries. The column count only changes at coarse width thresholds, so
+    // gating state on it lets transient widths collapse to a no-op.
+    @State private var columnCount: Int = 3
 
     init(
         items: [Item],
@@ -27,29 +34,30 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
         self.content = content
     }
 
-    private var columnCount: Int {
-        guard containerWidth > 0 else { return 3 }
-        return max(2, Int(containerWidth / targetColumnWidth))
-    }
-
     /// Distributes items across columns, appending each to the shortest column.
+    /// Balancing uses `targetColumnWidth` as a stable reference rather than the
+    /// measured width: the actual on-screen width is set by the HStack/LazyVStack
+    /// layout, and using a constant here keeps the distribution from churning on
+    /// every sub-point width change.
     private var itemColumns: [[Item]] {
         let count = columnCount
         var result = Array(repeating: [Item](), count: count)
         var heights = Array(repeating: CGFloat.zero, count: count)
 
-        let totalSpacing = spacing * CGFloat(count - 1) + spacing * 2
-        let columnWidth = max(1, (containerWidth - totalSpacing) / CGFloat(count))
-
         for item in items {
             let ratio = max(0.01, aspectRatio(item))
-            let itemHeight = columnWidth / ratio
+            let itemHeight = targetColumnWidth / ratio
             let shortestIndex = heights.enumerated().min(by: { $0.element < $1.element })!.offset
             result[shortestIndex].append(item)
             heights[shortestIndex] += itemHeight + spacing
         }
 
         return result
+    }
+
+    private func columnCount(for width: CGFloat) -> Int {
+        guard width > 0 else { return 3 }
+        return max(2, Int(width / targetColumnWidth))
     }
 
     var body: some View {
@@ -66,7 +74,8 @@ struct MasonryGrid<Item: Identifiable, Content: View>: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            containerWidth = width
+            let newCount = columnCount(for: width)
+            if newCount != columnCount { columnCount = newCount }
         }
     }
 }
