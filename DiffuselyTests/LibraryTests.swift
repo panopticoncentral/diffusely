@@ -467,6 +467,53 @@ private func makeMetadata(
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("5.json").path) == false)
     }
 
+    @Test func deleteFilesRemovesListedURLsAndToleratesMissing() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let present = dir.appendingPathComponent("present.json")
+        let absent = dir.appendingPathComponent("absent.json")
+        try Data("a".utf8).write(to: present)
+
+        // Mixed list of an existing and a missing URL must not throw.
+        LibraryStore.deleteFiles(at: [present, absent])
+
+        #expect(FileManager.default.fileExists(atPath: present.path) == false)
+    }
+
+    // Not @MainActor on purpose: proves the coordinated delete runs off the
+    // main actor (its whole reason for existing — keep blocking iCloud I/O off
+    // the cooperative pool / main thread).
+    @Test func runDeleteItemFilesDeletesAllExtensionsOffMainActor() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("a".utf8).write(to: dir.appendingPathComponent("7.json"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("7.jpeg"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("8.json"))
+
+        await LibraryStore.runDeleteItemFiles(itemIDs: [7], in: dir)
+
+        let fm = FileManager.default
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("7.json").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("7.jpeg").path) == false)
+        // Untouched survivor.
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("8.json").path))
+    }
+
+    // Reset path's deletion seam, also off the main actor.
+    @Test func runDeleteAllContentsRemovesEveryFileInDirectory() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("a".utf8).write(to: dir.appendingPathComponent("1.json"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("2.mp4"))
+
+        await LibraryStore.runDeleteAllContents(in: dir)
+
+        let remaining = try FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)
+        #expect(remaining.isEmpty)
+    }
+
     @Test func removeItemIDsDeletesListedRowsAndLeavesOthers() async throws {
         let container = try makeContainer()
         let index = LibraryIndexService(modelContainer: container)

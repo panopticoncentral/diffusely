@@ -130,27 +130,72 @@ final class LibraryStore: ObservableObject {
         await refreshTotals()
     }
 
+    /// Dedicated serial queue for the blocking coordinated deletes below. Keeps
+    /// the synchronous `NSFileCoordinator` + `FileManager.removeItem` syscalls
+    /// (file coordination is a blocking iCloud/FileProvider round-trip) off the
+    /// Swift concurrency cooperative pool — running them on `Task.detached` or
+    /// any `async` context would burn cooperative threads and starve the pool,
+    /// the documented "grey spinner" regression. Serial + utility QoS mirrors
+    /// `LibraryIndexService.scanQueue`.
+    nonisolated private static let deleteQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.delete",
+        qos: .utility
+    )
+
+    /// Coordinates deletion of the given file URLs. `nonisolated` so it carries
+    /// no actor isolation; the synchronous file coordination must run on
+    /// `deleteQueue`, never the main actor. Missing files are skipped.
+    nonisolated static func deleteFiles(at urls: [URL]) {
+        let coordinator = NSFileCoordinator()
+        for url in urls {
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            var err: NSError?
+            coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
+                try? FileManager.default.removeItem(at: u)
+            }
+        }
+    }
+
     /// Coordinates deletion of the on-disk files (`{id}.json` / `.jpeg` / `.mp4`)
     /// for the given ids. Static and directory-injected so it is unit-testable
     /// against a temp directory without the iCloud container. Missing files are
     /// skipped. Shared by `remove(itemID:)` and `remove(itemIDs:)`.
-    static func deleteItemFiles(itemIDs: [Int], in dir: URL) {
-        let coordinator = NSFileCoordinator()
-        for itemID in itemIDs {
-            for name in ["\(itemID).json", "\(itemID).jpeg", "\(itemID).mp4"] {
-                let url = dir.appendingPathComponent(name)
-                guard FileManager.default.fileExists(atPath: url.path) else { continue }
-                var err: NSError?
-                coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
-                    try? FileManager.default.removeItem(at: u)
-                }
+    nonisolated static func deleteItemFiles(itemIDs: [Int], in dir: URL) {
+        let urls = itemIDs.flatMap { itemID in
+            ["\(itemID).json", "\(itemID).jpeg", "\(itemID).mp4"]
+                .map { dir.appendingPathComponent($0) }
+        }
+        deleteFiles(at: urls)
+    }
+
+    /// Runs `deleteItemFiles` on `deleteQueue` and suspends the caller until it
+    /// finishes — without occupying a cooperative thread or the main actor.
+    nonisolated static func runDeleteItemFiles(itemIDs: [Int], in dir: URL) async {
+        await withCheckedContinuation { continuation in
+            deleteQueue.async {
+                deleteItemFiles(itemIDs: itemIDs, in: dir)
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Enumerates and deletes every file in `dir` on `deleteQueue` (the
+    /// directory walk is blocking I/O too), suspending the caller until done.
+    /// Backs `resetLibrary()`.
+    nonisolated static func runDeleteAllContents(in dir: URL) async {
+        await withCheckedContinuation { continuation in
+            deleteQueue.async {
+                let contents = (try? FileManager.default.contentsOfDirectory(
+                    at: dir, includingPropertiesForKeys: nil)) ?? []
+                deleteFiles(at: contents)
+                continuation.resume()
             }
         }
     }
 
     func remove(itemID: Int) async {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        Self.deleteItemFiles(itemIDs: [itemID], in: dir)
+        await Self.runDeleteItemFiles(itemIDs: [itemID], in: dir)
         await indexService.remove(itemID: itemID)
         await refreshTotals()
     }
@@ -158,26 +203,19 @@ final class LibraryStore: ObservableObject {
     /// Batch delete for the Library multi-select action. Resolves the items
     /// directory once, deletes all files, removes all index rows in a single
     /// save, then refreshes totals once — so removing N items is not N directory
-    /// resolves and N totals refreshes.
+    /// resolves and N totals refreshes. File coordination runs off the main
+    /// actor so a large multi-select can't hitch the UI.
     func remove(itemIDs: [Int]) async {
         guard !itemIDs.isEmpty else { return }
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        Self.deleteItemFiles(itemIDs: itemIDs, in: dir)
+        await Self.runDeleteItemFiles(itemIDs: itemIDs, in: dir)
         await indexService.remove(itemIDs: itemIDs)
         await refreshTotals()
     }
 
     func resetLibrary() async {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        let coordinator = NSFileCoordinator()
-        let contents = (try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil)) ?? []
-        for url in contents {
-            var err: NSError?
-            coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
-                try? FileManager.default.removeItem(at: u)
-            }
-        }
+        await Self.runDeleteAllContents(in: dir)
         await indexService.wipe()
         await refreshTotals()
     }
