@@ -20,14 +20,48 @@ struct LibraryView: View {
 
     var body: some View {
         content(for: content)
-            .navigationTitle("Library")
+            .navigationTitle(isSelecting ? selectionTitle : "Library")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    LibrarySortMenu(selectedSort: $selectedSort)
+                if isSelecting {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Done") { exitSelection() }
+                    }
+                    ToolbarItem(placement: .destructiveAction) {
+                        Button(role: .destructive) {
+                            showingBulkDeleteConfirm = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .disabled(selectedIDs.isEmpty)
+                    }
+                } else {
+                    ToolbarItem(placement: .primaryAction) {
+                        LibrarySortMenu(selectedSort: $selectedSort)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Select") { isSelecting = true }
+                            .disabled(content.isEmpty)
+                    }
                 }
+            }
+            .confirmationDialog(
+                bulkDeleteTitle,
+                isPresented: $showingBulkDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    let ids = Array(selectedIDs)
+                    Task {
+                        await store.remove(itemIDs: ids)
+                        exitSelection()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This deletes your saved copies and their metadata from iCloud.")
             }
             .task {
                 store.start()
@@ -376,6 +410,20 @@ struct LibraryView: View {
         } else {
             expandedGroups.insert(groupID)
         }
+    }
+
+    private var selectionTitle: String {
+        selectedIDs.isEmpty ? "Select Items" : "\(selectedIDs.count) Selected"
+    }
+
+    private var bulkDeleteTitle: String {
+        let n = selectedIDs.count
+        return "Delete \(n) item\(n == 1 ? "" : "s")?"
+    }
+
+    private func exitSelection() {
+        isSelecting = false
+        selectedIDs.removeAll()
     }
 
     /// Stable surrogate id for `AuthorSectionHeader`, which expects an
