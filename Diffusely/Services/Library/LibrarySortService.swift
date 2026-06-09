@@ -49,7 +49,11 @@ final class LibrarySortService {
     // MARK: - Public API
 
     func sortedLibraryContent(sort: LibrarySort) -> LibrarySortedContent {
-        let all = fetchAll()
+        sortedLibraryContent(sort: sort, filter: .all)
+    }
+
+    func sortedLibraryContent(sort: LibrarySort, filter: AlbumFilter) -> LibrarySortedContent {
+        let all = fetchAll(filter: filter)
         switch sort {
         case .dateNewest, .dateOldest:
             return .flat(sortByDate(all, ascending: sort.ascending))
@@ -73,8 +77,23 @@ final class LibrarySortService {
 
     // MARK: - Internals
 
-    private func fetchAll() -> [PersistedLibraryItem] {
-        (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+    private func fetchAll(filter: AlbumFilter = .all) -> [PersistedLibraryItem] {
+        let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        switch filter {
+        case .all:
+            return all
+        case .album(let id):
+            let key = id.uuidString
+            return all.filter { $0.belongs(toAlbum: key) }
+        case .notInAnyAlbum:
+            let known = knownAlbumIDStrings()
+            return all.filter { item in item.albumIDs.allSatisfy { !known.contains($0) } }
+        }
+    }
+
+    private func knownAlbumIDStrings() -> Set<String> {
+        let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
+        return Set(albums.map { $0.id.uuidString })
     }
 
     /// Newest-first when `ascending == false`. Items with `publishedAt == nil`
@@ -204,5 +223,39 @@ final class LibrarySortService {
         case .bucket(.other):           return "Other"
         case .bucket(.unknownAuthor):   return "Unknown"
         }
+    }
+
+    // MARK: - Album summaries
+
+    struct AlbumSummary: Identifiable, Equatable {
+        let id: UUID
+        let name: String
+        let count: Int
+        let coverItem: PersistedLibraryItem?
+
+        static func == (l: AlbumSummary, r: AlbumSummary) -> Bool {
+            l.id == r.id && l.name == r.name && l.count == r.count
+                && l.coverItem?.itemID == r.coverItem?.itemID
+        }
+    }
+
+    /// One row per album for the Albums grid: name, member count, and the most
+    /// recent member as the cover. Albums with no members get a nil cover.
+    func albumSummaries() -> [AlbumSummary] {
+        let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
+        let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        return albums
+            .map { album in
+                let key = album.id.uuidString
+                let members = newestFirst(all.filter { $0.belongs(toAlbum: key) })
+                return AlbumSummary(id: album.id, name: album.name,
+                                    count: members.count, coverItem: members.first)
+            }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+
+    /// Count of items in zero existing albums — the "Not in any Album" badge.
+    func notInAnyAlbumCount() -> Int {
+        fetchAll(filter: .notInAnyAlbum).count
     }
 }

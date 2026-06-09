@@ -20,11 +20,16 @@ final class LibraryStore: ObservableObject {
     /// reappear on every visit even though the work was already complete or
     /// in progress.
     @Published private(set) var didRunDateBackfillThisSession: Bool = false
+    /// Bumped whenever an album is created/renamed/deleted or membership changes.
+    /// `LibraryView` observes this to reload, since membership edits don't change
+    /// `itemCount`.
+    @Published private(set) var albumsVersion: Int = 0
 
     static let cacheLimitDefaultsKey = "library_cache_limit_bytes"
     static let defaultCacheLimitBytes = 2 * 1024 * 1024 * 1024  // 2 GB
 
     let indexService: LibraryIndexService
+    let albumService: LibraryAlbumService
 
     private let metadataQuery = NSMetadataQuery()
     private var observers: [NSObjectProtocol] = []
@@ -38,6 +43,10 @@ final class LibraryStore: ObservableObject {
 
     init(modelContainer: ModelContainer) {
         self.indexService = LibraryIndexService(modelContainer: modelContainer)
+        self.albumService = LibraryAlbumService(
+            index: indexService,
+            itemsDirectory: { try? await LibraryContainer.shared.itemsDirectory() }
+        )
         LibrarySaveService.shared.indexService = indexService
         self.reconcileScheduler = ReconcileScheduler(debounce: .milliseconds(750)) { [weak self] in
             await self?.reconcileNow()
@@ -71,6 +80,10 @@ final class LibraryStore: ObservableObject {
     func markDateBackfillRanThisSession() {
         didRunDateBackfillThisSession = true
     }
+
+    /// Called by album operations (create/rename/delete/membership) to signal
+    /// UI observers that album state has changed.
+    func notifyAlbumsChanged() { albumsVersion += 1 }
 
     /// User-initiated publish-date catchup for a single item. Called from
     /// `LibraryDetailView` when the user opens an item whose `publishedAt`

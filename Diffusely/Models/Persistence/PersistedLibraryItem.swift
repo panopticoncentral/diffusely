@@ -47,6 +47,12 @@ final class PersistedLibraryItem {
     /// before the first reconcile re-derives the flag. Kept in sync by
     /// `LibraryIndexService.apply`.
     var needsDateBackfill: Bool = true
+    /// Denormalized album membership: the item's album UUIDs joined by U+001F
+    /// (a delimiter that can't appear in a UUID string). Kept in sync with the
+    /// sidecar's `albumIDs` by the convenience init and `LibraryIndexService.apply`.
+    /// Stored as a scalar string (not a relationship) so it fits the existing
+    /// fetchAll()+in-memory-filter read path. Defaults to "" for v4 rows.
+    var albumIDsJoined: String = ""
 
     init(
         itemID: Int,
@@ -65,7 +71,8 @@ final class PersistedLibraryItem {
         checkpointName: String?,
         lastAccessedAt: Date,
         downloadStatus: LibraryDownloadStatus,
-        needsDateBackfill: Bool
+        needsDateBackfill: Bool,
+        albumIDsJoined: String = ""
     ) {
         self.itemID = itemID
         self.mediaType = mediaType
@@ -84,6 +91,7 @@ final class PersistedLibraryItem {
         self.lastAccessedAt = lastAccessedAt
         self.downloadStatusRaw = downloadStatus.rawValue
         self.needsDateBackfill = needsDateBackfill
+        self.albumIDsJoined = albumIDsJoined
     }
 
     /// Single source of truth for "this item still needs a publish-date
@@ -115,7 +123,8 @@ final class PersistedLibraryItem {
             checkpointName: checkpoint,
             lastAccessedAt: metadata.savedAt,
             downloadStatus: downloadStatus,
-            needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata)
+            needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata),
+            albumIDsJoined: Self.join(metadata.albumIDs)
         )
     }
 
@@ -125,4 +134,21 @@ final class PersistedLibraryItem {
     }
 
     var isVideo: Bool { mediaType == LibraryMediaType.video.rawValue }
+
+    static let albumDelimiter = "\u{1f}"
+
+    static func join(_ ids: [String]) -> String {
+        ids.joined(separator: albumDelimiter)
+    }
+
+    var albumIDs: [String] {
+        get {
+            albumIDsJoined.isEmpty ? [] : albumIDsJoined.components(separatedBy: Self.albumDelimiter)
+        }
+        set { albumIDsJoined = Self.join(newValue) }
+    }
+
+    var isInAnyAlbum: Bool { !albumIDsJoined.isEmpty }
+
+    func belongs(toAlbum id: String) -> Bool { albumIDs.contains(id) }
 }

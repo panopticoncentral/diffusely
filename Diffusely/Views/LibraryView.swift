@@ -5,6 +5,15 @@ import Combine
 struct LibraryView: View {
     @EnvironmentObject private var store: LibraryStore
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+
+    /// Which slice of the library this instance renders. `.all` is the top-level
+    /// Library (and shows the Photos/Albums switcher — added in Task 11); the
+    /// other cases are pushed detail screens scoped to an album or the
+    /// not-in-any-album complement.
+    var filter: AlbumFilter = .all
+    /// Title for scoped instances (album name, or "Not in any Album").
+    var scopeTitle: String? = nil
 
     @State private var sortService: LibrarySortService?
     @State private var backfillService: LibraryDateBackfillService?
@@ -18,36 +27,47 @@ struct LibraryView: View {
     @State private var selectedIDs: Set<Int> = []
     @State private var showingBulkDeleteConfirm = false
     @State private var pendingDeleteID: Int?
+    @State private var showingRenameAlbum = false
+    @State private var renameAlbumText = ""
+    @State private var showingDeleteAlbumConfirm = false
+
+    enum Mode: Hashable { case photos, albums }
+    @State private var mode: Mode = .photos
+    @State private var albumSummaries: [LibrarySortService.AlbumSummary] = []
+    @State private var notInAnyAlbumCount: Int = 0
+    @State private var addToAlbumRequest: AddToAlbumRequest?
+
+    /// Identity-carrying payload for the Add-to-Album sheet. Using `.sheet(item:)`
+    /// with this (instead of `.sheet(isPresented:)` + a separate `[Int]?`) makes
+    /// SwiftUI rebuild the sheet's content — and re-read the current
+    /// `albumSummaries` — on every presentation. The old isPresented binding could
+    /// reuse stale content from an earlier presentation (e.g. an empty album list
+    /// captured before the first album was created).
+    struct AddToAlbumRequest: Identifiable {
+        let id = UUID()
+        let itemIDs: [Int]
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if filter == .all && mode == .albums {
+            AlbumsBrowserView(
+                summaries: albumSummaries,
+                notInAnyAlbumCount: notInAnyAlbumCount,
+                onNewAlbum: { presentAddToAlbum([]) }   // empty selection → create-only flow
+            )
+        } else {
+            content(for: content)
+        }
+    }
 
     var body: some View {
-        content(for: content)
-            .navigationTitle(isSelecting ? selectionTitle : "Library")
+        rootContent
+            .navigationTitle(isSelecting ? selectionTitle : (scopeTitle ?? "Library"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar {
-                if isSelecting {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Done") { exitSelection() }
-                    }
-                    ToolbarItem(placement: .destructiveAction) {
-                        Button(role: .destructive) {
-                            showingBulkDeleteConfirm = true
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .disabled(selectedIDs.isEmpty)
-                    }
-                } else {
-                    ToolbarItem(placement: .primaryAction) {
-                        LibrarySortMenu(selectedSort: $selectedSort)
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Select") { isSelecting = true }
-                            .disabled(content.isEmpty)
-                    }
-                }
-            }
+            .toolbar { libraryToolbar }
             .confirmationDialog(
                 bulkDeleteTitle,
                 isPresented: $showingBulkDeleteConfirm,
@@ -80,6 +100,46 @@ struct LibraryView: View {
             } message: { _ in
                 Text("This deletes your saved copy and its metadata from iCloud.")
             }
+            .alert("Rename Album", isPresented: $showingRenameAlbum) {
+                TextField("Album name", text: $renameAlbumText)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    if case .album(let albumID) = filter {
+                        let name = renameAlbumText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !name.isEmpty else { return }
+                        Task {
+                            await store.albumService.renameAlbum(albumID, to: name)
+                            store.notifyAlbumsChanged()
+                        }
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Delete this album?",
+                isPresented: $showingDeleteAlbumConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Album", role: .destructive) {
+                    if case .album(let albumID) = filter {
+                        Task {
+                            await store.albumService.deleteAlbum(albumID)
+                            store.notifyAlbumsChanged()
+                            dismiss()
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The album is removed. Your photos and videos are kept.")
+            }
+            .sheet(item: $addToAlbumRequest) { request in
+                AddToAlbumSheet(
+                    itemIDs: request.itemIDs,
+                    summaries: albumSummaries,
+                    onAdded: { exitSelection() }
+                )
+                .environmentObject(store)
+            }
             .task {
                 store.start()
                 initializeServices()
@@ -93,6 +153,80 @@ struct LibraryView: View {
             .onChange(of: store.itemCount) {
                 reloadContent()
             }
+            .onChange(of: store.albumsVersion) {
+                reloadContent()
+            }
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var libraryToolbar: some ToolbarContent {
+        if isSelecting {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Done") { exitSelection() }
+            }
+            ToolbarItem(placement: .destructiveAction) {
+                Button(role: .destructive) {
+                    showingBulkDeleteConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .disabled(selectedIDs.isEmpty)
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    presentAddToAlbum(Array(selectedIDs))
+                } label: { Label("Add to Album", systemImage: "rectangle.stack.badge.plus") }
+                .disabled(selectedIDs.isEmpty)
+            }
+            if case .album(let albumID) = filter {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button {
+                        let ids = Array(selectedIDs)
+                        Task {
+                            await store.albumService.removeItems(ids, fromAlbum: albumID)
+                            store.notifyAlbumsChanged()
+                            exitSelection()
+                        }
+                    } label: {
+                        Label("Remove from Album", systemImage: "rectangle.stack.badge.minus")
+                    }
+                    .disabled(selectedIDs.isEmpty)
+                }
+            }
+        } else {
+            if filter == .all {
+                ToolbarItem(placement: .principal) {
+                    Picker("Mode", selection: $mode) {
+                        Text("Photos").tag(Mode.photos)
+                        Text("Albums").tag(Mode.albums)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 220)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                LibrarySortMenu(selectedSort: $selectedSort)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Select") { isSelecting = true }
+                    .disabled(content.isEmpty)
+            }
+            if case .album = filter {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            renameAlbumText = scopeTitle ?? ""
+                            showingRenameAlbum = true
+                        } label: { Label("Rename Album", systemImage: "pencil") }
+                        Button(role: .destructive) {
+                            showingDeleteAlbumConfirm = true
+                        } label: { Label("Delete Album", systemImage: "trash") }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
+            }
+        }
     }
 
     // MARK: - Render
@@ -182,6 +316,9 @@ struct LibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
+                    Button {
+                        presentAddToAlbum([item.itemID])
+                    } label: { Label("Add to Album", systemImage: "rectangle.stack.badge.plus") }
                     Button(role: .destructive) {
                         pendingDeleteID = item.itemID
                     } label: {
@@ -374,9 +511,18 @@ struct LibraryView: View {
         }
     }
 
+    /// Recompute the album list from the index *now*, then present the Add-to-Album
+    /// sheet — so it always reflects the current albums regardless of reload timing.
+    private func presentAddToAlbum(_ ids: [Int]) {
+        if let sortService {
+            albumSummaries = sortService.albumSummaries()
+        }
+        addToAlbumRequest = AddToAlbumRequest(itemIDs: ids)
+    }
+
     private func reloadContent() {
         guard let sortService else { return }
-        let newContent = sortService.sortedLibraryContent(sort: selectedSort)
+        let newContent = sortService.sortedLibraryContent(sort: selectedSort, filter: filter)
 
         // Seed all groups expanded on first grouped load, and auto-expand any
         // newly-seen groups on later reloads. Safe now that the square LazyVGrid
@@ -398,6 +544,9 @@ struct LibraryView: View {
         }
 
         content = newContent
+
+        albumSummaries = sortService.albumSummaries()
+        notInAnyAlbumCount = sortService.notInAnyAlbumCount()
     }
 
     /// Kick off the publish-date backfill at most once per app session if there

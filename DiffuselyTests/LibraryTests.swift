@@ -100,10 +100,10 @@ private func makeMetadata(
         #expect(decoded.generationData?.resources?.first?.modelName == "M")
     }
 
-    @Test func currentSchemaVersionIsFour() {
-        // v4 added publishedAtBackfillAttemptedAt so background backfill can
-        // stop re-asking the API for items that came back with a null date.
-        #expect(LibraryItemMetadata.currentSchemaVersion == 4)
+    @Test func currentSchemaVersionIsFive() {
+        // v5 added albumIDs (many-to-many album membership) on top of v4's
+        // publishedAtBackfillAttemptedAt and v3's publishedAt.
+        #expect(LibraryItemMetadata.currentSchemaVersion == 5)
     }
 
     @Test func decodesV3JSONMissingBackfillMarkerAsNil() throws {

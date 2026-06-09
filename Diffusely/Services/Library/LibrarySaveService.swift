@@ -80,6 +80,12 @@ struct LibraryFileWriter {
         if let thrown { throw thrown }
     }
 
+    /// Reads and decodes the sidecar for an already-committed item, if present.
+    func readMetadata(itemID id: Int) -> LibraryItemMetadata? {
+        guard let data = try? Data(contentsOf: metadataURL(forItemID: id)) else { return nil }
+        return try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
+    }
+
     /// Atomically rewrites the sidecar JSON for an already-committed item.
     /// Used by `LibraryDateBackfillService` to add fields (like `publishedAt`)
     /// onto old sidecars without touching the media file.

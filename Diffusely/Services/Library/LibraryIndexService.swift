@@ -44,6 +44,7 @@ actor LibraryIndexService {
             .first(where: { $0.modelType == "Checkpoint" })?
             .modelName
         row.downloadStatus = downloadStatus
+        row.albumIDsJoined = PersistedLibraryItem.join(metadata.albumIDs)
     }
 
     func remove(itemID: Int) {
@@ -66,6 +67,40 @@ actor LibraryIndexService {
             }
         }
         if changed { try? modelContext.save() }
+    }
+
+    // MARK: - Albums
+
+    func upsertAlbum(id: UUID, name: String, createdAt: Date) {
+        if let existing = fetchAlbum(id: id) {
+            existing.name = name
+            existing.createdAt = createdAt
+        } else {
+            modelContext.insert(PersistedAlbum(id: id, name: name, createdAt: createdAt))
+        }
+        try? modelContext.save()
+    }
+
+    func removeAlbum(id: UUID) {
+        if let existing = fetchAlbum(id: id) {
+            modelContext.delete(existing)
+            try? modelContext.save()
+        }
+    }
+
+    /// Replaces an item row's membership. The sidecar is the source of truth and
+    /// must already have been rewritten by the caller; this just keeps the index
+    /// row in step without re-reading media or download status.
+    func setAlbumIDs(itemID: Int, albumIDs: [String]) {
+        guard let row = fetchItem(itemID: itemID) else { return }
+        row.albumIDsJoined = PersistedLibraryItem.join(albumIDs)
+        try? modelContext.save()
+    }
+
+    private func fetchAlbum(id: UUID) -> PersistedAlbum? {
+        var d = FetchDescriptor<PersistedAlbum>(predicate: #Predicate { $0.id == id })
+        d.fetchLimit = 1
+        return try? modelContext.fetch(d).first
     }
 
     func recordAccess(itemID: Int, status: LibraryDownloadStatus? = nil) {
@@ -129,6 +164,26 @@ actor LibraryIndexService {
         reconcilePerItem(scan)
     }
 
+    /// Upserts `PersistedAlbum` rows from the scan and prunes rows whose album
+    /// file vanished. Pure in-memory work on the model context; caller saves.
+    private func applyAlbums(_ scan: ScanResult) {
+        let existing = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
+        var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for file in scan.albums {
+            if let row = byID[file.id] {
+                row.name = file.name
+                row.createdAt = file.createdAt
+            } else {
+                let row = PersistedAlbum(id: file.id, name: file.name, createdAt: file.createdAt)
+                modelContext.insert(row)
+                byID[file.id] = row
+            }
+        }
+        for row in existing where !scan.seenAlbumIDs.contains(row.id) {
+            modelContext.delete(row)
+        }
+    }
+
     /// One in-memory diff + a single batched save. Returns `true` on success.
     private func reconcileBatched(_ scan: ScanResult) -> Bool {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
@@ -146,6 +201,7 @@ actor LibraryIndexService {
         for item in existing where !scan.seenIDs.contains(item.itemID) {
             modelContext.delete(item)
         }
+        applyAlbums(scan)
         do {
             try modelContext.save()
             return true
@@ -181,6 +237,11 @@ actor LibraryIndexService {
                 modelContext.rollback()
             }
         }
+        // Albums are applied and saved as one batch even in the per-item path; the
+        // only failure mode (a duplicate id) is already prevented by applyAlbums's
+        // dictionary guard, so per-row saves aren't needed here.
+        applyAlbums(scan)
+        if (try? modelContext.save()) == nil { modelContext.rollback() }
     }
 
     /// Reads the container off the model actor: walks the directory, reads and
@@ -189,10 +250,13 @@ actor LibraryIndexService {
     /// background task (never the main actor). `nonisolated` + `static` so it
     /// carries no actor isolation and the detached caller doesn't hop back.
     /// Result of an off-actor container scan: every readable sidecar paired with
-    /// its media download status, plus the set of itemIDs seen (for pruning).
+    /// its media download status, plus the set of itemIDs seen (for pruning),
+    /// plus every readable album file and the set of album ids seen (for album pruning).
     typealias ScanResult = (
         items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)],
-        seenIDs: Set<Int>
+        seenIDs: Set<Int>,
+        albums: [LibraryAlbumFile],
+        seenAlbumIDs: Set<UUID>
     )
 
     /// Dedicated serial queue for the blocking container scan. Keeps the
@@ -229,8 +293,32 @@ actor LibraryIndexService {
         let jsonURLs = contents.filter { $0.pathExtension == "json" }
         var seenIDs = Set<Int>()
         var items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)] = []
+        var albums: [LibraryAlbumFile] = []
+        var seenAlbumIDs = Set<UUID>()
 
         for jsonURL in jsonURLs {
+            let name = jsonURL.lastPathComponent
+
+            // Album metadata file: decode separately, never as an item sidecar.
+            if let albumID = LibraryAlbumStore.albumID(fromFileName: name) {
+                // The file's presence means the album exists — mark it seen up
+                // front so a present-but-unreadable file (placeholder, transient
+                // read error, or corrupt JSON) never prunes the row. Mirrors how
+                // a not-yet-materialized item is kept via seenIDs.
+                seenAlbumIDs.insert(albumID)
+                if isDatalessPlaceholder(jsonURL) {
+                    try? fileManager.startDownloadingUbiquitousItem(at: jsonURL)
+                    continue
+                }
+                // Decode best-effort: only a readable file refreshes name/createdAt.
+                if let data = try? Data(contentsOf: jsonURL),
+                   let file = try? LibraryAlbumFile.decoder().decode(LibraryAlbumFile.self, from: data) {
+                    albums.append(file)
+                }
+                continue
+            }
+
+            // Item sidecar (existing behavior).
             // A sidecar whose bytes aren't materialized locally is an iCloud
             // placeholder; calling `Data(contentsOf:)` on it would force a
             // synchronous FileProvider download that can block for a long time.
@@ -254,7 +342,7 @@ actor LibraryIndexService {
             let status = downloadStatus(for: mediaURL, fileManager: fileManager)
             items.append((metadata: metadata, status: status))
         }
-        return (items: items, seenIDs: seenIDs)
+        return (items: items, seenIDs: seenIDs, albums: albums, seenAlbumIDs: seenAlbumIDs)
     }
 
     /// True when `url` is an iCloud item whose contents are not yet downloaded —

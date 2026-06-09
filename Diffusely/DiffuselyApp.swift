@@ -36,7 +36,8 @@ struct DiffuselyApp: App {
             PersistedImage.self,
             PersistedPost.self,
             PersistedPostImage.self,
-            PersistedLibraryItem.self
+            PersistedLibraryItem.self,
+            PersistedAlbum.self
         ])
         // Use an explicit store URL we fully control. The local SwiftData store is
         // a disposable cache (collections re-sync from Civitai, the personal

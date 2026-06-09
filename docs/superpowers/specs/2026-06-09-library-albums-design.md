@@ -119,8 +119,9 @@ just a filtered item set handed to the existing `LibrarySortService`.
 ## 4. Edge Cases
 
 - **Delete album** removes only `album-{uuid}.json`. Member items keep the now-dangling
-  UUID in their sidecar; it is filtered out against the known-album set and lazily
-  cleaned on the item's next write. Photos are never touched.
+  UUID in their sidecar indefinitely; there is no active cleanup. The id is tolerated
+  at rest and filtered out against the known-album set at read time. Photos are never
+  touched.
 - **Dangling album ID** (album deleted on another device, item still references it) →
   the item reads as "not in that album"; no crash, no orphan UI.
 - **Empty album** is valid and listed (its existence comes from the album file, not
