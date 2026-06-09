@@ -416,3 +416,50 @@ private func makeMetadata(
         #expect(store.didRunDateBackfillThisSession == true)
     }
 }
+
+@Suite struct LibraryBatchRemovalTests {
+    private func makeContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: PersistedLibraryItem.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+    }
+
+    @Test func removeItemIDsDeletesListedRowsAndLeavesOthers() async throws {
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+
+        await index.ingest(metadata: makeMetadata(itemID: 1), downloadStatus: .downloaded)
+        await index.ingest(metadata: makeMetadata(itemID: 2), downloadStatus: .downloaded)
+        await index.ingest(metadata: makeMetadata(itemID: 3), downloadStatus: .downloaded)
+        #expect(await index.itemCount() == 3)
+
+        await index.remove(itemIDs: [1, 3])
+
+        #expect(await index.itemCount() == 1)
+        let items = try await MainActor.run {
+            try container.mainContext.fetch(FetchDescriptor<PersistedLibraryItem>())
+        }
+        #expect(items.map(\.itemID) == [2])
+    }
+
+    @Test func removeItemIDsEmptyListIsNoOp() async throws {
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.ingest(metadata: makeMetadata(itemID: 9), downloadStatus: .downloaded)
+
+        await index.remove(itemIDs: [])
+
+        #expect(await index.itemCount() == 1)
+    }
+
+    @Test func removeItemIDsIgnoresUnknownIDs() async throws {
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.ingest(metadata: makeMetadata(itemID: 1), downloadStatus: .downloaded)
+
+        await index.remove(itemIDs: [1, 999])
+
+        #expect(await index.itemCount() == 0)
+    }
+}
