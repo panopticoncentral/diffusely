@@ -116,3 +116,6 @@ Network Trash Folder
 Temporary Items
 .apdisk
 .claude/settings.local.json
+
+# Superpowers brainstorming companion (local mockups)
+.superpowers/
