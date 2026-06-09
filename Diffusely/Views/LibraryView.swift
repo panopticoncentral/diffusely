@@ -14,6 +14,9 @@ struct LibraryView: View {
     @State private var selectedSort: LibrarySort = .dateNewest
     @State private var expandedGroups: Set<String> = []
     @State private var didSeedGroups = false
+    @State private var isSelecting = false
+    @State private var selectedIDs: Set<Int> = []
+    @State private var showingBulkDeleteConfirm = false
 
     var body: some View {
         content(for: content)
@@ -111,12 +114,21 @@ struct LibraryView: View {
     @ViewBuilder
     private func cells(for items: [PersistedLibraryItem]) -> some View {
         ForEach(items) { item in
-            NavigationLink {
-                LibraryDetailView(itemID: item.itemID)
-            } label: {
-                thumbnail(for: item)
+            if isSelecting {
+                Button {
+                    toggleSelection(item.itemID)
+                } label: {
+                    selectableThumbnail(for: item)
+                }
+                .buttonStyle(.plain)
+            } else {
+                NavigationLink {
+                    LibraryDetailView(itemID: item.itemID)
+                } label: {
+                    thumbnail(for: item)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
     }
 
@@ -232,6 +244,34 @@ struct LibraryView: View {
                 }
             }
             .contentShape(Rectangle())
+    }
+
+    /// The grid thumbnail decorated for selection mode: a check badge in the
+    /// top-trailing corner and a slight dim when selected.
+    private func selectableThumbnail(for item: PersistedLibraryItem) -> some View {
+        let isSelected = selectedIDs.contains(item.itemID)
+        return thumbnail(for: item)
+            .overlay {
+                if isSelected {
+                    Color.black.opacity(0.25)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, isSelected ? Color.accentColor : Color.white.opacity(0.6))
+                    .shadow(color: .black.opacity(0.5), radius: 2)
+                    .padding(6)
+            }
+    }
+
+    private func toggleSelection(_ itemID: Int) {
+        if selectedIDs.contains(itemID) {
+            selectedIDs.remove(itemID)
+        } else {
+            selectedIDs.insert(itemID)
+        }
     }
 
     private var emptyState: some View {
