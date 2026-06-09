@@ -425,6 +425,48 @@ private func makeMetadata(
         )
     }
 
+    private func tempDir() -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @MainActor @Test func deleteItemFilesRemovesAllExtensionsForListedIDs() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Item 1: json + jpeg. Item 2: json + mp4. Item 3: untouched survivor.
+        try Data("a".utf8).write(to: dir.appendingPathComponent("1.json"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("2.json"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("2.mp4"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("3.json"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("3.jpeg"))
+
+        LibraryStore.deleteItemFiles(itemIDs: [1, 2], in: dir)
+
+        let fm = FileManager.default
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("1.json").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("1.jpeg").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("2.json").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("2.mp4").path) == false)
+        // Survivor untouched.
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("3.json").path))
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("3.jpeg").path))
+    }
+
+    @MainActor @Test func deleteItemFilesToleratesMissingFiles() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // Only the json exists; jpeg/mp4 absent. Must not throw.
+        try Data("a".utf8).write(to: dir.appendingPathComponent("5.json"))
+
+        LibraryStore.deleteItemFiles(itemIDs: [5], in: dir)
+
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("5.json").path) == false)
+    }
+
     @Test func removeItemIDsDeletesListedRowsAndLeavesOthers() async throws {
         let container = try makeContainer()
         let index = LibraryIndexService(modelContainer: container)

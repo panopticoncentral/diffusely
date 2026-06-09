@@ -130,18 +130,40 @@ final class LibraryStore: ObservableObject {
         await refreshTotals()
     }
 
-    func remove(itemID: Int) async {
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+    /// Coordinates deletion of the on-disk files (`{id}.json` / `.jpeg` / `.mp4`)
+    /// for the given ids. Static and directory-injected so it is unit-testable
+    /// against a temp directory without the iCloud container. Missing files are
+    /// skipped. Shared by `remove(itemID:)` and `remove(itemIDs:)`.
+    static func deleteItemFiles(itemIDs: [Int], in dir: URL) {
         let coordinator = NSFileCoordinator()
-        for name in ["\(itemID).json", "\(itemID).jpeg", "\(itemID).mp4"] {
-            let url = dir.appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            var err: NSError?
-            coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
-                try? FileManager.default.removeItem(at: u)
+        for itemID in itemIDs {
+            for name in ["\(itemID).json", "\(itemID).jpeg", "\(itemID).mp4"] {
+                let url = dir.appendingPathComponent(name)
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                var err: NSError?
+                coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
+                    try? FileManager.default.removeItem(at: u)
+                }
             }
         }
+    }
+
+    func remove(itemID: Int) async {
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        Self.deleteItemFiles(itemIDs: [itemID], in: dir)
         await indexService.remove(itemID: itemID)
+        await refreshTotals()
+    }
+
+    /// Batch delete for the Library multi-select action. Resolves the items
+    /// directory once, deletes all files, removes all index rows in a single
+    /// save, then refreshes totals once — so removing N items is not N directory
+    /// resolves and N totals refreshes.
+    func remove(itemIDs: [Int]) async {
+        guard !itemIDs.isEmpty else { return }
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        Self.deleteItemFiles(itemIDs: itemIDs, in: dir)
+        await indexService.remove(itemIDs: itemIDs)
         await refreshTotals()
     }
 
