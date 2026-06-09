@@ -339,26 +339,15 @@ actor LibraryIndexService {
         guard !victimIDs.isEmpty else { return }
 
         // `evictUbiquitousItem` is a blocking XPC round-trip to fileproviderd.
-        // Run every eviction on a detached task so a slow or unresponsive daemon
-        // can't wedge the model actor — which serializes all index reads/writes
-        // — and beachball the whole app (it did, at ~1k items). Only the
-        // SwiftData status flip below touches the actor.
-        let dir = itemsDirectory
-        let files = victimFiles
-        await Task.detached(priority: .utility) {
-            let coordinator = NSFileCoordinator()
-            for name in files {
-                let mediaURL = dir.appendingPathComponent(name)
-                var coordinationError: NSError?
-                coordinator.coordinate(
-                    writingItemAt: mediaURL,
-                    options: .forDeleting,
-                    error: &coordinationError
-                ) { url in
-                    try? FileManager.default.evictUbiquitousItem(at: url)
-                }
-            }
-        }.value
+        // Run every eviction on a dedicated serial queue (NOT `Task.detached`,
+        // which stays on the Swift concurrency cooperative pool: a blocking
+        // syscall there burns a cooperative thread and, under iCloud churn,
+        // starves the pool — the documented "grey spinner" regression). The
+        // queue also keeps the work off the model actor, which serializes all
+        // index reads/writes, so a slow or unresponsive daemon can't wedge it
+        // and beachball the whole app (it did, at ~1k items). Only the SwiftData
+        // status flip below touches the actor.
+        await Self.runEvictMediaFiles(fileNames: victimFiles, in: itemsDirectory)
 
         // Re-fetch after the suspension (the actor is reentrant — another call
         // may have run while we awaited), then flip the evicted rows and save
@@ -373,6 +362,48 @@ actor LibraryIndexService {
 
     func evictAllDownloaded(itemsDirectory: URL) async {
         await enforceCacheLimit(maxBytes: 1, itemsDirectory: itemsDirectory)
+    }
+
+    /// Dedicated serial queue for the blocking coordinated evictions below. Keeps
+    /// the synchronous `NSFileCoordinator` + `FileManager.evictUbiquitousItem`
+    /// syscalls (eviction is a blocking XPC round-trip to fileproviderd) off the
+    /// Swift concurrency cooperative pool — running them on `Task.detached` or
+    /// any `async` context would burn cooperative threads and starve the pool,
+    /// the documented "grey spinner" regression. Serial + utility QoS mirrors
+    /// `scanQueue` and `LibraryStore.deleteQueue`.
+    private static let evictionQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.eviction",
+        qos: .utility
+    )
+
+    /// Coordinates eviction of the named media files in `dir`. `nonisolated` so
+    /// it carries no actor isolation; the synchronous file coordination must run
+    /// on `evictionQueue`, never the main actor or the model actor. Missing files
+    /// are tolerated (eviction is a no-op / swallowed error).
+    nonisolated static func evictMediaFiles(fileNames: [String], in dir: URL) {
+        let coordinator = NSFileCoordinator()
+        for name in fileNames {
+            let mediaURL = dir.appendingPathComponent(name)
+            var coordinationError: NSError?
+            coordinator.coordinate(
+                writingItemAt: mediaURL,
+                options: .forDeleting,
+                error: &coordinationError
+            ) { url in
+                try? FileManager.default.evictUbiquitousItem(at: url)
+            }
+        }
+    }
+
+    /// Runs `evictMediaFiles` on `evictionQueue` and suspends the caller until it
+    /// finishes — without occupying a cooperative thread or the model actor.
+    nonisolated static func runEvictMediaFiles(fileNames: [String], in dir: URL) async {
+        await withCheckedContinuation { continuation in
+            evictionQueue.async {
+                evictMediaFiles(fileNames: fileNames, in: dir)
+                continuation.resume()
+            }
+        }
     }
 
     // MARK: - Helpers

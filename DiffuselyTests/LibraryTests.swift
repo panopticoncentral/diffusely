@@ -391,6 +391,26 @@ private func makeMetadata(
         #expect(byID[2] == .evicted)
         #expect(byID[3] == .downloaded)
     }
+
+    // Not @MainActor on purpose: proves the coordinated eviction runs off the
+    // main actor (its reason for existing — keep blocking iCloud eviction I/O,
+    // an XPC round-trip to fileproviderd, off the cooperative pool / main
+    // thread). `evictUbiquitousItem` is an iCloud op, so on a plain
+    // non-ubiquitous temp file it does not remove the file; we assert the
+    // helper completes and tolerates a mix of present and missing files.
+    @Test func runEvictMediaFilesCompletesOffMainActorAndToleratesMissing() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("img".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
+        // "2.mp4" intentionally absent — the helper must tolerate it.
+
+        await LibraryIndexService.runEvictMediaFiles(fileNames: ["1.jpeg", "2.mp4"], in: dir)
+
+        // Reaching here proves the coordinated eviction completed off the main
+        // actor. The present file remains: eviction is an iCloud op, not a
+        // local delete, so a plain temp file is untouched.
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("1.jpeg").path))
+    }
 }
 
 /// Session-scoped flags on `LibraryStore` — currently the date-backfill gate.
