@@ -121,6 +121,8 @@ struct LibraryView: View {
                     selectableThumbnail(for: item)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(item.isVideo ? "Video" : "Photo")
+                .accessibilityAddTraits(selectedIDs.contains(item.itemID) ? .isSelected : [])
             } else {
                 NavigationLink {
                     LibraryDetailView(itemID: item.itemID)
