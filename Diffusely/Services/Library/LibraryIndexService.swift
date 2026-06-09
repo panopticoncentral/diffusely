@@ -53,6 +53,21 @@ actor LibraryIndexService {
         }
     }
 
+    /// Batch-deletes index rows for the given ids in a single save. Used by the
+    /// Library multi-select delete so removing N items is one persistence
+    /// transaction instead of N. Unknown ids are skipped.
+    func remove(itemIDs: [Int]) {
+        guard !itemIDs.isEmpty else { return }
+        var changed = false
+        for itemID in itemIDs {
+            if let existing = fetchItem(itemID: itemID) {
+                modelContext.delete(existing)
+                changed = true
+            }
+        }
+        if changed { try? modelContext.save() }
+    }
+
     func recordAccess(itemID: Int, status: LibraryDownloadStatus? = nil) {
         guard let existing = fetchItem(itemID: itemID) else { return }
         existing.lastAccessedAt = Date()
