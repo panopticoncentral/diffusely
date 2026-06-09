@@ -17,6 +17,7 @@ struct LibraryView: View {
     @State private var isSelecting = false
     @State private var selectedIDs: Set<Int> = []
     @State private var showingBulkDeleteConfirm = false
+    @State private var pendingDeleteID: Int?
 
     var body: some View {
         content(for: content)
@@ -62,6 +63,22 @@ struct LibraryView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This deletes your saved copies and their metadata from iCloud.")
+            }
+            .confirmationDialog(
+                "Delete this item?",
+                isPresented: Binding(
+                    get: { pendingDeleteID != nil },
+                    set: { if !$0 { pendingDeleteID = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: pendingDeleteID
+            ) { itemID in
+                Button("Delete", role: .destructive) {
+                    Task { await store.remove(itemID: itemID) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This deletes your saved copy and its metadata from iCloud.")
             }
             .task {
                 store.start()
@@ -164,6 +181,13 @@ struct LibraryView: View {
                     thumbnail(for: item)
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        pendingDeleteID = item.itemID
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
         }
     }
