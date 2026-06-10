@@ -72,6 +72,74 @@ import SwiftData
         #expect(try ctx.fetch(FetchDescriptor<PersistedAlbum>()).isEmpty)
     }
 
+    // MARK: - Album-change reporting (drives LibraryStore.albumsVersion)
+
+    /// `reconcile` returns whether album-relevant state changed so the store can
+    /// bump `albumsVersion` — without it, album files/membership synced in from
+    /// another device never refresh an open LibraryView (itemCount is unchanged).
+
+    @Test func reconcileReportsChangeWhenAlbumFileAppearsAndQuietWhenNothingChanges() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+
+        // Simulates an album file syncing in from another device.
+        try store_write(LibraryAlbumFile(id: UUID(), name: "Synced", createdAt: Date(timeIntervalSince1970: 1)), in: dir)
+        #expect(await index.reconcile(itemsDirectory: dir) == true)
+
+        // A reconcile that finds nothing new must stay quiet (no pointless reloads).
+        #expect(await index.reconcile(itemsDirectory: dir) == false)
+    }
+
+    @Test func reconcileReportsChangeWhenSidecarMembershipSyncsIn() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+
+        // An item with no membership: ingesting it is not an album-state change.
+        try writeItemSidecar(7, albums: [], in: dir)
+        #expect(await index.reconcile(itemsDirectory: dir) == false)
+
+        // Another device files the item into an album (sidecar rewritten via sync).
+        try writeItemSidecar(7, albums: [UUID().uuidString], in: dir)
+        #expect(await index.reconcile(itemsDirectory: dir) == true)
+        #expect(await index.reconcile(itemsDirectory: dir) == false)
+    }
+
+    @Test func reconcileReportsChangeWhenAlbumFileVanishesOrIsRenamed() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = LibraryAlbumStore(itemsDirectory: dir)
+        var file = LibraryAlbumFile(id: UUID(), name: "Old", createdAt: Date(timeIntervalSince1970: 1))
+        try store.write(file)
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.reconcile(itemsDirectory: dir)
+
+        // Rename synced in from another device.
+        file.name = "New"
+        try store.write(file)
+        #expect(await index.reconcile(itemsDirectory: dir) == true)
+
+        // Deletion synced in from another device.
+        store.delete(id: file.id)
+        #expect(await index.reconcile(itemsDirectory: dir) == true)
+        #expect(await index.reconcile(itemsDirectory: dir) == false)
+    }
+
+    @Test func reconcileReportsChangeWhenAlbumMemberItemVanishes() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+
+        // A new item arriving already in an album is an album-state change.
+        try writeItemSidecar(9, albums: [UUID().uuidString], in: dir)
+        #expect(await index.reconcile(itemsDirectory: dir) == true)
+
+        // The member item being deleted on another device empties its album.
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("9.json"))
+        #expect(await index.reconcile(itemsDirectory: dir) == true)
+    }
+
     @Test func presentButUndecodableAlbumFileIsNotPruned() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = LibraryAlbumStore(itemsDirectory: dir)

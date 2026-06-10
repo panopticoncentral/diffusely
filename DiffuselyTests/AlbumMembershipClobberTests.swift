@@ -59,7 +59,7 @@ import SwiftData
 
         // The racing reconcile finishes its scan and tries to apply it.
         let applied = await index.applyScan(staleScan, ifEpochMatches: epoch)
-        #expect(applied == false, "a scan older than a direct write must be rejected")
+        #expect(applied == .rejectedStaleEpoch, "a scan older than a direct write must be rejected")
 
         // Membership and the album row must both survive.
         let ctx = ModelContext(container)
@@ -85,7 +85,7 @@ import SwiftData
         let epoch = await index.currentMutationEpoch()
         let freshScan = try #require(LibraryIndexService.scanContainer(itemsDirectory: dir))
         let applied = await index.applyScan(freshScan, ifEpochMatches: epoch)
-        #expect(applied == true)
+        #expect(applied.wasApplied)
 
         let row = try #require(ModelContext(container).fetch(FetchDescriptor<PersistedLibraryItem>()).first)
         #expect(row.albumIDs == [album.uuidString])

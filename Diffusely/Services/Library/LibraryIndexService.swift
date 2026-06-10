@@ -28,6 +28,19 @@ actor LibraryIndexService {
     /// fire often enough to starve reconcile's bounded rescan loop.
     private func bumpMutationEpoch() { mutationEpoch += 1 }
 
+    /// Outcome of applying a container scan to the index.
+    enum ScanApplication: Equatable {
+        /// A direct write landed after the scan's epoch was captured; the stale
+        /// snapshot was rejected and the caller should rescan.
+        case rejectedStaleEpoch
+        /// The scan was applied. `albumStateChanged` is true when it altered
+        /// album rows or any item's membership — UI that renders album state
+        /// won't see those edits through `itemCount` and must be reloaded.
+        case applied(albumStateChanged: Bool)
+
+        var wasApplied: Bool { self != .rejectedStaleEpoch }
+    }
+
     // MARK: - Upsert
 
     func ingest(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
@@ -41,12 +54,14 @@ actor LibraryIndexService {
     }
 
     /// Copies the mutable fields from a freshly-read sidecar onto an existing
-    /// index row. Pure in-memory work — no fetch, no save.
+    /// index row. Pure in-memory work — no fetch, no save. Returns whether the
+    /// row's album membership changed, so reconcile can signal album-observing UI.
+    @discardableResult
     private func apply(
         _ metadata: LibraryItemMetadata,
         downloadStatus: LibraryDownloadStatus,
         to row: PersistedLibraryItem
-    ) {
+    ) -> Bool {
         row.mediaType = metadata.mediaType.rawValue
         row.mediaFileName = metadata.mediaFileName
         row.width = metadata.width
@@ -65,7 +80,10 @@ actor LibraryIndexService {
             .first(where: { $0.modelType == "Checkpoint" })?
             .modelName
         row.downloadStatus = downloadStatus
-        row.albumIDsJoined = PersistedLibraryItem.join(metadata.albumIDs)
+        let newAlbumIDsJoined = PersistedLibraryItem.join(metadata.albumIDs)
+        let membershipChanged = row.albumIDsJoined != newAlbumIDsJoined
+        row.albumIDsJoined = newAlbumIDsJoined
+        return membershipChanged
     }
 
     func remove(itemID: Int) {
@@ -165,7 +183,14 @@ actor LibraryIndexService {
     /// without holding a cooperative thread, and the serial queue guarantees at
     /// most one blocked scan thread ever. Only the SwiftData writes below touch
     /// the model actor.
-    func reconcile(itemsDirectory: URL) async {
+    /// Returns whether the reconcile changed album-relevant state (album rows or
+    /// item membership) — those edits are invisible to `itemCount`, so the caller
+    /// must signal album-observing UI when this is true. A skipped reconcile
+    /// (unreadable container, or direct writes kept landing) returns false: the
+    /// metadata query re-fires for every container change, so a follow-up
+    /// reconcile reports the change instead.
+    @discardableResult
+    func reconcile(itemsDirectory: URL) async -> Bool {
         // The scan is a point-in-time snapshot of the container, read off the
         // actor. Direct mutations (add-to-album, saves, deletes) can land while
         // it is in flight; applying the snapshot then would overwrite the newer
@@ -187,102 +212,123 @@ actor LibraryIndexService {
             // depends on it.
             guard let scan else {
                 print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
-                return
+                return false
             }
 
-            if applyScan(scan, ifEpochMatches: epoch) { return }
+            if case .applied(let albumStateChanged) = applyScan(scan, ifEpochMatches: epoch) {
+                return albumStateChanged
+            }
             print("[LibraryIndex] direct write landed during the container scan; rescanning")
         }
         print("[LibraryIndex] reconcile skipped: direct writes kept landing during scans")
+        return false
     }
 
     /// Applies a completed scan to the index — unless a direct mutation landed
     /// after `epoch` was captured, in which case the snapshot is stale and is
-    /// rejected (returns false; the caller rescans). Internal rather than
+    /// rejected (`.rejectedStaleEpoch`; the caller rescans). Internal rather than
     /// private so tests can drive the write-during-scan race deterministically.
-    func applyScan(_ scan: ScanResult, ifEpochMatches epoch: Int) -> Bool {
-        guard currentMutationEpoch() == epoch else { return false }
+    func applyScan(_ scan: ScanResult, ifEpochMatches epoch: Int) -> ScanApplication {
+        guard currentMutationEpoch() == epoch else { return .rejectedStaleEpoch }
 
         // Fast path: upsert everything from an in-memory map and save once
         // (one query + one save instead of N + N). If that batched save throws,
         // fall back to a resilient per-item pass — a single all-or-nothing save
         // that silently failed is exactly what stranded the whole index empty
         // after a rebuild, so one poison row must never lose the other 1024.
-        if reconcileBatched(scan) { return true }
+        if let albumStateChanged = reconcileBatched(scan) {
+            return .applied(albumStateChanged: albumStateChanged)
+        }
         print("[LibraryIndex] batched reconcile save failed; retrying per-item")
         modelContext.rollback()
-        reconcilePerItem(scan)
-        return true
+        return .applied(albumStateChanged: reconcilePerItem(scan))
     }
 
     /// Upserts `PersistedAlbum` rows from the scan and prunes rows whose album
     /// file vanished. Pure in-memory work on the model context; caller saves.
-    private func applyAlbums(_ scan: ScanResult) {
+    /// Returns whether any album row was inserted, updated, or deleted.
+    private func applyAlbums(_ scan: ScanResult) -> Bool {
+        var changed = false
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
         var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for file in scan.albums {
             if let row = byID[file.id] {
+                if row.name != file.name || row.createdAt != file.createdAt { changed = true }
                 row.name = file.name
                 row.createdAt = file.createdAt
             } else {
                 let row = PersistedAlbum(id: file.id, name: file.name, createdAt: file.createdAt)
                 modelContext.insert(row)
                 byID[file.id] = row
+                changed = true
             }
         }
         for row in existing where !scan.seenAlbumIDs.contains(row.id) {
             modelContext.delete(row)
+            changed = true
         }
+        return changed
     }
 
-    /// One in-memory diff + a single batched save. Returns `true` on success.
-    private func reconcileBatched(_ scan: ScanResult) -> Bool {
+    /// One in-memory diff + a single batched save. Returns whether album-relevant
+    /// state changed on success, or `nil` if the save failed.
+    private func reconcileBatched(_ scan: ScanResult) -> Bool? {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
 
+        var albumStateChanged = false
         for (metadata, status) in scan.items {
             if let row = byID[metadata.itemID] {
-                apply(metadata, downloadStatus: status, to: row)
+                if apply(metadata, downloadStatus: status, to: row) { albumStateChanged = true }
             } else {
                 let row = PersistedLibraryItem(metadata: metadata, downloadStatus: status)
                 modelContext.insert(row)
                 byID[metadata.itemID] = row
+                if !metadata.albumIDs.isEmpty { albumStateChanged = true }
             }
         }
         for item in existing where !scan.seenIDs.contains(item.itemID) {
+            if !item.albumIDsJoined.isEmpty { albumStateChanged = true }
             modelContext.delete(item)
         }
-        applyAlbums(scan)
+        if applyAlbums(scan) { albumStateChanged = true }
         do {
             try modelContext.save()
-            return true
+            return albumStateChanged
         } catch {
             print("[LibraryIndex] batched reconcile save threw (\(scan.items.count) sidecars): \(error)")
-            return false
+            return nil
         }
     }
 
     /// Slow, resilient recovery: save after every row so a single bad sidecar
     /// (or a constraint hiccup) is rolled back and skipped instead of taking the
     /// entire batch down with it. Only runs when the fast path's save failed.
-    private func reconcilePerItem(_ scan: ScanResult) {
+    /// Returns whether album-relevant state changed (same contract as
+    /// `reconcileBatched`'s success case).
+    private func reconcilePerItem(_ scan: ScanResult) -> Bool {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
 
+        var albumStateChanged = false
         for item in existing where !scan.seenIDs.contains(item.itemID) {
+            if !item.albumIDsJoined.isEmpty { albumStateChanged = true }
             modelContext.delete(item)
             if (try? modelContext.save()) == nil { modelContext.rollback() }
         }
         for (metadata, status) in scan.items {
+            let membershipChanged: Bool
             if let row = byID[metadata.itemID] {
-                apply(metadata, downloadStatus: status, to: row)
+                membershipChanged = apply(metadata, downloadStatus: status, to: row)
             } else {
                 let row = PersistedLibraryItem(metadata: metadata, downloadStatus: status)
                 modelContext.insert(row)
                 byID[metadata.itemID] = row
+                membershipChanged = !metadata.albumIDs.isEmpty
             }
             do {
                 try modelContext.save()
+                if membershipChanged { albumStateChanged = true }
             } catch {
                 print("[LibraryIndex] skipping item \(metadata.itemID): \(error)")
                 modelContext.rollback()
@@ -291,8 +337,13 @@ actor LibraryIndexService {
         // Albums are applied and saved as one batch even in the per-item path; the
         // only failure mode (a duplicate id) is already prevented by applyAlbums's
         // dictionary guard, so per-row saves aren't needed here.
-        applyAlbums(scan)
-        if (try? modelContext.save()) == nil { modelContext.rollback() }
+        let albumRowsChanged = applyAlbums(scan)
+        if (try? modelContext.save()) == nil {
+            modelContext.rollback()
+        } else if albumRowsChanged {
+            albumStateChanged = true
+        }
+        return albumStateChanged
     }
 
     /// Reads the container off the model actor: walks the directory, reads and
@@ -430,7 +481,8 @@ actor LibraryIndexService {
     /// (healing field-level corruption), inserts brand-new sidecars, and deletes
     /// rows whose sidecar has vanished. That is a full rebuild from the source of
     /// truth, without the destructive empty window or the re-insert hazard.
-    func rebuild(itemsDirectory: URL) async {
+    @discardableResult
+    func rebuild(itemsDirectory: URL) async -> Bool {
         await reconcile(itemsDirectory: itemsDirectory)
     }
 

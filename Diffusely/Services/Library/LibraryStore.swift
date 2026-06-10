@@ -20,7 +20,9 @@ final class LibraryStore: ObservableObject {
     /// reappear on every visit even though the work was already complete or
     /// in progress.
     @Published private(set) var didRunDateBackfillThisSession: Bool = false
-    /// Bumped whenever an album is created/renamed/deleted or membership changes.
+    /// Bumped whenever an album is created/renamed/deleted or membership changes
+    /// — by local edits (views call `notifyAlbumsChanged()`) and by reconciles
+    /// that ingest album/membership changes synced in from another device.
     /// `LibraryView` observes this to reload, since membership edits don't change
     /// `itemCount`.
     @Published private(set) var albumsVersion: Int = 0
@@ -120,15 +122,21 @@ final class LibraryStore: ObservableObject {
             reconcileNeedsRerun = false
             guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
             iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
-            await indexService.reconcile(itemsDirectory: dir)
+            let albumStateChanged = await indexService.reconcile(itemsDirectory: dir)
             await refreshTotals()
+            // Album rows / membership synced in from another device don't move
+            // `itemCount`, so an open LibraryView would never reload without
+            // this signal. Conditional, so quiet reconciles (the common case
+            // under iCloud churn) don't trigger pointless reloads.
+            if albumStateChanged { notifyAlbumsChanged() }
         } while reconcileNeedsRerun
     }
 
     func rebuildIndex() async {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        await indexService.rebuild(itemsDirectory: dir)
+        let albumStateChanged = await indexService.rebuild(itemsDirectory: dir)
         await refreshTotals()
+        if albumStateChanged { notifyAlbumsChanged() }
     }
 
     func freeUpSpaceNow() async {
