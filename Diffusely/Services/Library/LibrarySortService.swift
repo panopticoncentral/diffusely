@@ -258,4 +258,22 @@ final class LibrarySortService {
     func notInAnyAlbumCount() -> Int {
         fetchAll(filter: .notInAnyAlbum).count
     }
+
+    /// For the given selection, how many of those items belong to each album.
+    /// Albums with zero members of the selection are omitted. Drives the
+    /// tri-state checkmarks in `ManageAlbumsSheet`.
+    func albumMembershipCounts(for itemIDs: [Int]) -> [UUID: Int] {
+        guard !itemIDs.isEmpty else { return [:] }
+        let idSet = Set(itemIDs)
+        let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
+        let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        let selected = all.filter { idSet.contains($0.itemID) }
+        var counts: [UUID: Int] = [:]
+        for album in albums {
+            let key = album.id.uuidString
+            let count = selected.filter { $0.belongs(toAlbum: key) }.count
+            if count > 0 { counts[album.id] = count }
+        }
+        return counts
+    }
 }

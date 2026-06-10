@@ -37,7 +37,7 @@ struct LibraryView: View {
     @State private var notInAnyAlbumCount: Int = 0
     @State private var addToAlbumRequest: AddToAlbumRequest?
 
-    /// Identity-carrying payload for the Add-to-Album sheet. Using `.sheet(item:)`
+    /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
     /// with this (instead of `.sheet(isPresented:)` + a separate `[Int]?`) makes
     /// SwiftUI rebuild the sheet's content — and re-read the current
     /// `albumSummaries` — on every presentation. The old isPresented binding could
@@ -46,6 +46,9 @@ struct LibraryView: View {
     struct AddToAlbumRequest: Identifiable {
         let id = UUID()
         let itemIDs: [Int]
+        /// How many of `itemIDs` are in each album, captured at presentation
+        /// time — seeds the sheet's tri-state checkmarks.
+        let membershipCounts: [UUID: Int]
     }
 
     @ViewBuilder
@@ -133,10 +136,11 @@ struct LibraryView: View {
                 Text("The album is removed. Your photos and videos are kept.")
             }
             .sheet(item: $addToAlbumRequest) { request in
-                AddToAlbumSheet(
+                ManageAlbumsSheet(
                     itemIDs: request.itemIDs,
                     summaries: albumSummaries,
-                    onAdded: { exitSelection() }
+                    membershipCounts: request.membershipCounts,
+                    onChanged: { exitSelection() }
                 )
                 .environmentObject(store)
             }
@@ -177,7 +181,7 @@ struct LibraryView: View {
             ToolbarItem(placement: .secondaryAction) {
                 Button {
                     presentAddToAlbum(Array(selectedIDs))
-                } label: { Label("Add to Album", systemImage: "rectangle.stack.badge.plus") }
+                } label: { Label("Manage Albums", systemImage: "rectangle.stack") }
                 .disabled(selectedIDs.isEmpty)
             }
             if case .album(let albumID) = filter {
@@ -318,7 +322,15 @@ struct LibraryView: View {
                 .contextMenu {
                     Button {
                         presentAddToAlbum([item.itemID])
-                    } label: { Label("Add to Album", systemImage: "rectangle.stack.badge.plus") }
+                    } label: { Label("Manage Albums", systemImage: "rectangle.stack") }
+                    if case .album(let albumID) = filter {
+                        Button {
+                            Task {
+                                await store.albumService.removeItems([item.itemID], fromAlbum: albumID)
+                                store.notifyAlbumsChanged()
+                            }
+                        } label: { Label("Remove from Album", systemImage: "rectangle.stack.badge.minus") }
+                    }
                     Button(role: .destructive) {
                         pendingDeleteID = item.itemID
                     } label: {
@@ -511,13 +523,17 @@ struct LibraryView: View {
         }
     }
 
-    /// Recompute the album list from the index *now*, then present the Add-to-Album
-    /// sheet — so it always reflects the current albums regardless of reload timing.
+    /// Recompute the album list and the selection's membership from the index
+    /// *now*, then present the Manage-Albums sheet — so it always reflects the
+    /// current state regardless of reload timing.
     private func presentAddToAlbum(_ ids: [Int]) {
         if let sortService {
             albumSummaries = sortService.albumSummaries()
         }
-        addToAlbumRequest = AddToAlbumRequest(itemIDs: ids)
+        addToAlbumRequest = AddToAlbumRequest(
+            itemIDs: ids,
+            membershipCounts: sortService?.albumMembershipCounts(for: ids) ?? [:]
+        )
     }
 
     private func reloadContent() {
