@@ -215,9 +215,11 @@ final class LibraryDateBackfillService: ObservableObject {
         return updated
     }
 
-    /// Build a v4 sidecar from an existing one, swapping in fresh
+    /// Build a current-schema sidecar from an existing one, swapping in fresh
     /// `publishedAt`, `stats`, and the `publishedAtBackfillAttemptedAt`
-    /// marker. Everything else is preserved verbatim.
+    /// marker. Everything else — including `albumIDs`, which silently
+    /// defaulted to [] before and wiped album membership on every backfill
+    /// rewrite — is preserved verbatim.
     private static func merged(
         base: LibraryItemMetadata,
         publishedAt: Date?,
@@ -245,6 +247,7 @@ final class LibraryDateBackfillService: ObservableObject {
             generationData: base.generationData,
             publishedAt: publishedAt,
             publishedAtBackfillAttemptedAt: attemptedAt,
+            albumIDs: base.albumIDs,
             savedAt: base.savedAt,
             savedByAppVersion: base.savedByAppVersion
         )

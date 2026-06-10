@@ -8,9 +8,30 @@ import SwiftData
 @ModelActor
 actor LibraryIndexService {
 
+    // MARK: - Mutation epoch
+
+    /// Monotonic count of direct index mutations (ingests, deletes, album
+    /// rows, membership changes). A reconcile captures it before scanning and
+    /// only applies the scan if it hasn't moved — the fence that stops a
+    /// stale container snapshot from overwriting newer rows (the
+    /// "items reappear in Not in any Album" bug).
+    private var mutationEpoch = 0
+
+    func currentMutationEpoch() -> Int { mutationEpoch }
+
+    /// Every mutator whose effect a stale scan could wrongly undo calls this
+    /// on entry — unconditional (even if the mutation turns out to be a no-op):
+    /// cheap, and a false-positive rescan is harmless while a missed bump is
+    /// the clobber bug. `recordAccess`/`setStatus`/`enforceCacheLimit` are
+    /// deliberately excluded: they change only ephemeral fields (last access,
+    /// download status) that the next reconcile re-derives anyway, and they
+    /// fire often enough to starve reconcile's bounded rescan loop.
+    private func bumpMutationEpoch() { mutationEpoch += 1 }
+
     // MARK: - Upsert
 
     func ingest(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
+        bumpMutationEpoch()
         if let existing = fetchItem(itemID: metadata.itemID) {
             apply(metadata, downloadStatus: downloadStatus, to: existing)
         } else {
@@ -48,6 +69,7 @@ actor LibraryIndexService {
     }
 
     func remove(itemID: Int) {
+        bumpMutationEpoch()
         if let existing = fetchItem(itemID: itemID) {
             modelContext.delete(existing)
             try? modelContext.save()
@@ -59,6 +81,7 @@ actor LibraryIndexService {
     /// transaction instead of N. Unknown ids are skipped.
     func remove(itemIDs: [Int]) {
         guard !itemIDs.isEmpty else { return }
+        bumpMutationEpoch()
         var changed = false
         for itemID in itemIDs {
             if let existing = fetchItem(itemID: itemID) {
@@ -72,6 +95,7 @@ actor LibraryIndexService {
     // MARK: - Albums
 
     func upsertAlbum(id: UUID, name: String, createdAt: Date) {
+        bumpMutationEpoch()
         if let existing = fetchAlbum(id: id) {
             existing.name = name
             existing.createdAt = createdAt
@@ -82,6 +106,7 @@ actor LibraryIndexService {
     }
 
     func removeAlbum(id: UUID) {
+        bumpMutationEpoch()
         if let existing = fetchAlbum(id: id) {
             modelContext.delete(existing)
             try? modelContext.save()
@@ -92,6 +117,7 @@ actor LibraryIndexService {
     /// must already have been rewritten by the caller; this just keeps the index
     /// row in step without re-reading media or download status.
     func setAlbumIDs(itemID: Int, albumIDs: [String]) {
+        bumpMutationEpoch()
         guard let row = fetchItem(itemID: itemID) else { return }
         row.albumIDsJoined = PersistedLibraryItem.join(albumIDs)
         try? modelContext.save()
@@ -140,28 +166,53 @@ actor LibraryIndexService {
     /// most one blocked scan thread ever. Only the SwiftData writes below touch
     /// the model actor.
     func reconcile(itemsDirectory: URL) async {
-        let scan = await Self.runScan(itemsDirectory: itemsDirectory)
+        // The scan is a point-in-time snapshot of the container, read off the
+        // actor. Direct mutations (add-to-album, saves, deletes) can land while
+        // it is in flight; applying the snapshot then would overwrite the newer
+        // index rows with pre-mutation data — e.g. resurrecting just-filed items
+        // in "Not in any Album" until the next reconcile healed them. Capture
+        // the mutation epoch before each scan and rescan if it moved. Bounded:
+        // every epoch bump corresponds to a container file change, which
+        // re-fires the metadata query and schedules another reconcile, so
+        // giving up here never strands the index.
+        for _ in 0..<3 {
+            let epoch = currentMutationEpoch()
+            let scan = await Self.runScan(itemsDirectory: itemsDirectory)
 
-        // A nil scan means the directory read *threw* (transient iCloud/filesystem
-        // error). Treating that as "empty" would prune the whole index, so we
-        // skip reconcile entirely and leave the index intact. A successfully-read
-        // but empty directory still prunes normally — that's a legitimate
-        // "every sidecar is gone" and the suite's reconcileDropsRowsWhoseSidecarVanished
-        // depends on it.
-        guard let scan else {
-            print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
-            return
+            // A nil scan means the directory read *threw* (transient iCloud/filesystem
+            // error). Treating that as "empty" would prune the whole index, so we
+            // skip reconcile entirely and leave the index intact. A successfully-read
+            // but empty directory still prunes normally — that's a legitimate
+            // "every sidecar is gone" and the suite's reconcileDropsRowsWhoseSidecarVanished
+            // depends on it.
+            guard let scan else {
+                print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
+                return
+            }
+
+            if applyScan(scan, ifEpochMatches: epoch) { return }
+            print("[LibraryIndex] direct write landed during the container scan; rescanning")
         }
+        print("[LibraryIndex] reconcile skipped: direct writes kept landing during scans")
+    }
+
+    /// Applies a completed scan to the index — unless a direct mutation landed
+    /// after `epoch` was captured, in which case the snapshot is stale and is
+    /// rejected (returns false; the caller rescans). Internal rather than
+    /// private so tests can drive the write-during-scan race deterministically.
+    func applyScan(_ scan: ScanResult, ifEpochMatches epoch: Int) -> Bool {
+        guard currentMutationEpoch() == epoch else { return false }
 
         // Fast path: upsert everything from an in-memory map and save once
         // (one query + one save instead of N + N). If that batched save throws,
         // fall back to a resilient per-item pass — a single all-or-nothing save
         // that silently failed is exactly what stranded the whole index empty
         // after a rebuild, so one poison row must never lose the other 1024.
-        if reconcileBatched(scan) { return }
+        if reconcileBatched(scan) { return true }
         print("[LibraryIndex] batched reconcile save failed; retrying per-item")
         modelContext.rollback()
         reconcilePerItem(scan)
+        return true
     }
 
     /// Upserts `PersistedAlbum` rows from the scan and prunes rows whose album
@@ -386,6 +437,7 @@ actor LibraryIndexService {
     /// Deletes every index row without reconciling. Used by Reset Library after
     /// the container files themselves have been deleted.
     func wipe() {
+        bumpMutationEpoch()
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         for item in existing { modelContext.delete(item) }
         try? modelContext.save()
