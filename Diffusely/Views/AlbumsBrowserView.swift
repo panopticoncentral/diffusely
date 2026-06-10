@@ -8,7 +8,9 @@ struct AlbumsBrowserView: View {
     let notInAnyAlbumCount: Int
     let onNewAlbum: () -> Void
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
+    // Top-align cells so tiles with different caption-line counts (e.g. "New Album"
+    // has no count line) keep their square covers aligned across the row.
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .top)]
 
     var body: some View {
         ScrollView {
@@ -43,19 +45,22 @@ struct AlbumsBrowserView: View {
 
     private func albumTile(_ album: LibrarySortService.AlbumSummary) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                Color(.secondarySystemBackground)
-                if let cover = album.coverItem {
-                    LibraryAsyncImage(
-                        itemID: cover.itemID, mediaFileName: cover.mediaFileName,
-                        isVideo: cover.isVideo, maxDimension: LibraryImageRequest.gridDimension,
-                        contentMode: .fill)
-                } else {
-                    Image(systemName: "photo.on.rectangle").foregroundStyle(.secondary).font(.title)
+            // Drive the tile's geometry from the square background; the cover is an
+            // overlay so a landscape `.fill` image can't inflate the cell and spill
+            // into neighboring tiles (mirrors the main Library grid in LibraryView).
+            Color(.secondarySystemBackground)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    if let cover = album.coverItem {
+                        LibraryAsyncImage(
+                            itemID: cover.itemID, mediaFileName: cover.mediaFileName,
+                            isVideo: cover.isVideo, maxDimension: LibraryImageRequest.gridDimension,
+                            contentMode: .fill)
+                    } else {
+                        Image(systemName: "photo.on.rectangle").foregroundStyle(.secondary).font(.title)
+                    }
                 }
-            }
-            .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             Text(album.name).font(.subheadline).lineLimit(1)
             Text("\(album.count)").font(.caption).foregroundStyle(.secondary)
         }
