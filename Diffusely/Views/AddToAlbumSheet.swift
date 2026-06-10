@@ -45,6 +45,7 @@ struct AddToAlbumSheet: View {
                 TextField("Album name", text: $newName)
                 Button("Cancel", role: .cancel) { newName = "" }
                 Button("Create") { createAlbum() }
+                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         // macOS sheets don't impose a size, so a `List` inside collapses to zero

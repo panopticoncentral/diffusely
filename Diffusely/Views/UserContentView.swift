@@ -221,7 +221,12 @@ struct UserContentView: View {
                     .frame(width: 32, height: 32)
                     .background(Color(.secondarySystemBackground))
                     .clipShape(Circle())
+                    // Keep the 32pt visual circle but give the button the
+                    // full 44pt HIG-minimum hit area.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Close")
 
             Spacer()
 

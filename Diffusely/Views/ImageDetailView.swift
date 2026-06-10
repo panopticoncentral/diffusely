@@ -9,6 +9,7 @@ struct ImageDetailView: View {
     @State private var isLoadingGenData = false
     @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
+    @State private var postLoadFailed = false
     @State private var showingCollectionPicker = false
     #if os(iOS)
     @State private var showingUserContent = false
@@ -60,6 +61,7 @@ struct ImageDetailView: View {
                             .foregroundColor(.primary)
                             .padding()
                     }
+                    .accessibilityLabel("Close")
 
                     if let user = image.user, let username = user.username {
                         Button(action: {
@@ -87,6 +89,7 @@ struct ImageDetailView: View {
                             .foregroundColor(.primary)
                             .padding()
                     }
+                    .accessibilityLabel("More actions")
                 }
                 .background(Color(.systemBackground))
                 #endif
@@ -128,7 +131,6 @@ struct ImageDetailView: View {
                             if isLoadingGenData {
                                 ProgressView()
                                     .padding()
-                                    .padding()
                             } else if let genData = generationData {
                                 GenerationDataView(data: genData)
                             }
@@ -162,6 +164,11 @@ struct ImageDetailView: View {
                     showingCollectionPicker = false
                 }
             }
+            .alert("Couldn't Load Post", isPresented: $postLoadFailed) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("The post couldn't be loaded. Check your connection and try again.")
+            }
             #if os(iOS)
             .fullScreenCover(isPresented: $showingUserContent) {
                 if let user = image.user {
@@ -191,8 +198,12 @@ struct ImageDetailView: View {
             Button(action: {
                 Task { await loadPost() }
             }) {
-                Label("View Post", systemImage: "photo.stack")
+                Label(
+                    isLoadingPost ? "Loading Post…" : "View Post",
+                    systemImage: "photo.stack"
+                )
             }
+            .disabled(isLoadingPost)
         }
 
         if APIKeyManager.shared.hasAPIKey {
@@ -259,7 +270,7 @@ struct ImageDetailView: View {
             let post = try await civitaiService.getPost(postId: postId)
             navigateToPost = post
         } catch {
-            // Silently fail - could show an error message here if needed
+            postLoadFailed = true
         }
         isLoadingPost = false
     }

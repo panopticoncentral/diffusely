@@ -48,6 +48,7 @@ struct FeedFilterMenu: View {
                 .foregroundColor(.primary)
             #endif
         }
+        .accessibilityLabel("Filter")
         #if os(iOS)
         .frame(width: 44, height: 44)
         .padding(.trailing, 16)

@@ -174,6 +174,7 @@ struct PostsFeedItemView: View {
                     .background(Color.black.opacity(0.5))
                     .clipShape(Circle())
             }
+            .accessibilityLabel("More actions")
         }
     }
 }

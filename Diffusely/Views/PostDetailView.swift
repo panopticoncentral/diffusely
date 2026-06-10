@@ -61,6 +61,7 @@ struct PostDetailView: View {
                             .foregroundColor(.primary)
                             .padding()
                     }
+                    .accessibilityLabel("Close")
 
                     VStack(alignment: .leading, spacing: 2) {
                         if let username = post.user.username {
@@ -95,6 +96,7 @@ struct PostDetailView: View {
                             .foregroundColor(.primary)
                             .padding()
                     }
+                    .accessibilityLabel("More actions")
                 }
                 .background(Color(.systemBackground))
                 #endif

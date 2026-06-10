@@ -135,14 +135,14 @@ struct ContentView: View {
                     Image(systemName: "externaldrive.badge.icloud")
                     Text("Library")
                 }
-                .tag(4)
+                .tag(3)
 
             SettingsView()
                 .tabItem {
                     Image(systemName: "gear")
                     Text("Settings")
                 }
-                .tag(3)
+                .tag(4)
         }
         .task { libraryStore.start() }
         #endif

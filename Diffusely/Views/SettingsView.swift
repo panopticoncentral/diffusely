@@ -11,6 +11,10 @@ struct SettingsView: View {
 
     private static let cacheLimitOptions = [1, 2, 5, 10, 20]
 
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+
     var body: some View {
         settingsContent
             .alert("Get API Key", isPresented: $showingAPIKeyInfo) {
@@ -162,7 +166,7 @@ struct SettingsView: View {
             HStack {
                 Text("Version")
                 Spacer()
-                Text("1.0.0")
+                Text(Self.appVersion)
                     .foregroundColor(.secondary)
             }
         }

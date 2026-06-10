@@ -90,6 +90,7 @@ struct LibraryDetailView: View {
                 } label: {
                     Image(systemName: "trash")
                 }
+                .accessibilityLabel("Remove from Library")
             }
         }
         .confirmationDialog(

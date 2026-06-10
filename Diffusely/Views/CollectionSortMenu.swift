@@ -29,5 +29,6 @@ struct CollectionSortMenu: View {
                 .foregroundColor(.primary)
             #endif
         }
+        .accessibilityLabel("Sort")
     }
 }

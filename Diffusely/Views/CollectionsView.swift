@@ -68,11 +68,9 @@ struct CollectionsView: View {
                             showingSettings = true
                         }) {
                             Label("Open Settings", systemImage: "gear")
-                                .padding()
-                                .background(Color.accentColor)
-                                .foregroundColor(.white)
-                                .cornerRadius(10)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                     }
                     .padding()
                 } else if !filteredCollections.isEmpty {

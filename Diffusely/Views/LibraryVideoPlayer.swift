@@ -53,10 +53,18 @@ struct LibraryVideoPlayer: View {
                 Rectangle()
                     .fill(Color.gray.opacity(0.3))
                     .overlay(
-                        Image(systemName: "play.slash")
-                            .font(.title2)
-                            .foregroundColor(.orange)
+                        VStack(spacing: 6) {
+                            Image(systemName: "play.slash")
+                                .font(.title2)
+                                .foregroundColor(.orange)
+                            Text("Tap to retry")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
                     )
+                    .onTapGesture {
+                        loader.load(itemID: itemID, mediaFileName: mediaFileName)
+                    }
             }
         }
         .onAppear {

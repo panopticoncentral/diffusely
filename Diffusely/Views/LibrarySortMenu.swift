@@ -31,5 +31,6 @@ struct LibrarySortMenu: View {
                 .foregroundColor(.primary)
             #endif
         }
+        .accessibilityLabel("Sort")
     }
 }

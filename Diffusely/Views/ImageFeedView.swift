@@ -27,6 +27,10 @@ struct ImageFeedView: View {
 
     let videos: Bool
 
+    /// Gates the empty state so it can't flash on the first frame, before the
+    /// initial `.task` load has had a chance to run.
+    @State private var hasLoadedOnce = false
+
     private var isGridLayout: Bool {
         horizontalSizeClass == .regular
     }
@@ -65,7 +69,7 @@ struct ImageFeedView: View {
         VStack(spacing: 0) {
             HStack {
                 Text(videos ? "Videos" : "Images")
-                    .font(.system(size: 34, weight: .bold, design: .default))
+                    .font(.largeTitle.bold())
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 20)
                     .padding(.top, 8)
@@ -94,9 +98,9 @@ struct ImageFeedView: View {
             }
 
             if let error = civitaiService.error {
-                Text("Error: \(error.localizedDescription)")
-                    .foregroundColor(.red)
-                    .padding()
+                errorState(error)
+            } else if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
+                emptyState
             }
         }
         .refreshable {
@@ -106,6 +110,7 @@ struct ImageFeedView: View {
             if civitaiService.images.isEmpty {
                 await loadImages()
             }
+            hasLoadedOnce = true
         }
         .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
         .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
@@ -140,6 +145,45 @@ struct ImageFeedView: View {
             }
         }
         #endif
+    }
+
+    private func errorState(_ error: Error) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text(videos ? "Couldn't Load Videos" : "Couldn't Load Images")
+                .font(.headline)
+            Text(error.localizedDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Try Again") {
+                Task { await refreshImages() }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        // Push a full-screen error toward the center; an error appended below
+        // existing content stays compact.
+        .padding(.top, civitaiService.images.isEmpty ? 80 : 0)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: videos ? "video.slash" : "photo.on.rectangle.angled")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text(videos ? "No Videos" : "No Images")
+                .font(.headline)
+            Text("Try a different time period or pull to refresh.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .padding(.top, 80)
     }
 
     /// Kicks off the next page when `image` is the prefetch trigger (≈5 items
