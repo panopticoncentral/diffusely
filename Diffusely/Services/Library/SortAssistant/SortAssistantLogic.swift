@@ -82,7 +82,7 @@ enum SortAssistant {
     /// head), so profiles see the album's full range, old saves and new.
     static func evenlySpacedSample<T>(_ items: [T], limit: Int = profileSampleLimit) -> [T] {
         guard items.count > limit, limit > 0 else { return items }
-        return (0..<limit).map { items[$0 * items.count / limit] }
+        return (0..<limit).map { items[(2 * $0 + 1) * items.count / (2 * limit)] }
     }
 
     // MARK: - Staleness
@@ -125,9 +125,21 @@ enum SortAssistant {
         return (system, user)
     }
 
+    /// LLM responses sometimes arrive fenced (```json … ```) even in JSON
+    /// mode; strip the fence so the decoders see bare JSON.
+    private static func unfenced(_ json: String) -> String {
+        var text = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.hasPrefix("```") else { return text }
+        text = text.replacingOccurrences(
+            of: #"^```[a-zA-Z]*\s*"#, with: "", options: .regularExpression)
+        text = text.replacingOccurrences(
+            of: #"\s*```$"#, with: "", options: .regularExpression)
+        return text
+    }
+
     static func parseProfileResponse(_ json: String) -> String? {
         struct Response: Decodable { let profile: String? }
-        guard let data = json.data(using: .utf8),
+        guard let data = unfenced(json).data(using: .utf8),
               let text = (try? JSONDecoder().decode(Response.self, from: data))?.profile?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
@@ -176,7 +188,7 @@ enum SortAssistant {
         struct Item: Decodable { let id: Int?; let albums: [Score]?; let new: String? }
         struct Score: Decodable { let n: Int?; let c: Double? }
 
-        guard let data = json.data(using: .utf8),
+        guard let data = unfenced(json).data(using: .utf8),
               let response = try? JSONDecoder().decode(Response.self, from: data) else {
             return nil
         }
@@ -204,7 +216,8 @@ enum SortAssistant {
             }
             if !matched,
                let name = item.new?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !name.isEmpty {
+               !name.isEmpty,
+               !["null", "none"].contains(name.lowercased()) {
                 outcome.proposals.append(NewAlbumProposal(itemID: id, name: name))
             } else if !matched {
                 outcome.unmatchedItemIDs.append(id)
@@ -280,13 +293,17 @@ enum SortAssistant {
         for proposal in outcome.proposals {
             let key = proposal.name.lowercased()
             byName[key, default: (proposal.name, [])].entries
-                .append(ReviewGroup.Entry(itemID: proposal.itemID, confidence: 1))
+                .append(ReviewGroup.Entry(itemID: proposal.itemID, confidence: 1)) // Proposals carry no model confidence; 1 is a sentinel the UI must not render as a percentage.
         }
         groups += byName
             .map { key, value in
                 ReviewGroup(id: "new:\(key)", kind: .newAlbum(name: value.display), entries: value.entries)
             }
-            .sorted { $0.entries.count > $1.entries.count }
+            .sorted {
+                $0.entries.count != $1.entries.count
+                    ? $0.entries.count > $1.entries.count
+                    : $0.id < $1.id
+            }
 
         if !outcome.unmatchedItemIDs.isEmpty {
             groups.append(ReviewGroup(

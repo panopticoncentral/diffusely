@@ -47,8 +47,8 @@ import Foundation
         #expect(SortAssistant.evenlySpacedSample([1, 2, 3], limit: 10) == [1, 2, 3])
         let sampled = SortAssistant.evenlySpacedSample(Array(0..<100), limit: 10)
         #expect(sampled.count == 10)
-        #expect(sampled.first == 0)
-        #expect(sampled.last! >= 90)   // reaches the tail, not just the head
+        #expect(sampled.first! <= 5)
+        #expect(sampled.last! >= 95)   // reaches the tail, not just the head
     }
 
     @Test func profileStalenessIsDoubledMembership() {
@@ -185,5 +185,23 @@ import Foundation
         let groups = SortAssistant.makeReviewGroups(
             outcome: SortAssistant.BatchOutcome(), albums: [], promptless: [])
         #expect(groups.isEmpty)
+    }
+
+    @Test func parseClassifyResponseIgnoresNullStringProposals() throws {
+        let album = SortAssistant.AlbumContext(id: UUID(), name: "A", description: "a")
+        let batch = [SortAssistant.Candidate(itemID: 1, prompt: "p")]
+        let json = #"{"items":[{"id":1,"albums":[],"new":"null"}]}"#
+        let outcome = try #require(SortAssistant.parseClassifyResponse(json, albums: [album], batch: batch))
+        #expect(outcome.proposals.isEmpty)
+        #expect(outcome.unmatchedItemIDs == [1])
+    }
+
+    @Test func parsersTolerateMarkdownFences() throws {
+        #expect(SortAssistant.parseProfileResponse("```json\n{\"profile\":\"Neon\"}\n```") == "Neon")
+        let album = SortAssistant.AlbumContext(id: UUID(), name: "A", description: "a")
+        let batch = [SortAssistant.Candidate(itemID: 1, prompt: "p")]
+        let fenced = "```json\n{\"items\":[{\"id\":1,\"albums\":[{\"n\":1,\"c\":0.9}]}]}\n```"
+        let outcome = try #require(SortAssistant.parseClassifyResponse(fenced, albums: [album], batch: batch))
+        #expect(outcome.suggestions.count == 1)
     }
 }
