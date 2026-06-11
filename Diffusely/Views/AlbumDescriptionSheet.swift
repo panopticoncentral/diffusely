@@ -38,6 +38,12 @@ struct AlbumDescriptionSheet: View {
                 Section {
                     TextField("Description", text: $descriptionText, axis: .vertical)
                         .lineLimit(2...5)
+                        // The section header is the label; without this, the
+                        // macOS grouped form treats the title as a leading
+                        // label and right-justifies the input on the trailing
+                        // edge of the row.
+                        .labelsHidden()
+                        .multilineTextAlignment(.leading)
                 } header: {
                     Text("Your Description")
                 } footer: {
