@@ -67,7 +67,9 @@ struct SettingsView: View {
             } else {
                 SecureField("OpenRouter API Key", text: $openRouterKeyInput)
                     .autocorrectionDisabled()
+                    #if os(iOS)
                     .textInputAutocapitalization(.never)
+                    #endif
                 Button("Save Key") {
                     openRouterConfig.apiKey = openRouterKeyInput
                 }
@@ -75,7 +77,9 @@ struct SettingsView: View {
             }
             TextField("Model", text: $openRouterConfig.model)
                 .autocorrectionDisabled()
+                #if os(iOS)
                 .textInputAutocapitalization(.never)
+                #endif
         } header: {
             Text("Sort Assistant")
         } footer: {
