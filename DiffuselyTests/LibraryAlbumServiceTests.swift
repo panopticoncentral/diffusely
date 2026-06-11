@@ -106,6 +106,7 @@ import SwiftData
         #expect(row.userDescription == "Neon city scenes")
         #expect(row.aiProfileText == "Futuristic neon cityscapes")
         #expect(row.aiProfileMemberCount == 7)
+        #expect(row.aiProfileBuiltAt == profile.builtAt)
 
         #expect(await svc.albumExists(album))
         #expect(!(await svc.albumExists(UUID())))

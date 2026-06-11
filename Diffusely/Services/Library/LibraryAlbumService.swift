@@ -66,9 +66,8 @@ final class LibraryAlbumService {
         let store = LibraryAlbumStore(itemsDirectory: dir)
         guard var file = await Self.run({ store.read(id: id) }) else { return }
         mutate(&file)
-        let final = file
-        await Self.run { try? store.write(final) }
-        await index.upsertAlbum(final)
+        await Self.run { try? store.write(file) }
+        await index.upsertAlbum(file)
     }
 
     /// Deletes the album file and index row. Member items keep the now-dangling

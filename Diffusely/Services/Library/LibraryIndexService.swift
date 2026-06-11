@@ -130,6 +130,8 @@ actor LibraryIndexService {
         let changed = row.name != file.name || row.createdAt != file.createdAt
             || row.userDescription != file.userDescription
             || row.aiProfileText != file.aiProfile?.text
+            || row.aiProfileBuiltAt != file.aiProfile?.builtAt
+            || row.aiProfileMemberCount != (file.aiProfile?.memberCount ?? 0)
         row.name = file.name
         row.createdAt = file.createdAt
         row.userDescription = file.userDescription

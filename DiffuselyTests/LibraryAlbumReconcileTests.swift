@@ -140,6 +140,24 @@ import SwiftData
         #expect(await index.reconcile(itemsDirectory: dir) == true)
     }
 
+    @Test func reconcileDenormalizesDescriptionAndProfile() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        let albumID = UUID()
+        let profile = AlbumAIProfile(
+            text: "Neon cityscapes",
+            builtAt: Date(timeIntervalSince1970: 100),
+            memberCount: 3)
+        try LibraryAlbumStore(itemsDirectory: dir).write(LibraryAlbumFile(
+            id: albumID, name: "Cyberpunk", createdAt: Date(timeIntervalSince1970: 50),
+            userDescription: "Neon city scenes", aiProfile: profile))
+        await index.reconcile(itemsDirectory: dir)
+        let row = try #require(ModelContext(container).fetch(FetchDescriptor<PersistedAlbum>()).first)
+        #expect(row.userDescription == "Neon city scenes")
+        #expect(row.aiProfile == profile)
+    }
+
     @Test func presentButUndecodableAlbumFileIsNotPruned() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = LibraryAlbumStore(itemsDirectory: dir)
