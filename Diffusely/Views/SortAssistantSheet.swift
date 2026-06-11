@@ -43,8 +43,8 @@ struct SortAssistantSheet: View {
         // than the screen — pushing the toolbar and Continue button off-screen.
         // Pin an explicit ideal size so the sheet stays bounded and the content
         // scrolls inside it instead.
-        .frame(minWidth: 540, idealWidth: 720, maxWidth: 880,
-               minHeight: 480, idealHeight: 680, maxHeight: 820)
+        .frame(minWidth: 540, idealWidth: 1000, maxWidth: 1400,
+               minHeight: 480, idealHeight: 850, maxHeight: 1000)
         #endif
         .interactiveDismissDisabled()
         .onDisappear {

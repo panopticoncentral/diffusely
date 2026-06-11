@@ -15,8 +15,14 @@ struct SortReviewGroupView: View {
     @State private var itemsByID: [Int: PersistedLibraryItem] = [:]
     @State private var isAccepting = false
     @State private var manageRequest: LibraryView.AddToAlbumRequest?
+    /// Item shown in the full-size inspection overlay (magnifier button).
+    @State private var previewItem: PersistedLibraryItem?
 
+    #if os(macOS)
+    private let columns = [GridItem(.adaptive(minimum: 220), spacing: 8)]
+    #else
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 8)]
+    #endif
 
     /// Unmatched / Couldn't-classify groups are informational only.
     private var isActionable: Bool {
@@ -41,6 +47,11 @@ struct SortReviewGroupView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .overlay {
+            if let item = previewItem {
+                previewOverlay(item)
+            }
+        }
         // The commit action lives in an always-visible bottom bar — toolbar
         // items on views pushed inside a sheet are unreliable on macOS, and an
         // invisible Accept means reviews silently do nothing (going Back
@@ -157,8 +168,66 @@ struct SortReviewGroupView: View {
                     membershipCounts: LibrarySortService(modelContext: modelContext)
                         .albumMembershipCounts(for: [item.itemID]))
             }
+            .overlay(alignment: .bottomTrailing) {
+                // Inspect at full size — grid tiles are too small to judge
+                // borderline suggestions. A separate button (not double-click)
+                // so selection taps stay instant.
+                Button {
+                    previewItem = item
+                } label: {
+                    Image(systemName: "magnifyingglass.circle.fill")
+                        .font(.title3)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.45))
+                        .shadow(color: .black.opacity(0.5), radius: 2)
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Preview")
+            }
             .accessibilityLabel(item.isVideo ? "Video" : "Photo")
             .accessibilityAddTraits(isActionable ? .isButton : [])
             .accessibilityAddTraits(isActionable && isSelected ? .isSelected : [])
+    }
+
+    /// Full-size inspection overlay: image at detail resolution, with the same
+    /// select/deselect action so a verdict can be made right here. Click the
+    /// backdrop (or Esc on macOS) to close.
+    private func previewOverlay(_ item: PersistedLibraryItem) -> some View {
+        let isSelected = selectedIDs.contains(item.itemID)
+        return ZStack {
+            Color.black.opacity(0.88)
+                .contentShape(Rectangle())
+                .onTapGesture { previewItem = nil }
+
+            VStack(spacing: 12) {
+                LibraryAsyncImage(
+                    itemID: item.itemID,
+                    mediaFileName: item.mediaFileName,
+                    isVideo: item.isVideo,
+                    maxDimension: 1600,
+                    contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                HStack(spacing: 12) {
+                    if isActionable {
+                        Button(isSelected ? "Deselect" : "Select") {
+                            if isSelected {
+                                selectedIDs.remove(item.itemID)
+                            } else {
+                                selectedIDs.insert(item.itemID)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button("Close") { previewItem = nil }
+                        .buttonStyle(.bordered)
+                }
+            }
+            .padding(20)
+        }
+        #if os(macOS)
+        .onExitCommand { previewItem = nil }
+        #endif
     }
 }
