@@ -37,5 +37,8 @@ import Foundation
         #expect(throws: OpenRouterError.malformedResponse) {
             try OpenRouterClassifier.extractContent(from: Data("not json".utf8))
         }
+        #expect(throws: OpenRouterError.malformedResponse) {
+            try OpenRouterClassifier.extractContent(from: Data(#"{"choices":[]}"#.utf8))
+        }
     }
 }

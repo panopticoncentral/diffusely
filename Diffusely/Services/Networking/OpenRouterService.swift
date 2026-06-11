@@ -52,7 +52,7 @@ struct OpenRouterClassifier: PromptClassifying {
     let model: String
     let session: URLSession
 
-    init(apiKey: String, model: String, session: URLSession = .shared) {
+    init(apiKey: String, model: String, session: URLSession = .openRouter) {
         self.apiKey = apiKey
         self.model = model
         self.session = session

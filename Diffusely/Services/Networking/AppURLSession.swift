@@ -16,4 +16,15 @@ extension URLSession {
         config.timeoutIntervalForResource = 300
         return URLSession(configuration: config)
     }()
+
+    /// Session for OpenRouter chat completions (Sort Assistant). LLM calls run
+    /// longer than tRPC fetches, so the request timeout is looser than `.civitai`,
+    /// but the resource timeout still bounds a stalled connection (the `.shared`
+    /// default is 7 days).
+    static let openRouter: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 180
+        return URLSession(configuration: config)
+    }()
 }
