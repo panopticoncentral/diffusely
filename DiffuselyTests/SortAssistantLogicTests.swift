@@ -72,6 +72,9 @@ import Foundation
         #expect(messages.user.contains("neon alley, rain"))
         #expect(messages.user.contains("chrome android"))
         #expect(messages.system.contains("\"profile\""))
+        // The owner's description must be framed as authoritative intent, not
+        // just context — it's the user's steering wheel for regeneration.
+        #expect(messages.system.contains("authoritative"))
     }
 
     @Test func parseProfileResponseExtractsText() {

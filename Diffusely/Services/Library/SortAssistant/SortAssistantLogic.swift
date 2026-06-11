@@ -109,10 +109,13 @@ enum SortAssistant {
     ) -> (system: String, user: String) {
         let system = """
         You summarize what a photo album of AI-generated images contains, based on \
-        the generation prompts of its members. Write one plain-text paragraph (at \
-        most 80 words) describing the album's subjects, settings, and visual style. \
-        Ignore quality boilerplate (masterpiece, best quality, 8k, lora tags). \
-        Respond with ONLY this JSON shape: {"profile":"<paragraph>"}
+        the owner's description and the generation prompts of its members. The \
+        owner's description, when present, is authoritative about what the album \
+        is for; the member prompts are evidence of it — where they disagree, \
+        follow the description. Write one plain-text paragraph (at most 80 words) \
+        describing the album's subjects, settings, and visual style. Ignore quality \
+        boilerplate (masterpiece, best quality, 8k, lora tags). Respond with ONLY \
+        this JSON shape: {"profile":"<paragraph>"}
         """
         var user = "Album name: \(albumName)\n"
         if let userDescription, !userDescription.isEmpty {
