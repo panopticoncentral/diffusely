@@ -117,5 +117,8 @@ struct SortReviewGroupView: View {
                     membershipCounts: LibrarySortService(modelContext: modelContext)
                         .albumMembershipCounts(for: [item.itemID]))
             }
+            .accessibilityLabel(item.isVideo ? "Video" : "Photo")
+            .accessibilityAddTraits(isActionable ? .isButton : [])
+            .accessibilityAddTraits(isActionable && isSelected ? .isSelected : [])
     }
 }
