@@ -36,6 +36,7 @@ struct LibraryView: View {
     @State private var albumSummaries: [LibrarySortService.AlbumSummary] = []
     @State private var notInAnyAlbumCount: Int = 0
     @State private var addToAlbumRequest: AddToAlbumRequest?
+    @State private var showingSortAssistant = false
 
     /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
     /// with this (instead of `.sheet(isPresented:)` + a separate `[Int]?`) makes
@@ -144,6 +145,10 @@ struct LibraryView: View {
                 )
                 .environmentObject(store)
             }
+            .sheet(isPresented: $showingSortAssistant) {
+                SortAssistantSheet()
+                    .environmentObject(store)
+            }
             .task {
                 store.start()
                 initializeServices()
@@ -216,6 +221,15 @@ struct LibraryView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button("Select") { isSelecting = true }
                     .disabled(content.isEmpty)
+            }
+            if filter == .all && mode == .albums {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingSortAssistant = true
+                    } label: {
+                        Label("Sort Assistant", systemImage: "sparkles")
+                    }
+                }
             }
             if case .album = filter {
                 ToolbarItem(placement: .primaryAction) {
