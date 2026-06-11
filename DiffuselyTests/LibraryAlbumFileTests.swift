@@ -33,4 +33,30 @@ import Foundation
         store.delete(id: file.id)
         #expect(store.read(id: file.id) == nil)
     }
+
+    @Test func decodesLegacyFileWithoutProfileFields() throws {
+        let id = UUID()
+        let json = """
+        {"id":"\(id.uuidString)","name":"Faves","createdAt":"2026-01-01T00:00:00Z"}
+        """
+        let file = try LibraryAlbumFile.decoder().decode(LibraryAlbumFile.self, from: Data(json.utf8))
+        #expect(file.id == id)
+        #expect(file.userDescription == nil)
+        #expect(file.aiProfile == nil)
+    }
+
+    @Test func profileFieldsRoundTripThroughStore() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = LibraryAlbumStore(itemsDirectory: dir)
+        var file = LibraryAlbumFile(id: UUID(), name: "Cyberpunk", createdAt: Date(timeIntervalSince1970: 10))
+        file.userDescription = "Neon city scenes"
+        file.aiProfile = AlbumAIProfile(text: "Futuristic neon cityscapes…",
+                                        builtAt: Date(timeIntervalSince1970: 20),
+                                        memberCount: 42)
+        try store.write(file)
+        let read = try #require(store.read(id: file.id))
+        #expect(read.userDescription == "Neon city scenes")
+        #expect(read.aiProfile?.memberCount == 42)
+        #expect(read == file)
+    }
 }

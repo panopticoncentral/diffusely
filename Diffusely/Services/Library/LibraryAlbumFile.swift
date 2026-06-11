@@ -1,5 +1,16 @@
 import Foundation
 
+/// LLM-distilled description of what an album contains (Sort Assistant).
+/// Stored on the album file so it syncs across devices and survives index
+/// rebuilds. `memberCount` is the number of prompt-bearing members when the
+/// profile was built — the staleness baseline ("rebuild when membership has
+/// doubled").
+struct AlbumAIProfile: Codable, Equatable {
+    var text: String
+    var builtAt: Date
+    var memberCount: Int
+}
+
 /// Self-describing metadata file for one album, written as `album-{uuid}.json`
 /// in the iCloud container. The album's existence record — it carries only
 /// identity, name, and creation date. Membership is NOT here; it lives on each
@@ -9,6 +20,19 @@ struct LibraryAlbumFile: Codable, Equatable {
     let id: UUID
     var name: String
     let createdAt: Date
+    /// Optional owner-written description; sharpens Sort Assistant profiles.
+    var userDescription: String?
+    /// LLM-built content profile (Sort Assistant). Nil until first built.
+    var aiProfile: AlbumAIProfile?
+
+    init(id: UUID, name: String, createdAt: Date,
+         userDescription: String? = nil, aiProfile: AlbumAIProfile? = nil) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.userDescription = userDescription
+        self.aiProfile = aiProfile
+    }
 
     static func decoder() -> JSONDecoder {
         let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d
