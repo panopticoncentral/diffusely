@@ -16,7 +16,7 @@ struct SortReviewGroupView: View {
     @State private var isAccepting = false
     @State private var manageRequest: LibraryView.AddToAlbumRequest?
 
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 8)]
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 8)]
 
     /// Unmatched / Couldn't-classify groups are informational only.
     private var isActionable: Bool {
@@ -41,18 +41,30 @@ struct SortReviewGroupView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // The commit action lives in an always-visible bottom bar — toolbar
+        // items on views pushed inside a sheet are unreliable on macOS, and an
+        // invisible Accept means reviews silently do nothing (going Back
+        // intentionally discards the selection).
+        .safeAreaInset(edge: .bottom) {
+            if isActionable {
+                HStack {
+                    Text("\(selectedIDs.count) of \(group.entries.count) selected")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(acceptTitle) { acceptSelection() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isAccepting)
+                }
+                .padding(12)
+                .background(.bar)
+            }
+        }
         .toolbar {
             if isActionable {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Accept (\(selectedIDs.count))") {
-                        isAccepting = true
-                        Task {
-                            await service.accept(group: group, selectedIDs: selectedIDs)
-                            store.notifyAlbumsChanged()
-                            dismiss()
-                        }
-                    }
-                    .disabled(isAccepting)
+                    Button("Accept (\(selectedIDs.count))") { acceptSelection() }
+                        .disabled(isAccepting)
                 }
             }
         }
@@ -71,6 +83,28 @@ struct SortReviewGroupView: View {
             itemsByID = Dictionary(
                 all.filter { ids.contains($0.itemID) }.map { ($0.itemID, $0) },
                 uniquingKeysWith: { a, _ in a })
+        }
+    }
+
+    /// Bottom-bar label spelling out exactly what Accept will do.
+    private var acceptTitle: String {
+        let count = selectedIDs.count
+        switch group.kind {
+        case .album(_, let name):
+            return count == 0 ? "Reject All" : "Add \(count) to \(name)"
+        case .newAlbum(let name):
+            return count == 0 ? "Reject All" : "Create \"\(name)\" & Add \(count)"
+        case .unmatched, .promptless:
+            return ""
+        }
+    }
+
+    private func acceptSelection() {
+        isAccepting = true
+        Task {
+            await service.accept(group: group, selectedIDs: selectedIDs)
+            store.notifyAlbumsChanged()
+            dismiss()
         }
     }
 
