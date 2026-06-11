@@ -37,6 +37,7 @@ struct LibraryView: View {
     @State private var notInAnyAlbumCount: Int = 0
     @State private var addToAlbumRequest: AddToAlbumRequest?
     @State private var showingSortAssistant = false
+    @State private var editDescriptionRequest: AlbumDescriptionSheet.Request?
 
     /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
     /// with this (instead of `.sheet(isPresented:)` + a separate `[Int]?`) makes
@@ -149,6 +150,10 @@ struct LibraryView: View {
                 SortAssistantSheet()
                     .environmentObject(store)
             }
+            .sheet(item: $editDescriptionRequest) { request in
+                AlbumDescriptionSheet(request: request)
+                    .environmentObject(store)
+            }
             .task {
                 store.start()
                 initializeServices()
@@ -238,6 +243,11 @@ struct LibraryView: View {
                             renameAlbumText = scopeTitle ?? ""
                             showingRenameAlbum = true
                         } label: { Label("Rename Album", systemImage: "pencil") }
+                        Button {
+                            if case .album(let albumID) = filter {
+                                presentEditDescription(albumID: albumID)
+                            }
+                        } label: { Label("Edit Description", systemImage: "text.quote") }
                         Button(role: .destructive) {
                             showingDeleteAlbumConfirm = true
                         } label: { Label("Delete Album", systemImage: "trash") }
@@ -535,6 +545,25 @@ struct LibraryView: View {
         if sortService == nil {
             sortService = LibrarySortService(modelContext: modelContext)
         }
+    }
+
+    /// Reads the album's current description/profile from the index *now* and
+    /// presents the edit sheet — same fresh-capture pattern as
+    /// `presentAddToAlbum`.
+    private func presentEditDescription(albumID: UUID) {
+        var descriptor = FetchDescriptor<PersistedAlbum>(
+            predicate: #Predicate { $0.id == albumID }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try? modelContext.fetch(descriptor).first else { return }
+        editDescriptionRequest = AlbumDescriptionSheet.Request(
+            albumID: albumID,
+            albumName: row.name,
+            userDescription: row.userDescription,
+            profileText: row.aiProfileText,
+            profileBuiltAt: row.aiProfileBuiltAt,
+            profileMemberCount: row.aiProfileMemberCount
+        )
     }
 
     /// Recompute the album list and the selection's membership from the index
