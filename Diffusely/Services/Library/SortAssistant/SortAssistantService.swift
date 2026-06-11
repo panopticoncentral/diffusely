@@ -33,6 +33,8 @@ final class SortAssistantService: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var groups: [SortAssistant.ReviewGroup] = []
     @Published private(set) var failedBatchCount = 0
+    /// Profiles appended during `.buildingProfiles`; may only be edited by
+    /// the UI while `phase == .profilesReady`.
     @Published var builtProfiles: [BuiltProfile] = []
 
     private let albumService: LibraryAlbumService
@@ -62,12 +64,27 @@ final class SortAssistantService: ObservableObject {
 
     // MARK: - Task-tracked entry points (UI)
 
+    /// Begins (or retries after `.failed`) a run. The service is otherwise
+    /// single-use per presentation: after `.review`, create a fresh instance.
     func start() {
-        guard runTask == nil, phase == .idle else { return }
+        guard runTask == nil, phase == .idle || isFailed else { return }
+        if isFailed {
+            phase = .idle
+            groups = []
+            builtProfiles = []
+            failedBatchCount = 0
+            pendingScan = nil
+        }
         runTask = Task { await run() }
     }
 
+    private var isFailed: Bool {
+        if case .failed = phase { return true }
+        return false
+    }
+
     func beginClassification() {
+        guard phase == .profilesReady else { return }
         runTask = Task { await confirmProfiles() }
     }
 
@@ -128,6 +145,7 @@ final class SortAssistantService: ObservableObject {
     /// Internal so tests can await it directly.
     func confirmProfiles() async {
         guard let scan = pendingScan else { return }
+        phase = .classifying(done: 0, total: 0)
         pendingScan = nil
         var overrides: [UUID: String] = [:]
         for profile in builtProfiles {
@@ -209,6 +227,10 @@ final class SortAssistantService: ObservableObject {
     /// album is created first. A group for an album deleted since classify is
     /// dropped (no membership written).
     func accept(group: SortAssistant.ReviewGroup, selectedIDs: Set<Int>) async {
+        // A stale group reference (double-tap, or a group already accepted)
+        // must not re-run membership writes — .newAlbum would create a
+        // duplicate album.
+        guard groups.contains(where: { $0.id == group.id }) else { return }
         let all = group.entries.map(\.itemID)
         let selected = all.filter { selectedIDs.contains($0) }
         let rejected = all.filter { !selectedIDs.contains($0) }
@@ -233,6 +255,13 @@ final class SortAssistantService: ObservableObject {
         let store = stateStore
         await Self.onStateQueue { try? store.write(snapshot) }
         groups.removeAll { $0.id == group.id }
+    }
+
+    // MARK: - Test seams
+
+    /// Test seam: seeds review groups without running a classification.
+    func setGroupsForTesting(_ newGroups: [SortAssistant.ReviewGroup]) {
+        groups = newGroups
     }
 
     // MARK: - State queue

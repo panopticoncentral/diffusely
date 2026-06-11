@@ -162,6 +162,7 @@ final class StubClassifier: PromptClassifying, @unchecked Sendable {
             id: "album:\(albumID.uuidString)",
             kind: .album(id: albumID, name: "Cyberpunk"),
             entries: [.init(itemID: 1, confidence: 0.9), .init(itemID: 2, confidence: 0.8)])
+        svc.setGroupsForTesting([group])
 
         await svc.accept(group: group, selectedIDs: [1])   // 2 deselected → rejected
 
@@ -190,6 +191,7 @@ final class StubClassifier: PromptClassifying, @unchecked Sendable {
         let group = SortAssistant.ReviewGroup(
             id: "new:watercolor", kind: .newAlbum(name: "Watercolor"),
             entries: [.init(itemID: 1, confidence: 1), .init(itemID: 2, confidence: 1)])
+        svc.setGroupsForTesting([group])
 
         await svc.accept(group: group, selectedIDs: [1])
 
@@ -218,8 +220,34 @@ final class StubClassifier: PromptClassifying, @unchecked Sendable {
         let group = SortAssistant.ReviewGroup(
             id: "album:\(ghost.uuidString)", kind: .album(id: ghost, name: "Ghost"),
             entries: [.init(itemID: 1, confidence: 0.9)])
+        svc.setGroupsForTesting([group])
 
         await svc.accept(group: group, selectedIDs: [1])
         #expect(LibraryFileWriter(itemsDirectory: dir).readMetadata(itemID: 1)?.albumIDs == [])
+    }
+
+    @MainActor
+    @Test func acceptingTheSameGroupTwiceCreatesOneAlbum() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        let albumService = LibraryAlbumService(index: index, itemsDirectory: { dir })
+        try commitItem(1, prompt: "p1", in: dir)
+        await index.reconcile(itemsDirectory: dir)
+
+        let svc = SortAssistantService(
+            albumService: albumService,
+            classifier: StubClassifier { _, _ in "" },
+            itemsDirectory: dir)
+        let group = SortAssistant.ReviewGroup(
+            id: "new:watercolor", kind: .newAlbum(name: "Watercolor"),
+            entries: [.init(itemID: 1, confidence: 1)])
+        svc.setGroupsForTesting([group])
+
+        await svc.accept(group: group, selectedIDs: [1])
+        await svc.accept(group: group, selectedIDs: [1])   // stale double-tap
+
+        let albums = try ModelContext(container).fetch(FetchDescriptor<PersistedAlbum>())
+        #expect(albums.count == 1)
     }
 }
