@@ -18,7 +18,12 @@ struct SortAssistantScanner {
         let directory = itemsDirectory
         return await Task.detached(priority: .utility) {
             let fm = FileManager.default
-            let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            // Prefetch ubiquitous-status keys so the per-file
+            // `isDatalessPlaceholder` checks below read the enumeration cache
+            // instead of XPCing to fileproviderd once per sidecar.
+            let urls = (try? fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: LibraryIndexService.scanPrefetchKeys)) ?? []
             var result = ScanResult()
             for url in urls where url.pathExtension == "json" {
                 guard !LibraryIndexService.isDatalessPlaceholder(url) else { continue }

@@ -396,17 +396,37 @@ actor LibraryIndexService {
         }
     }
 
+    /// Resource keys prefetched during directory enumeration so the per-file
+    /// ubiquitous-status reads (`isDatalessPlaceholder`, `downloadStatus`) are
+    /// served from the enumerated URL objects' caches. Without the prefetch,
+    /// every `resourceValues` call is an individual blocking XPC round-trip to
+    /// fileproviderd — ~13k per scan at a 6.5k-item library, which turned the
+    /// launch reconcile into minutes of churn on macOS.
+    nonisolated static let scanPrefetchKeys: [URLResourceKey] = [
+        .isUbiquitousItemKey,
+        .ubiquitousItemDownloadingStatusKey
+    ]
+
     nonisolated static func scanContainer(itemsDirectory: URL) -> ScanResult? {
         let fileManager = FileManager.default
         guard let contents = try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: scanPrefetchKeys
         ) else {
             // Couldn't read the directory (transient iCloud/filesystem error).
             // Returning an empty scan would make reconcile prune the entire
             // index; signal failure so the caller leaves it intact instead.
             return nil
         }
+
+        // Media files are looked up from the same enumeration: the returned
+        // URL objects carry the prefetched status values, while a freshly
+        // built `appendingPathComponent` URL has an empty cache and would XPC
+        // to fileproviderd per file. Cached values are point-in-time, which is
+        // exactly the snapshot semantics a scan wants; each scan re-enumerates
+        // and gets fresh objects.
+        var urlsByName = [String: URL](minimumCapacity: contents.count)
+        for url in contents { urlsByName[url.lastPathComponent] = url }
 
         let jsonURLs = contents.filter { $0.pathExtension == "json" }
         var seenIDs = Set<Int>()
@@ -456,7 +476,11 @@ actor LibraryIndexService {
             else { continue }
 
             seenIDs.insert(metadata.itemID)
-            let mediaURL = itemsDirectory.appendingPathComponent(metadata.mediaFileName)
+            // Missing from the listing (no local placeholder at all) falls back
+            // to a built URL, which `downloadStatus` resolves to `.evicted` via
+            // its fileExists check — same result as before, no XPC needed.
+            let mediaURL = urlsByName[metadata.mediaFileName]
+                ?? itemsDirectory.appendingPathComponent(metadata.mediaFileName)
             let status = downloadStatus(for: mediaURL, fileManager: fileManager)
             items.append((metadata: metadata, status: status))
         }
