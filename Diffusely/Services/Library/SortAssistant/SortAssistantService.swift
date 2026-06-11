@@ -259,10 +259,12 @@ final class SortAssistantService: ObservableObject {
 
     // MARK: - Test seams
 
+    #if DEBUG
     /// Test seam: seeds review groups without running a classification.
     func setGroupsForTesting(_ newGroups: [SortAssistant.ReviewGroup]) {
         groups = newGroups
     }
+    #endif
 
     // MARK: - State queue
 
