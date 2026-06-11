@@ -37,7 +37,22 @@ struct SortAssistantSheet: View {
                 }
             }
         }
+        #if os(macOS)
+        // macOS sheets size to their content's IDEAL height, and the profile
+        // confirmation Form (one section per album) can report a height taller
+        // than the screen — pushing the toolbar and Continue button off-screen.
+        // Pin an explicit ideal size so the sheet stays bounded and the content
+        // scrolls inside it instead.
+        .frame(minWidth: 540, idealWidth: 620, maxWidth: 820,
+               minHeight: 480, idealHeight: 680, maxHeight: 820)
+        #endif
         .interactiveDismissDisabled()
+        .onDisappear {
+            // Safety net for dismissal paths that skip the Done button (Esc on
+            // macOS, window close): stop any in-flight classification so a
+            // dismissed sheet can't keep spending API calls in the background.
+            service?.cancel()
+        }
         .task {
             guard service == nil, openRouterConfig.hasAPIKey else { return }
             guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
@@ -113,6 +128,16 @@ private struct SortAssistantFlowView: View {
             Section {
                 Button("Continue") { service.beginClassification() }
                     .frame(maxWidth: .infinity)
+            }
+        }
+        // The default macOS form style doesn't scroll; grouped matches the
+        // iOS appearance and scrolls when the sheet bounds the height.
+        .formStyle(.grouped)
+        .toolbar {
+            // Always-visible Continue: with many albums the in-form button
+            // sits below the fold, so mirror it in the toolbar.
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Continue") { service.beginClassification() }
             }
         }
     }
