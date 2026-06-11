@@ -85,4 +85,29 @@ import SwiftData
         #expect(LibraryAlbumStore(itemsDirectory: dir).read(id: album)?.name == "New")
         #expect(try ModelContext(container).fetch(FetchDescriptor<PersistedAlbum>()).first?.name == "New")
     }
+
+    @Test func descriptionAndProfilePersistToFileAndIndex() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        let svc = LibraryAlbumService(index: index, itemsDirectory: { dir })
+        let album = await svc.createAlbum(name: "Cyberpunk")
+
+        await svc.setUserDescription(album, "Neon city scenes")
+        // Use a whole-second date — ISO8601 round-trip truncates sub-second precision.
+        let profile = AlbumAIProfile(text: "Futuristic neon cityscapes", builtAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded()), memberCount: 7)
+        await svc.setAIProfile(album, profile)
+
+        let file = try #require(LibraryAlbumStore(itemsDirectory: dir).read(id: album))
+        #expect(file.userDescription == "Neon city scenes")
+        #expect(file.aiProfile == profile)
+
+        let row = try #require(ModelContext(container).fetch(FetchDescriptor<PersistedAlbum>()).first)
+        #expect(row.userDescription == "Neon city scenes")
+        #expect(row.aiProfileText == "Futuristic neon cityscapes")
+        #expect(row.aiProfileMemberCount == 7)
+
+        #expect(await svc.albumExists(album))
+        #expect(!(await svc.albumExists(UUID())))
+    }
 }

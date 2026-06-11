@@ -24,7 +24,7 @@ import SwiftData
         #expect(sortService.albumSummaries().isEmpty)         // none yet
 
         let index = LibraryIndexService(modelContainer: container)
-        await index.upsertAlbum(id: UUID(), name: "X", createdAt: Date(timeIntervalSince1970: 1))
+        await index.upsertAlbum(LibraryAlbumFile(id: UUID(), name: "X", createdAt: Date(timeIntervalSince1970: 1)))
 
         // The actor saved on ITS context. Does the long-lived main context see it?
         let summaries = sortService.albumSummaries()
@@ -52,7 +52,7 @@ import SwiftData
         #expect(sortService.albumSummaries().isEmpty)
 
         let index = LibraryIndexService(modelContainer: container)
-        await index.upsertAlbum(id: UUID(), name: "X", createdAt: Date(timeIntervalSince1970: 1))
+        await index.upsertAlbum(LibraryAlbumFile(id: UUID(), name: "X", createdAt: Date(timeIntervalSince1970: 1)))
 
         let summaries = sortService.albumSummaries()
         #expect(summaries.count == 1)        // <-- does the on-disk main context see it?

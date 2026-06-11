@@ -36,17 +36,39 @@ final class LibraryAlbumService {
         let file = LibraryAlbumFile(id: id, name: name, createdAt: Date())
         guard let dir = await resolveDirectory() else { return id }
         await Self.run { try? LibraryAlbumStore(itemsDirectory: dir).write(file) }
-        await index.upsertAlbum(id: id, name: file.name, createdAt: file.createdAt)
+        await index.upsertAlbum(file)
         return id
     }
 
     func renameAlbum(_ id: UUID, to newName: String) async {
+        await mutateAlbumFile(id) { $0.name = newName }
+    }
+
+    func setUserDescription(_ id: UUID, _ description: String?) async {
+        await mutateAlbumFile(id) { $0.userDescription = description }
+    }
+
+    func setAIProfile(_ id: UUID, _ profile: AlbumAIProfile) async {
+        await mutateAlbumFile(id) { $0.aiProfile = profile }
+    }
+
+    /// True when the album file exists in the container. Sort Assistant uses this
+    /// to drop suggestions for albums deleted between classify and accept.
+    func albumExists(_ id: UUID) async -> Bool {
+        guard let dir = await resolveDirectory() else { return false }
+        return await Self.run { LibraryAlbumStore(itemsDirectory: dir).read(id: id) != nil }
+    }
+
+    /// Reads the album file, applies `mutate`, rewrites it, and refreshes the
+    /// index row — file I/O on the dedicated serial queue (grey-spinner rule).
+    private func mutateAlbumFile(_ id: UUID, _ mutate: @escaping (inout LibraryAlbumFile) -> Void) async {
         guard let dir = await resolveDirectory() else { return }
         let store = LibraryAlbumStore(itemsDirectory: dir)
         guard var file = await Self.run({ store.read(id: id) }) else { return }
-        file.name = newName
-        await Self.run { try? store.write(file) }
-        await index.upsertAlbum(id: id, name: newName, createdAt: file.createdAt)
+        mutate(&file)
+        let final = file
+        await Self.run { try? store.write(final) }
+        await index.upsertAlbum(final)
     }
 
     /// Deletes the album file and index row. Member items keep the now-dangling

@@ -112,15 +112,31 @@ actor LibraryIndexService {
 
     // MARK: - Albums
 
-    func upsertAlbum(id: UUID, name: String, createdAt: Date) {
+    func upsertAlbum(_ file: LibraryAlbumFile) {
         bumpMutationEpoch()
-        if let existing = fetchAlbum(id: id) {
-            existing.name = name
-            existing.createdAt = createdAt
+        if let existing = fetchAlbum(id: file.id) {
+            Self.apply(file, to: existing)
         } else {
-            modelContext.insert(PersistedAlbum(id: id, name: name, createdAt: createdAt))
+            modelContext.insert(PersistedAlbum(file: file))
         }
         try? modelContext.save()
+    }
+
+    /// Copies all denormalized fields from an album file onto an index row.
+    /// Returns whether anything observable changed (drives the albumsVersion
+    /// reload signal).
+    @discardableResult
+    private static func apply(_ file: LibraryAlbumFile, to row: PersistedAlbum) -> Bool {
+        let changed = row.name != file.name || row.createdAt != file.createdAt
+            || row.userDescription != file.userDescription
+            || row.aiProfileText != file.aiProfile?.text
+        row.name = file.name
+        row.createdAt = file.createdAt
+        row.userDescription = file.userDescription
+        row.aiProfileText = file.aiProfile?.text
+        row.aiProfileBuiltAt = file.aiProfile?.builtAt
+        row.aiProfileMemberCount = file.aiProfile?.memberCount ?? 0
+        return changed
     }
 
     func removeAlbum(id: UUID) {
@@ -253,11 +269,9 @@ actor LibraryIndexService {
         var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for file in scan.albums {
             if let row = byID[file.id] {
-                if row.name != file.name || row.createdAt != file.createdAt { changed = true }
-                row.name = file.name
-                row.createdAt = file.createdAt
+                if Self.apply(file, to: row) { changed = true }
             } else {
-                let row = PersistedAlbum(id: file.id, name: file.name, createdAt: file.createdAt)
+                let row = PersistedAlbum(file: file)
                 modelContext.insert(row)
                 byID[file.id] = row
                 changed = true
