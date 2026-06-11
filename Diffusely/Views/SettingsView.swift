@@ -2,9 +2,11 @@ import SwiftUI
 
 struct SettingsView: View {
     @StateObject private var apiKeyManager = APIKeyManager.shared
+    @StateObject private var openRouterConfig = OpenRouterConfig.shared
     @ObservedObject private var domainManager = DomainManager.shared
     @EnvironmentObject private var libraryStore: LibraryStore
     @State private var apiKeyInput = ""
+    @State private var openRouterKeyInput = ""
     @State private var showingAPIKeyInfo = false
     @State private var showingResetConfirmation = false
     @State private var cacheLimitGB: Int = 2
@@ -48,6 +50,37 @@ struct SettingsView: View {
             .navigationTitle("Settings")
         }
         #endif
+    }
+
+    private var sortAssistantSection: some View {
+        Section {
+            if openRouterConfig.hasAPIKey {
+                HStack {
+                    Text("OpenRouter API Key")
+                    Spacer()
+                    Text("••••••••").foregroundColor(.secondary)
+                }
+                Button("Remove OpenRouter Key", role: .destructive) {
+                    openRouterConfig.apiKey = nil
+                    openRouterKeyInput = ""
+                }
+            } else {
+                SecureField("OpenRouter API Key", text: $openRouterKeyInput)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Save Key") {
+                    openRouterConfig.apiKey = openRouterKeyInput
+                }
+                .disabled(openRouterKeyInput.isEmpty)
+            }
+            TextField("Model", text: $openRouterConfig.model)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+        } header: {
+            Text("Sort Assistant")
+        } footer: {
+            Text("The Sort Assistant sends Library item prompts (text only, never images) to this OpenRouter model to suggest albums.")
+        }
     }
 
     @ViewBuilder
@@ -104,6 +137,8 @@ struct SettingsView: View {
             }
             .font(.caption)
         }
+
+        sortAssistantSection
 
         Section {
             HStack {
