@@ -114,9 +114,10 @@ final class LibraryAlbumService {
             }
             return results
         }
-        for (itemID, ids) in updated {
-            await index.setAlbumIDs(itemID: itemID, albumIDs: ids)
-        }
+        // One batched index update (single epoch bump + single save) so a
+        // large accept doesn't serialize N saves against the main thread's
+        // fetches on the shared store.
+        await index.setAlbumIDs(updated.map { (itemID: $0.0, albumIDs: $0.1) })
     }
 
     /// Runs blocking file work on the dedicated serial queue and suspends the

@@ -241,13 +241,22 @@ final class LibrarySortService {
 
     /// One row per album for the Albums grid: name, member count, and the most
     /// recent member as the cover. Albums with no members get a nil cover.
+    /// Groups membership in ONE pass over the items (each item's joined-ids
+    /// string split once) — the per-album `belongs(toAlbum:)` filter was
+    /// O(albums × items) string splits, which stalled the main thread on every
+    /// reload at thousands of items × dozens of albums.
     func albumSummaries() -> [AlbumSummary] {
         let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
         let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        var membersByAlbum: [String: [PersistedLibraryItem]] = [:]
+        for item in all {
+            for albumID in item.albumIDs {
+                membersByAlbum[albumID, default: []].append(item)
+            }
+        }
         return albums
             .map { album in
-                let key = album.id.uuidString
-                let members = newestFirst(all.filter { $0.belongs(toAlbum: key) })
+                let members = newestFirst(membersByAlbum[album.id.uuidString] ?? [])
                 return AlbumSummary(id: album.id, name: album.name,
                                     count: members.count, coverItem: members.first)
             }

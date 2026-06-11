@@ -153,10 +153,23 @@ actor LibraryIndexService {
     /// must already have been rewritten by the caller; this just keeps the index
     /// row in step without re-reading media or download status.
     func setAlbumIDs(itemID: Int, albumIDs: [String]) {
+        setAlbumIDs([(itemID, albumIDs)])
+    }
+
+    /// Batch variant: one mutation epoch and ONE save for the whole update.
+    /// Accepting a large Sort Assistant group was N per-item saves, and the
+    /// main thread's own fetches contend with each one on the shared SQLite
+    /// store — visible as beachballs during accepts.
+    func setAlbumIDs(_ updates: [(itemID: Int, albumIDs: [String])]) {
+        guard !updates.isEmpty else { return }
         bumpMutationEpoch()
-        guard let row = fetchItem(itemID: itemID) else { return }
-        row.albumIDsJoined = PersistedLibraryItem.join(albumIDs)
-        try? modelContext.save()
+        var changed = false
+        for (itemID, albumIDs) in updates {
+            guard let row = fetchItem(itemID: itemID) else { continue }
+            row.albumIDsJoined = PersistedLibraryItem.join(albumIDs)
+            changed = true
+        }
+        if changed { try? modelContext.save() }
     }
 
     private func fetchAlbum(id: UUID) -> PersistedAlbum? {

@@ -78,10 +78,16 @@ struct SortReviewGroupView: View {
         }
         .task {
             selectedIDs = Set(group.entries.map(\.itemID))
-            let ids = Set(group.entries.map(\.itemID))
-            let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+            // Predicate fetch so SQLite returns just this group's rows — a
+            // full-table fetch on the main context stalls visibly (beachball)
+            // at multi-thousand-item library sizes.
+            let ids = group.entries.map(\.itemID)
+            let descriptor = FetchDescriptor<PersistedLibraryItem>(
+                predicate: #Predicate { ids.contains($0.itemID) }
+            )
+            let rows = (try? modelContext.fetch(descriptor)) ?? []
             itemsByID = Dictionary(
-                all.filter { ids.contains($0.itemID) }.map { ($0.itemID, $0) },
+                rows.map { ($0.itemID, $0) },
                 uniquingKeysWith: { a, _ in a })
         }
     }
