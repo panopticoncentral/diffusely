@@ -287,25 +287,11 @@ struct GenerationDataView: View {
 
             if let meta = data.meta {
                 if let prompt = meta.prompt, !prompt.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Prompt")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Text(prompt)
-                            .font(.caption)
-                            .foregroundColor(.primary)
-                    }
+                    CopyablePromptView(label: "Prompt", text: prompt)
                 }
 
                 if let negativePrompt = meta.negativePrompt, !negativePrompt.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Negative Prompt")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Text(negativePrompt)
-                            .font(.caption)
-                            .foregroundColor(.primary)
-                    }
+                    CopyablePromptView(label: "Negative Prompt", text: negativePrompt)
                 }
 
                 HStack(spacing: 16) {
@@ -382,6 +368,43 @@ struct GenerationDataView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Displays a labeled prompt value with a button to copy it to the clipboard.
+struct CopyablePromptView: View {
+    let label: String
+    let text: String
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button {
+                    Clipboard.copy(text)
+                    withAnimation { copied = true }
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        withAnimation { copied = false }
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Copy",
+                          systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .disabled(copied)
+            }
+            Text(text)
+                .font(.caption)
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
         }
     }
 }
