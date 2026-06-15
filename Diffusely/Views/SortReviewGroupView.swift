@@ -190,9 +190,11 @@ struct SortReviewGroupView: View {
             .accessibilityAddTraits(isActionable && isSelected ? .isSelected : [])
     }
 
-    /// Full-size inspection overlay: image at detail resolution, with the same
-    /// select/deselect action so a verdict can be made right here. Click the
-    /// backdrop (or Esc on macOS) to close.
+    /// Full-size inspection overlay: image at detail resolution with a clear
+    /// top bar — a ✕ close button (top-leading) and, for actionable groups, a
+    /// checkmark toggle (top-trailing) mirroring the grid's selection indicator
+    /// so a verdict can be made right here. Click the backdrop or press Esc
+    /// (macOS) to dismiss.
     private func previewOverlay(_ item: PersistedLibraryItem) -> some View {
         let isSelected = selectedIDs.contains(item.itemID)
         return ZStack {
@@ -200,31 +202,48 @@ struct SortReviewGroupView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { previewItem = nil }
 
-            VStack(spacing: 12) {
-                LibraryAsyncImage(
-                    itemID: item.itemID,
-                    mediaFileName: item.mediaFileName,
-                    isVideo: item.isVideo,
-                    maxDimension: 1600,
-                    contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                HStack(spacing: 12) {
-                    if isActionable {
-                        Button(isSelected ? "Deselect" : "Select") {
-                            if isSelected {
-                                selectedIDs.remove(item.itemID)
-                            } else {
-                                selectedIDs.insert(item.itemID)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    Button("Close") { previewItem = nil }
-                        .buttonStyle(.bordered)
-                }
+            LibraryAsyncImage(
+                itemID: item.itemID,
+                mediaFileName: item.mediaFileName,
+                isVideo: item.isVideo,
+                maxDimension: 1600,
+                contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.top, 64)   // clear the top bar
+                .padding(.bottom, 20)
+        }
+        .overlay(alignment: .topLeading) {
+            Button { previewItem = nil } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .white.opacity(0.25))
+                    .shadow(color: .black.opacity(0.5), radius: 2)
             }
+            .buttonStyle(.plain)
             .padding(20)
+            .accessibilityLabel("Close")
+        }
+        .overlay(alignment: .topTrailing) {
+            if isActionable {
+                Button {
+                    if isSelected {
+                        selectedIDs.remove(item.itemID)
+                    } else {
+                        selectedIDs.insert(item.itemID)
+                    }
+                } label: {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, isSelected ? Color.accentColor : Color.white.opacity(0.6))
+                        .shadow(color: .black.opacity(0.5), radius: 2)
+                }
+                .buttonStyle(.plain)
+                .padding(20)
+                .accessibilityLabel(isSelected ? "Deselect" : "Select")
+            }
         }
         #if os(macOS)
         .onExitCommand { previewItem = nil }
