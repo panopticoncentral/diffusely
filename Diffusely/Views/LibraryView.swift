@@ -177,6 +177,16 @@ struct LibraryView: View {
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
         if isSelecting {
+            ToolbarItem(placement: .navigation) {
+                Button(allSelected ? "Deselect All" : "Select All") {
+                    if allSelected {
+                        selectedIDs.removeAll()
+                    } else {
+                        selectedIDs = Set(allItemIDs)
+                    }
+                }
+                .disabled(allItemIDs.isEmpty)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Done") { exitSelection() }
             }
@@ -497,6 +507,20 @@ struct LibraryView: View {
                     .shadow(color: .black.opacity(0.5), radius: 2)
                     .padding(6)
             }
+    }
+
+    // All item IDs currently shown, flattened across any sort groups.
+    private var allItemIDs: [Int] {
+        switch content {
+        case .flat(let items):
+            return items.map { $0.itemID }
+        case .grouped(let groups):
+            return groups.flatMap { $0.items }.map { $0.itemID }
+        }
+    }
+
+    private var allSelected: Bool {
+        !allItemIDs.isEmpty && selectedIDs.count == allItemIDs.count
     }
 
     private func toggleSelection(_ itemID: Int) {
