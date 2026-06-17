@@ -10,6 +10,7 @@ struct LibraryDetailView: View {
     @State private var metadata: LibraryItemMetadata?
     @State private var loadFailed = false
     @State private var showingRemoveConfirm = false
+    @State private var embedded: EmbeddedMetadata?
 
     var body: some View {
         GeometryReader { proxy in
@@ -68,6 +69,11 @@ struct LibraryDetailView: View {
                         if let genData = metadata.generationData {
                             Divider()
                             GenerationDataView(data: genData)
+                        }
+
+                        if let embedded {
+                            Divider()
+                            EmbeddedMetadataView(metadata: embedded)
                         }
                     }
                     .padding()
@@ -157,6 +163,7 @@ struct LibraryDetailView: View {
             return
         }
         metadata = decoded
+        await loadEmbeddedMetadata(for: decoded)
         await store.indexService.recordAccess(itemID: itemID)
 
         // Opportunistic publish-date catchup: if this item's date is still
@@ -168,5 +175,19 @@ struct LibraryDetailView: View {
            let updated = await store.attemptPublishDateCatchup(for: decoded) {
             metadata = updated
         }
+    }
+
+    /// Reads embedded generation metadata from the local original file off the main
+    /// actor (blocking file I/O must not run on the cooperative pool). Silently does
+    /// nothing for videos or when the file isn't materialized locally.
+    private func loadEmbeddedMetadata(for metadata: LibraryItemMetadata) async {
+        guard metadata.mediaType == .image,
+              let dir = try? await LibraryContainer.shared.itemsDirectory()
+        else { return }
+        let fileURL = dir.appendingPathComponent(metadata.mediaFileName)
+        let result = await Task.detached(priority: .utility) {
+            EmbeddedMetadataReader.read(fileURL: fileURL)
+        }.value
+        embedded = result
     }
 }
