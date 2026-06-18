@@ -33,6 +33,11 @@ struct LibraryView: View {
 
     enum Mode: Hashable { case photos, albums }
     @State private var mode: Mode = .photos
+    /// Coalesces reload triggers: `selectedSort`, `store.itemCount`, and
+    /// `store.albumsVersion` can all change in the same update (e.g. after a
+    /// reconcile), and each reload is a full SwiftData scan. Collapse the burst
+    /// into one reload on the next runloop tick.
+    @State private var reloadScheduled = false
     @State private var albumSummaries: [LibrarySortService.AlbumSummary] = []
     @State private var notInAnyAlbumCount: Int = 0
     @State private var addToAlbumRequest: AddToAlbumRequest?
@@ -161,14 +166,14 @@ struct LibraryView: View {
                 await maybeStartBackfill()
             }
             .onChange(of: selectedSort) {
-                reloadContent()
+                scheduleReload()
                 Task { await maybeStartBackfill() }
             }
             .onChange(of: store.itemCount) {
-                reloadContent()
+                scheduleReload()
             }
             .onChange(of: store.albumsVersion) {
-                reloadContent()
+                scheduleReload()
             }
     }
 
@@ -603,9 +608,23 @@ struct LibraryView: View {
         )
     }
 
+    /// Defer a reload to the next runloop tick, collapsing multiple triggers
+    /// fired within the same update into a single `reloadContent()`.
+    private func scheduleReload() {
+        guard !reloadScheduled else { return }
+        reloadScheduled = true
+        Task { @MainActor in
+            reloadScheduled = false
+            reloadContent()
+        }
+    }
+
     private func reloadContent() {
         guard let sortService else { return }
-        let newContent = sortService.sortedLibraryContent(sort: selectedSort, filter: filter)
+        // One fetch for content + album summaries + the not-in-any-album count,
+        // instead of three separate full-table fetches on the main thread.
+        let bundle = sortService.libraryContent(sort: selectedSort, filter: filter)
+        let newContent = bundle.content
 
         // Seed all groups expanded on first grouped load, and auto-expand any
         // newly-seen groups on later reloads. Safe now that the square LazyVGrid
@@ -627,9 +646,8 @@ struct LibraryView: View {
         }
 
         content = newContent
-
-        albumSummaries = sortService.albumSummaries()
-        notInAnyAlbumCount = sortService.notInAnyAlbumCount()
+        albumSummaries = bundle.albumSummaries
+        notInAnyAlbumCount = bundle.notInAnyAlbumCount
     }
 
     /// Kick off the publish-date backfill at most once per app session if there

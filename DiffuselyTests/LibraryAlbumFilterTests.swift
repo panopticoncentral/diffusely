@@ -72,4 +72,27 @@ import SwiftData
         #expect(summaries.first?.count == 2)
         #expect(summaries.first?.coverItem?.itemID == 2)   // most recent member
     }
+
+    /// `libraryContent` does in ONE pass (a single items fetch) what `LibraryView`
+    /// previously got from three separate full-table fetches. Its three fields must
+    /// match the standalone methods exactly so the reload refactor is behavior-preserving.
+    @Test func libraryContentBundlesContentSummariesAndCountInOneCall() throws {
+        let a = UUID()
+        let ctx = try makeContext(
+            items: [
+                make(1, albums: [a.uuidString], pub: 1),
+                make(2, albums: [a.uuidString], pub: 9),
+                make(3, albums: [], pub: 5)            // not in any album
+            ],
+            albums: [PersistedAlbum(id: a, name: "A", createdAt: Date())])
+        let svc = LibrarySortService(modelContext: ctx)
+
+        let bundle = svc.libraryContent(sort: .dateNewest, filter: .all)
+
+        #expect(bundle.content == svc.sortedLibraryContent(sort: .dateNewest, filter: .all))
+        #expect(bundle.albumSummaries == svc.albumSummaries())
+        #expect(bundle.notInAnyAlbumCount == svc.notInAnyAlbumCount())
+        #expect(bundle.albumSummaries.first?.count == 2)
+        #expect(bundle.notInAnyAlbumCount == 1)
+    }
 }

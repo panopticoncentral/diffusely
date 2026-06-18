@@ -46,21 +46,48 @@ final class LibrarySortService {
         let items: [PersistedLibraryItem]
     }
 
+    /// Everything `LibraryView.reloadContent()` needs, derived from a SINGLE
+    /// items fetch (plus one albums fetch). Previously the view called
+    /// `sortedLibraryContent` + `albumSummaries` + `notInAnyAlbumCount`
+    /// separately, each doing its own full-table fetch on the main thread —
+    /// three scans of every row per reload, and reloads fire on every album /
+    /// item-count change. Bundling collapses that to one scan.
+    struct LibraryContent: Equatable {
+        let content: LibrarySortedContent
+        let albumSummaries: [AlbumSummary]
+        let notInAnyAlbumCount: Int
+    }
+
     // MARK: - Public API
+
+    func libraryContent(sort: LibrarySort, filter: AlbumFilter) -> LibraryContent {
+        let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
+        let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        let known = Set(albums.map { $0.id.uuidString })
+        let filtered = applyAlbumFilter(all, filter, knownAlbumIDs: known)
+        return LibraryContent(
+            content: sortContent(filtered, sort: sort),
+            albumSummaries: albumSummaries(items: all, albums: albums),
+            notInAnyAlbumCount: notInAnyAlbumCount(items: all, knownAlbumIDs: known)
+        )
+    }
 
     func sortedLibraryContent(sort: LibrarySort) -> LibrarySortedContent {
         sortedLibraryContent(sort: sort, filter: .all)
     }
 
     func sortedLibraryContent(sort: LibrarySort, filter: AlbumFilter) -> LibrarySortedContent {
-        let all = fetchAll(filter: filter)
+        sortContent(fetchAll(filter: filter), sort: sort)
+    }
+
+    private func sortContent(_ items: [PersistedLibraryItem], sort: LibrarySort) -> LibrarySortedContent {
         switch sort {
         case .dateNewest, .dateOldest:
-            return .flat(sortByDate(all, ascending: sort.ascending))
+            return .flat(sortByDate(items, ascending: sort.ascending))
         case .authorAscending, .authorDescending:
-            return .grouped(groupByAuthor(all, ascending: sort.ascending))
+            return .grouped(groupByAuthor(items, ascending: sort.ascending))
         case .checkpointAscending, .checkpointDescending:
-            return .grouped(groupByCheckpoint(all, ascending: sort.ascending))
+            return .grouped(groupByCheckpoint(items, ascending: sort.ascending))
         }
     }
 
@@ -79,6 +106,19 @@ final class LibrarySortService {
 
     private func fetchAll(filter: AlbumFilter = .all) -> [PersistedLibraryItem] {
         let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        // Only `.notInAnyAlbum` needs the album set, so don't fetch it otherwise.
+        let known: Set<String>
+        if case .notInAnyAlbum = filter { known = knownAlbumIDStrings() } else { known = [] }
+        return applyAlbumFilter(all, filter, knownAlbumIDs: known)
+    }
+
+    /// Applies an album filter to an already-fetched item array. Pure (no fetch)
+    /// so callers that already hold the items + known album IDs reuse it.
+    private func applyAlbumFilter(
+        _ all: [PersistedLibraryItem],
+        _ filter: AlbumFilter,
+        knownAlbumIDs: Set<String>
+    ) -> [PersistedLibraryItem] {
         switch filter {
         case .all:
             return all
@@ -86,8 +126,7 @@ final class LibrarySortService {
             let key = id.uuidString
             return all.filter { $0.belongs(toAlbum: key) }
         case .notInAnyAlbum:
-            let known = knownAlbumIDStrings()
-            return all.filter { item in item.albumIDs.allSatisfy { !known.contains($0) } }
+            return all.filter { item in item.albumIDs.allSatisfy { !knownAlbumIDs.contains($0) } }
         }
     }
 
@@ -248,8 +287,12 @@ final class LibrarySortService {
     func albumSummaries() -> [AlbumSummary] {
         let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
         let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        return albumSummaries(items: all, albums: albums)
+    }
+
+    private func albumSummaries(items: [PersistedLibraryItem], albums: [PersistedAlbum]) -> [AlbumSummary] {
         var membersByAlbum: [String: [PersistedLibraryItem]] = [:]
-        for item in all {
+        for item in items {
             for albumID in item.albumIDs {
                 membersByAlbum[albumID, default: []].append(item)
             }
@@ -266,6 +309,10 @@ final class LibrarySortService {
     /// Count of items in zero existing albums — the "Not in any Album" badge.
     func notInAnyAlbumCount() -> Int {
         fetchAll(filter: .notInAnyAlbum).count
+    }
+
+    private func notInAnyAlbumCount(items: [PersistedLibraryItem], knownAlbumIDs: Set<String>) -> Int {
+        items.filter { item in item.albumIDs.allSatisfy { !knownAlbumIDs.contains($0) } }.count
     }
 
     /// For the given selection, how many of those items belong to each album.
