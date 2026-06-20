@@ -34,6 +34,19 @@ final class LibraryStore: ObservableObject {
     let albumService: LibraryAlbumService
 
     private let metadataQuery = NSMetadataQuery()
+    /// Dedicated serial queue for the metadata query's gathering/merge work.
+    /// Without this, `NSMetadataQuery` runs on the run loop of the thread that
+    /// called `start()` (the main thread) — so CloudDocs delivers and merges the
+    /// entire result set (6,000+ `.json` sidecars) on the main thread on every
+    /// update, hanging the UI. Moving it to a background queue keeps all of that
+    /// off the main thread; the only consumer (`handleQueryUpdate`) just schedules
+    /// a debounced reconcile and its observer already hops to `.main`.
+    private let metadataQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.diffusely.library.metadataQuery"
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
     private var observers: [NSObjectProtocol] = []
     /// Debounces `NSMetadataQueryDidUpdate` notifications. During the date
     /// backfill, every sidecar rewrite would otherwise re-trigger a full
@@ -251,6 +264,8 @@ final class LibraryStore: ObservableObject {
     private func configureMetadataQuery() {
         metadataQuery.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         metadataQuery.predicate = NSPredicate(format: "%K LIKE '*.json'", NSMetadataItemFSNameKey)
+        // Run gathering/merge off the main thread (see `metadataQueue`).
+        metadataQuery.operationQueue = metadataQueue
 
         let center = NotificationCenter.default
         for name in [Notification.Name.NSMetadataQueryDidFinishGathering,
