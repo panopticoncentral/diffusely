@@ -9,14 +9,32 @@ import Foundation
 enum LibraryFileMaterializer {
     private enum Readiness { case ready, needsDownload }
 
+    /// Dedicated queue for the blocking iCloud status reads below. A cold-cache
+    /// `resourceValues(forKeys:)` is a blocking XPC round-trip to fileproviderd,
+    /// so it MUST stay off the Swift concurrency cooperative pool — running it on
+    /// `Task.detached` lets an album's worth of probes occupy every cooperative
+    /// thread, wedging all async work app-wide on permanent grey spinners. See
+    /// the "grey-spinner cooperative-pool-starvation" recurring bug.
+    private static let ioQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.materializer",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    /// Runs `work` on `ioQueue` and suspends the caller until it finishes —
+    /// without occupying a cooperative thread.
+    private static func runIO<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
     /// True if the file is present locally — a non-ubiquitous file that exists,
     /// or a ubiquitous item whose download status is `.current` / `.downloaded`.
     /// Runs the (potentially blocking under a cold cache) iCloud metadata lookup
     /// off the main actor.
     static func isReady(url: URL) async -> Bool {
-        await Task.detached(priority: .userInitiated) {
-            checkLocalReadiness(at: url) == .ready
-        }.value
+        await runIO { checkLocalReadiness(at: url) == .ready }
     }
 
     /// Triggers an iCloud download and polls until the file is current/downloaded
@@ -35,9 +53,9 @@ enum LibraryFileMaterializer {
         // on every grid/video reappearance, so that one impossible item becomes a
         // console error storm. Probe the item's iCloud status first and fail fast
         // for the impossible case instead of issuing the doomed task.
-        let isUbiquitous = await Task.detached(priority: .userInitiated) {
+        let isUbiquitous = await runIO {
             (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
-        }.value
+        }
         guard isUbiquitous else {
             throw URLError(.fileDoesNotExist)
         }
@@ -47,7 +65,7 @@ enum LibraryFileMaterializer {
         for _ in 0..<240 {
             if Task.isCancelled { throw CancellationError() }
             try await Task.sleep(nanoseconds: 500_000_000)
-            let downloaded = await Task.detached(priority: .userInitiated) {
+            let downloaded = await runIO {
                 // Fresh URL each iteration: `URL` caches resource values on its
                 // backing object, so reusing one would report the status captured
                 // on the first read (.notDownloaded) forever and the poll would
@@ -57,7 +75,7 @@ enum LibraryFileMaterializer {
                 let status = (try? probe.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?
                     .ubiquitousItemDownloadingStatus
                 return status == .current || status == .downloaded
-            }.value
+            }
             if downloaded { return }
         }
         throw URLError(.timedOut)

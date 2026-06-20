@@ -31,6 +31,30 @@ enum LibraryImageRequest {
         return URLSession(configuration: config)
     }()
 
+    /// Dedicated queue for the cascade's blocking file I/O — synchronous
+    /// `NSFileCoordinator` reads (which block on the iCloud FileProvider daemon)
+    /// and ImageIO downsampling. These MUST stay off the Swift concurrency
+    /// cooperative pool: running them on `Task.detached` (which uses the
+    /// cooperative pool) lets one stalled album's worth of coordinated reads
+    /// occupy every cooperative thread, wedging all async work app-wide on
+    /// permanent grey spinners. Concurrent for grid throughput; upstream
+    /// concurrency is bounded by Nuke's data-loading queue. See the
+    /// "grey-spinner cooperative-pool-starvation" recurring bug.
+    private static let ioQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.imageIO",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    /// Runs `work` on `ioQueue` and suspends the caller until it finishes —
+    /// without occupying a cooperative thread. Use for any blocking
+    /// file-coordination or ImageIO call in the byte cascade.
+    private static func runIO<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
     /// Stable per-item+size cache key. Any tier that succeeds caches under this
     /// one key, so a relaunch is a cache hit and never re-attempts the CDN.
     /// Folding the dimension in keeps grid (600) and detail entries distinct.
@@ -81,9 +105,7 @@ enum LibraryImageRequest {
     /// original. If the CDN mis-serves video bytes, the registered
     /// `VideoFrameImageDecoder` extracts a frame downstream.
     private static func cdnThumbnailData(itemID: Int, isVideo: Bool, maxDimension: CGFloat, dir: URL) async -> Data? {
-        guard let original = await Task.detached(priority: .userInitiated, operation: {
-                  originalCDNURL(itemID: itemID, in: dir)
-              }).value,
+        guard let original = await runIO({ originalCDNURL(itemID: itemID, in: dir) }),
               let thumb = CivitaiThumbnailURL.thumbnail(fromOriginal: original, isVideo: isVideo, width: Int(maxDimension)),
               let url = URL(string: thumb) else { return nil }
         guard let (data, response) = try? await cdnSession.data(from: url),
@@ -98,14 +120,14 @@ enum LibraryImageRequest {
         if isVideo {
             return await extractPosterFrame(url: localURL, maxDimension: maxDimension)
         }
-        return await Task.detached(priority: .userInitiated) {
+        return await runIO {
             var data: Data?
             NSFileCoordinator().coordinate(readingItemAt: localURL, options: [], error: nil) { readURL in
                 data = try? Data(contentsOf: readURL)
             }
             guard let data else { return nil }
             return ImageDownsampler.downsample(data: data, maxDimension: maxDimension)
-        }.value
+        }
     }
 
     /// Extracts a poster frame from a local video file, downsampled toward
