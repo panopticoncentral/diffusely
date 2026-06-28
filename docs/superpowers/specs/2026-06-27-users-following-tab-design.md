@@ -39,7 +39,7 @@ the creators you follow and lets you jump straight to any of their content.
 **In scope**
 
 - A top-level **Users** tab (iOS) / **Users** sidebar section (macOS) listing followed
-  creators as rows (avatar + username), in the order the API returns them.
+  creators as rows (avatar + username), sorted alphabetically by username (case-insensitive).
 - Tapping a row opens that creator's existing `UserContentView`.
 - Resolving follow IDs to display profiles: cache-first from `PersistedAuthor`, lazy
   fetch of gaps via `user.getById`, upserting results back into the cache.
@@ -52,8 +52,8 @@ the creators you follow and lets you jump straight to any of their content.
 
 - Inline unfollow from the list (swipe / context menu). v1 is view-only; unfollow happens
   in `UserContentView`, which already has the button.
-- Alphabetical or any non-API sort. Preserve API order so rows render immediately without
-  waiting on resolution.
+- Alternate sort orders (API/follow-recency, most-recently-followed first, manual). v1
+  sorts alphabetically only.
 - User search / discovery of creators you don't already follow.
 - A grid layout. v1 is a rows list (chosen over grid).
 - Showing follower/following counts, bios, or other profile metadata in the row.
@@ -66,22 +66,31 @@ the creators you follow and lets you jump straight to any of their content.
 - **Settings access:** a gear button on the main feed header (Images/Videos), one tap from
   the default landing tab.
 - **List layout:** rows (avatar + username), not a grid.
+- **Sort order:** alphabetical by username, case-insensitive.
 - **Unfollow:** detail-screen only for v1.
 - **Resolution strategy:** cache-first + lazy resolve (Approach A below).
 
 ## Resolution strategy (the one real engineering choice)
 
-**Chosen — A: cache-first + lazy resolve.** Render one row per follow ID immediately, in
-API order. Hydrate names/avatars instantly from `PersistedAuthor`; for uncached IDs, fetch
-`user.getById` lazily as rows scroll into view (bounded concurrency), and upsert results
-back into `PersistedAuthor`. Responsive, bounded work, scales to large follow lists, and
-warms the shared cache.
+Because the list is sorted alphabetically and the follow endpoint returns **IDs only**, a
+row can't be placed until its username is known. So resolution can't be purely
+lazy-on-scroll; we resolve to sort.
+
+**Chosen — cache-first resolve, progressive sorted insertion.** Each load fetches the
+follow ID list, then resolves every ID to a profile **cache-first** from `PersistedAuthor`.
+The already-cached subset is shown sorted alphabetically immediately. Uncached IDs are
+fetched via `user.getById` with **bounded concurrency** and upserted back into
+`PersistedAuthor` (which persists across launches); each newly-resolved row is inserted
+into its sorted position as it arrives, with a small inline progress affordance while any
+remain. The first-ever load may briefly reorder as names fill in; returning loads are
+effectively instant because browsing and prior visits keep `PersistedAuthor` warm.
 
 Rejected:
-- **B: eager batch** — fetch every profile up front behind a spinner. Allows alpha sort but
-  is slow/heavy for large follow lists and has worse perceived performance.
-- **C: resolve on tap** — minimal rows with no names/avatars until tapped. Trivial but not
-  the experience we want.
+- **Eager batch behind a full-screen spinner** — resolve everything before showing any
+  rows. No reordering, but a hard wait on first load; we prefer showing cached rows
+  immediately and filling in the rest.
+- **Lazy-on-scroll with API order** — renders instantly but can't honor alphabetical sort;
+  order would be arbitrary (the follow endpoint's order is undefined).
 
 ## Components
 
@@ -100,12 +109,12 @@ Each unit has one purpose, a clear interface, and is independently testable.
 ### `FollowingStore` — new `@MainActor ObservableObject`
 
 - **Does:** the data engine behind the tab.
-  - `load()` / `refresh()`: call `getFollowingUserIds()` → `[Int]`, preserve order,
-    dedupe, build an ordered array of row view-models.
-  - Hydrate each row cache-first from `PersistedAuthor` (instant where available).
-  - Lazily resolve uncached IDs via `CivitaiService.fetchUser(id:)` with bounded
-    concurrency (small task pool), driven by row appearance; upsert resolved profiles
-    into `PersistedAuthor`.
+  - `load()` / `refresh()`: call `getFollowingUserIds()` → `[Int]`, dedupe.
+  - Hydrate cache-first from `PersistedAuthor` (instant where available).
+  - Resolve uncached IDs via `CivitaiService.fetchUser(id:)` with bounded concurrency
+    (small task pool); upsert resolved profiles into `PersistedAuthor`.
+  - Keep the published rows sorted alphabetically by username (case-insensitive),
+    inserting each resolved row into its sorted position as it arrives.
   - Expose per-row resolution state (placeholder vs resolved) and overall state
     (no-API-key, loading, empty, error, loaded).
 - **Depends on:** `CivitaiService`, `APIKeyManager`, the SwiftData `ModelContext` for
@@ -141,10 +150,10 @@ Each unit has one purpose, a clear interface, and is independently testable.
 
 1. Tab appears → `FollowingStore.load()`.
 2. No API key → render the sign-in prompt and stop.
-3. `getFollowingUserIds()` → ordered `[Int]`; build rows in that order.
-4. Each row hydrates from `PersistedAuthor` if present (immediate name/avatar).
-5. Rows without a cache hit resolve lazily via `fetchUser(id:)` on `onAppear`
-   (bounded concurrency); resolved profiles upsert into `PersistedAuthor`.
+3. `getFollowingUserIds()` → `[Int]`; dedupe.
+4. Hydrate from `PersistedAuthor` where present; show that subset sorted alphabetically.
+5. Resolve uncached IDs via `fetchUser(id:)` (bounded concurrency); upsert into
+   `PersistedAuthor` and insert each into its sorted position as it resolves.
 6. Tap a row → open `UserContentView(user:)` via the platform pattern.
 7. Pull-to-refresh → `refresh()` re-runs from step 3.
 
@@ -154,16 +163,17 @@ Each unit has one purpose, a clear interface, and is independently testable.
   / macOS app menu hint). Not treated as an error.
 - **Follow-list fetch fails:** error state with a Retry button; existing rows (if any)
   remain visible.
-- **Per-ID resolution fails:** that row falls back to a placeholder avatar and a best-effort
-  label (cached username if any, otherwise a neutral placeholder); the rest of the list is
-  unaffected. Transient failures retry on next appearance.
+- **Per-ID resolution fails:** the row falls back to a placeholder avatar and a neutral
+  label, and collates last (unknown names sort to the end); the rest of the list is
+  unaffected. Transient failures retry on next refresh.
 - **Deleted users:** hidden from the list.
 
 ## Testing
 
-- **`FollowingStore` unit tests** against a mock `CivitaiService`: order preserved from the
-  ID list; dedupe; cache-hit rows resolve without a network call; gap rows trigger exactly
-  one fetch and upsert; deleted users hidden; error state on follow-list failure.
+- **`FollowingStore` unit tests** against a mock `CivitaiService`: rows sorted
+  alphabetically (case-insensitive); dedupe; cache-hit rows resolve without a network call;
+  gap rows trigger exactly one fetch and upsert; unresolved/failed rows collate last;
+  deleted users hidden; error state on follow-list failure.
 - **Decode test** for a representative `user.getById` tRPC response → `CivitaiUser`.
 - **Build on both iOS and macOS targets** (this repo ships both; UI changes must compile on
   each).
