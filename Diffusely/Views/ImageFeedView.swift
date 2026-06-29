@@ -31,6 +31,10 @@ struct ImageFeedView: View {
     /// initial `.task` load has had a chance to run.
     @State private var hasLoadedOnce = false
 
+    #if os(iOS)
+    @State private var showingSettings = false
+    #endif
+
     private var isGridLayout: Bool {
         horizontalSizeClass == .regular
     }
@@ -67,11 +71,11 @@ struct ImageFeedView: View {
             })
         #else
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
                 Text(videos ? "Videos" : "Images")
                     .font(.largeTitle.bold())
                     .foregroundStyle(.primary)
-                    .padding(.horizontal, 20)
+                    .padding(.leading, 20)
                     .padding(.top, 8)
                     .padding(.bottom, 16)
                 Spacer()
@@ -80,10 +84,24 @@ struct ImageFeedView: View {
                     selectedPeriod: $selectedPeriod,
                     selectedSort: $selectedSort
                 )
+
+                Button {
+                    showingSettings = true
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundColor(.primary)
+                }
+                .accessibilityLabel("Settings")
+                .frame(width: 44, height: 44)
+                .padding(.trailing, 16)
             }
             .background(Color(.systemBackground))
 
             feedScroll
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
         }
         #endif
     }

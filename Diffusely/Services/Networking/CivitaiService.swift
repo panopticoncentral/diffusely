@@ -1033,6 +1033,54 @@ class CivitaiService: ObservableObject {
         }
     }
 
+    // MARK: - User Lookup
+
+    /// Resolves a single user id to a display profile via `user.getById`.
+    /// Returns nil when the user is deleted or the response carries no user
+    /// (e.g. a tRPC not-found), so callers can hide them. Throws on transport
+    /// errors or non-2xx HTTP status so callers can retry.
+    func fetchUser(id: Int) async throws -> CivitaiUser? {
+        var components = URLComponents(string: "\(accountBaseURL)/user.getById")!
+
+        let tRPCInput = [
+            "0": ["json": ["id": id]]
+        ]
+        let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+        let inputString = String(data: inputData, encoding: .utf8)!
+
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputString)
+        ]
+
+        guard let url = components.url else { throw URLError(.badURL) }
+
+        var request = URLRequest(url: url)
+        // `user.getById` is a public endpoint, so the API key is optional here
+        // (unlike `getFollowingUserIds`, which requires an authenticated account).
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, response) = try await fetchWithTimeout(request)
+        try validateStatus(response)
+
+        struct UserByIdResponse: Codable { let result: UserByIdResult }
+        struct UserByIdResult: Codable { let data: UserByIdData }
+        struct UserByIdData: Codable { let json: UserJSON }
+        struct UserJSON: Codable {
+            let id: Int
+            let username: String?
+            let image: String?
+            let deletedAt: String?
+        }
+
+        let decoded = try JSONDecoder().decode([UserByIdResponse].self, from: data)
+        guard let json = decoded.first?.result.data.json else { return nil }
+        if json.deletedAt != nil { return nil }
+        return CivitaiUser(id: json.id, username: json.username, image: json.image)
+    }
+
     // MARK: - Paginated Fetch Methods for Sync Service
 
     /// Fetches a page of images for a collection, returning the raw results

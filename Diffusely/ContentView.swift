@@ -22,6 +22,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case images = "Images"
     case videos = "Videos"
     case collections = "Collections"
+    case users = "Users"
     case library = "Library"
 
     var id: Self { self }
@@ -32,6 +33,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         case .videos: "video"
         case .collections: "square.stack.3d.up"
         case .library: "externaldrive.badge.icloud"
+        case .users: "person.2"
         }
     }
 }
@@ -76,6 +78,8 @@ struct ContentView: View {
                         CollectionsView()
                     case .library:
                         LibraryView()
+                    case .users:
+                        FollowingView()
                     }
                 }
                 .navigationDestination(item: $feedNavigator.image) { image in
@@ -129,18 +133,20 @@ struct ContentView: View {
                 .tag(2)
 
             NavigationStack {
+                FollowingView()
+            }
+                .tabItem {
+                    Image(systemName: "person.2")
+                    Text("Users")
+                }
+                .tag(3)
+
+            NavigationStack {
                 LibraryView()
             }
                 .tabItem {
                     Image(systemName: "externaldrive.badge.icloud")
                     Text("Library")
-                }
-                .tag(3)
-
-            SettingsView()
-                .tabItem {
-                    Image(systemName: "gear")
-                    Text("Settings")
                 }
                 .tag(4)
         }
