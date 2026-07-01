@@ -20,6 +20,13 @@ struct ImageDetailView: View {
     @State private var pushedUser: CivitaiUser?
     #endif
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
+    @State private var tags: [CivitaiVotableTag] = []
+    @State private var showAllTags = false
+    #if os(iOS)
+    @State private var selectedTag: CivitaiVotableTag?
+    #else
+    @State private var pushedTag: CivitaiVotableTag?
+    #endif
 
     var body: some View {
         // iOS presents this via fullScreenCover and needs its own NavigationStack
@@ -134,6 +141,19 @@ struct ImageDetailView: View {
                             } else if let genData = generationData {
                                 GenerationDataView(data: genData)
                             }
+
+                            // Tags section (hidden entirely when there are no
+                            // tags or the fetch failed).
+                            if !tags.isEmpty {
+                                Divider()
+                                TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
+                                    #if os(iOS)
+                                    selectedTag = tag
+                                    #else
+                                    pushedTag = tag
+                                    #endif
+                                }
+                            }
                         }
                         .padding()
                     }
@@ -151,12 +171,25 @@ struct ImageDetailView: View {
             .task {
                 await loadGenerationData()
             }
+            .task {
+                tags = await civitaiService.fetchVotableTags(imageId: image.id)
+            }
             .navigationDestination(item: $navigateToPost) { post in
                 PostDetailView(post: post)
             }
             #if os(macOS)
             .navigationDestination(item: $pushedUser) { user in
                 UserContentView(user: user)
+            }
+            #endif
+            #if os(macOS)
+            // Capture `image.isVideo` by value. Reading `image` directly inside the
+            // destination closure captures `self` (the whole ImageDetailView), which
+            // ties this pushed destination's identity to the entire view's state and
+            // drove an infinite SwiftUI re-evaluation → AppKit "Update Constraints in
+            // Window" loop (100% CPU beachball on macOS).
+            .navigationDestination(item: $pushedTag) { [isVideo = image.isVideo] tag in
+                TagFeedView(tagId: tag.id, tagName: tag.name, videos: isVideo)
             }
             #endif
             .sheet(isPresented: $showingCollectionPicker) {
@@ -174,6 +207,13 @@ struct ImageDetailView: View {
                 if let user = image.user {
                     UserContentView(user: user)
                 }
+            }
+            #endif
+            #if os(iOS)
+            // Capture by value (see the macOS navigationDestination above) so the
+            // closure doesn't retain `self`.
+            .fullScreenCover(item: $selectedTag) { [isVideo = image.isVideo] tag in
+                TagFeedView(tagId: tag.id, tagName: tag.name, videos: isVideo)
             }
             #endif
     }

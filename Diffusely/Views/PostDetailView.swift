@@ -15,6 +15,13 @@ struct PostDetailView: View {
     #endif
     @FocusState private var carouselFocused: Bool
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
+    @State private var tags: [CivitaiVotableTag] = []
+    @State private var showAllTags = false
+    #if os(iOS)
+    @State private var selectedTag: CivitaiVotableTag?
+    #else
+    @State private var pushedTag: CivitaiVotableTag?
+    #endif
 
     #if os(macOS)
     // Push the author's content above THIS view's stack slot (not at the
@@ -224,6 +231,19 @@ struct PostDetailView: View {
                             } else if let genData = generationData {
                                 GenerationDataView(data: genData)
                             }
+
+                            // Tags section for the current carousel image
+                            // (hidden entirely when there are no tags).
+                            if !tags.isEmpty {
+                                Divider()
+                                TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
+                                    #if os(iOS)
+                                    selectedTag = tag
+                                    #else
+                                    pushedTag = tag
+                                    #endif
+                                }
+                            }
                         }
                         .padding()
                     }
@@ -239,13 +259,18 @@ struct PostDetailView: View {
         .toolbar { macToolbar }
         #endif
         .onChange(of: currentImageIndex) { _, newIndex in
+            showAllTags = false
             Task {
                 await loadGenerationData(for: newIndex)
+            }
+            Task {
+                await loadTags(for: newIndex)
             }
         }
         .task {
             MediaCacheService.shared.preloadImages(post.safeImages)
             await loadGenerationData(for: currentImageIndex)
+            await loadTags(for: currentImageIndex)
             // Seed keyboard focus so arrow keys work without a prior click.
             // The post view fills the screen and has no competing focusables.
             carouselFocused = true
@@ -262,6 +287,18 @@ struct PostDetailView: View {
         #else
         .navigationDestination(item: $pushedUser) { user in
             UserContentView(user: user)
+        }
+        #endif
+        // Capture the media type by value — reading `currentImage` inside the
+        // destination closure would capture `self` and drive an AppKit layout
+        // loop (macOS beachball). See ImageDetailView for the same fix.
+        #if os(iOS)
+        .fullScreenCover(item: $selectedTag) { [isVideo = currentImage?.isVideo ?? false] tag in
+            TagFeedView(tagId: tag.id, tagName: tag.name, videos: isVideo)
+        }
+        #else
+        .navigationDestination(item: $pushedTag) { [isVideo = currentImage?.isVideo ?? false] tag in
+            TagFeedView(tagId: tag.id, tagName: tag.name, videos: isVideo)
         }
         #endif
     }
@@ -426,5 +463,13 @@ struct PostDetailView: View {
             // Silently fail - generation data may not be available for all images
         }
         isLoadingGenData = false
+    }
+
+    private func loadTags(for index: Int) async {
+        guard post.safeImages.indices.contains(index) else {
+            tags = []
+            return
+        }
+        tags = await civitaiService.fetchVotableTags(imageId: post.safeImages[index].id)
     }
 }

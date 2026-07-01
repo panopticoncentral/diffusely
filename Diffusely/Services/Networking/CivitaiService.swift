@@ -135,7 +135,7 @@ class CivitaiService: ObservableObject {
         nextPostCursor = nil
     }
     
-    func fetchImages(videos: Bool, limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
+    func fetchImages(videos: Bool, limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil, tags: [Int]? = nil) async {
         // Cancel any in-flight request and wait for it to fully unwind before
         // starting a new one. Cancellation is cooperative, so `isLoading` and the
         // task aren't settled the instant we call cancel(); awaiting the old task
@@ -162,6 +162,11 @@ class CivitaiService: ObservableObject {
 
                 if let collectionId = collectionId {
                     inputParams["collectionId"] = collectionId
+                } else if let tags = tags, !tags.isEmpty {
+                    // Tag-filtered feed: use the DB path (matches civitai.com's
+                    // /images?tags=). The Meilisearch index path (useIndex) does
+                    // not apply the TagsOnImageDetails join, so omit it here.
+                    inputParams["tags"] = tags
                 } else {
                     inputParams["useIndex"] = true
                     if let username = username {
@@ -230,12 +235,12 @@ class CivitaiService: ObservableObject {
         await currentTask?.value
     }
     
-    func loadMoreImages(videos: Bool, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil) async {
+    func loadMoreImages(videos: Bool, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil, tags: [Int]? = nil) async {
         // Skip if there's no next page or a load is already running. The latter
         // dedups the burst of prefetch triggers the feed fires as the user nears
         // the end, so we don't cancel-and-restart an in-flight page repeatedly.
         guard nextCursor != nil, !isLoading else { return }
-        await fetchImages(videos: videos, period: period, sort: sort, collectionId: collectionId, username: username)
+        await fetchImages(videos: videos, period: period, sort: sort, collectionId: collectionId, username: username, tags: tags)
     }
 
     func fetchPosts(limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil) async {
@@ -372,6 +377,74 @@ class CivitaiService: ObservableObject {
 
         let tRPCResponse = try JSONDecoder().decode([SingleResponse].self, from: data)
         return tRPCResponse[0].result.data.json
+    }
+
+    /// Fetches the curated tag list for an image/video via `tag.getVotableTags`.
+    /// The server denoises the list (suppressing auto-tags when better source
+    /// tags exist). We order moderation tags first, then by descending score —
+    /// matching civitai.com — and drop tags with no usable id (e.g. pending
+    /// user tags), since a feed cannot be filtered by them. Returns `[]` on any
+    /// error; tags are non-critical UI and the caller hides the section when empty.
+    func fetchVotableTags(imageId: Int) async -> [CivitaiVotableTag] {
+        do {
+            var components = URLComponents(string: "\(baseURL)/tag.getVotableTags")!
+
+            // `type: "image"` covers videos too (Civitai videos are images).
+            let inputParams: [String: Any] = [
+                "id": imageId,
+                "type": "image",
+            ]
+
+            let tRPCInput = [
+                "0": [
+                    "json": inputParams
+                ]
+            ]
+
+            let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+            let inputString = String(data: inputData, encoding: .utf8)!
+
+            components.queryItems = [
+                URLQueryItem(name: "batch", value: "1"),
+                URLQueryItem(name: "input", value: inputString)
+            ]
+
+            guard let url = components.url else {
+                throw URLError(.badURL)
+            }
+
+            var request = URLRequest(url: url)
+            if let apiKey = APIKeyManager.shared.apiKey {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+
+            let (data, response) = try await session.data(for: request)
+            try validateStatus(response)
+
+            struct TagsResponse: Codable {
+                let result: TagsResult
+            }
+            struct TagsResult: Codable {
+                let data: TagsData
+            }
+            struct TagsData: Codable {
+                let json: [CivitaiVotableTag]
+            }
+
+            let tRPCResponse = try JSONDecoder().decode([TagsResponse].self, from: data)
+            let tags = tRPCResponse[0].result.data.json
+
+            return tags
+                .filter { $0.id > 0 }
+                .sorted { lhs, rhs in
+                    let lhsMod = lhs.type == "Moderation"
+                    let rhsMod = rhs.type == "Moderation"
+                    if lhsMod != rhsMod { return lhsMod }
+                    return lhs.score > rhs.score
+                }
+        } catch {
+            return []
+        }
     }
 
     /// Fetches a single image by id via `/api/trpc/image.get`. Used by
