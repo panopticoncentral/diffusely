@@ -7,6 +7,7 @@ struct CachedVideoPlayer: View {
     let autoPlay: Bool
     let isMuted: Bool
     let onTap: (() -> Void)?
+    let showsLoadingPlaceholder: Bool
 
     @State private var state: MediaLoadingState = .idle
     @State private var isCurrentlyPlaying = false
@@ -14,35 +15,37 @@ struct CachedVideoPlayer: View {
 
     private let mediaCache = MediaCacheService.shared
 
-    init(url: String, autoPlay: Bool = true, isMuted: Bool = true, onTap: (() -> Void)? = nil) {
+    init(url: String, autoPlay: Bool = true, isMuted: Bool = true, showsLoadingPlaceholder: Bool = true, onTap: (() -> Void)? = nil) {
         self.url = url
         self.autoPlay = autoPlay
         self.isMuted = isMuted
+        self.showsLoadingPlaceholder = showsLoadingPlaceholder
         self.onTap = onTap
+    }
+
+    @ViewBuilder
+    private var loadingPlaceholder: some View {
+        if showsLoadingPlaceholder {
+            Rectangle()
+                .fill(Color.black)
+                .overlay(ProgressView().tint(.white))
+        } else {
+            Color.clear
+        }
     }
 
     var body: some View {
         Group {
             switch state {
             case .idle:
-                Rectangle()
-                    .fill(Color.black)
-                    .overlay(
-                        ProgressView()
-                            .tint(.white)
-                    )
+                loadingPlaceholder
                     .onAppear {
                         state = mediaCache.getMediaState(for: url)
                         mediaCache.loadMedia(url: url, isVideo: true)
                     }
 
             case .loading:
-                Rectangle()
-                    .fill(Color.black)
-                    .overlay(
-                        ProgressView()
-                            .tint(.white)
-                    )
+                loadingPlaceholder
 
             case .loaded(let content):
                 if let player = content.player {

@@ -209,27 +209,12 @@ struct ImageFeedItemView: View {
                 ? geometry.size.width / aspectRatio
                 : geometry.size.width
             ZStack {
-                if image.isVideo {
-                    CachedVideoPlayer(
-                        url: image.detailURL,
-                        autoPlay: true,
-                        isMuted: true
-                    )
-                    .frame(width: geometry.size.width, height: displayHeight)
-                    .clipped()
-                    .allowsHitTesting(false)
-                } else {
-                    CachedAsyncImage(url: image.detailURL)
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: displayHeight)
-                        .clipped()
-                }
-
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        openImageDetail()
-                    }
+                FeedGridMedia(
+                    image: image,
+                    width: geometry.size.width,
+                    height: displayHeight,
+                    onTap: { openImageDetail() }
+                )
 
                 // Overlays
                 VStack {
