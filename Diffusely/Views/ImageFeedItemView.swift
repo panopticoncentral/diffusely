@@ -43,6 +43,17 @@ struct ImageFeedItemView: View {
     @EnvironmentObject private var feedNavigator: FeedNavigator
     #endif
 
+    /// The width/height ratio fed into `.aspectRatio(_:contentMode:)` and frame
+    /// math for a cell. Civitai returns 0 for some media dimensions; a raw
+    /// `width / height` then yields 0, ∞, or NaN, and handing a non-finite value
+    /// to SwiftUI's layout engine trips an assertion inside `LayoutSubview.place`
+    /// during lazy scroll prefetch (a hard crash on macOS 26). Always finite and
+    /// positive, falling back to square (1) when a dimension is missing.
+    static func displayAspectRatio(width: Int, height: Int) -> CGFloat {
+        guard width > 0, height > 0 else { return 1 }
+        return CGFloat(width) / CGFloat(height)
+    }
+
     private func openImageDetail() {
         if let onSelectImage = onSelectImage {
             onSelectImage()
@@ -191,7 +202,7 @@ struct ImageFeedItemView: View {
 
     @ViewBuilder
     private var gridContent: some View {
-        let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+        let aspectRatio = Self.displayAspectRatio(width: image.width, height: image.height)
         let displayRatio: CGFloat = preserveAspectRatio ? aspectRatio : 1
         GeometryReader { geometry in
             let displayHeight = preserveAspectRatio
@@ -281,7 +292,7 @@ struct ImageFeedItemView: View {
 
         ZStack(alignment: .topTrailing) {
             if image.isVideo {
-                let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+                let aspectRatio = Self.displayAspectRatio(width: image.width, height: image.height)
                 GeometryReader { geometry in
                     ZStack {
                         CachedVideoPlayer(
