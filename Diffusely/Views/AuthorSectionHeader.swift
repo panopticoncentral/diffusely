@@ -18,27 +18,7 @@ struct AuthorSectionHeader: View {
             // affordance (see ImageDetailView).
             Button(action: onSelectAuthor ?? onToggleCollapse) {
                 HStack(spacing: 12) {
-                    if let imageURL = author.image, let url = URL(string: imageURL) {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                            case .failure:
-                                placeholderAvatar
-                            case .empty:
-                                ProgressView()
-                                    .frame(width: 40, height: 40)
-                            @unknown default:
-                                placeholderAvatar
-                            }
-                        }
-                        .frame(width: 40, height: 40)
-                        .clipShape(Circle())
-                    } else {
-                        placeholderAvatar
-                    }
+                    AvatarImage(urlString: author.image, size: 40)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(author.username ?? "Unknown Artist")
@@ -77,16 +57,5 @@ struct AuthorSectionHeader: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color(.secondarySystemBackground))
-    }
-
-    @ViewBuilder
-    private var placeholderAvatar: some View {
-        Circle()
-            .fill(Color.gray.opacity(0.3))
-            .frame(width: 40, height: 40)
-            .overlay(
-                Image(systemName: "person.fill")
-                    .foregroundColor(.gray)
-            )
     }
 }

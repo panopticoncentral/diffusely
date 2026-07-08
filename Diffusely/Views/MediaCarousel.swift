@@ -127,7 +127,7 @@ struct MediaCarousel<CellMenu: View>: View {
                         // the window on macOS) so it's visible without
                         // scrolling. Capsule with a material backing keeps the
                         // dots legible over any image content beneath them.
-                        pageIndicator
+                        pageIndicator { scroll(to: $0, using: scrollProxy) }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                             .background(.thinMaterial, in: Capsule())
@@ -159,7 +159,7 @@ struct MediaCarousel<CellMenu: View>: View {
             // idealHeight so there's room). On macOS the carousel claims the
             // full window height, so the dots float as an overlay above.
             #if os(iOS)
-            pageIndicator
+            pageIndicator { index in withAnimation { currentIndex = index } }
                 .padding(.vertical, 12)
             #endif
         }
@@ -170,15 +170,24 @@ struct MediaCarousel<CellMenu: View>: View {
         }
     }
 
-    /// Row of small dots showing which image is currently visible.
+    /// Row of small dots showing which image is currently visible. Tapping a dot
+    /// jumps to that page via `select`. The per-dot buttons stay hidden from
+    /// VoiceOver (`children: .ignore`), which keeps the single adjustable element.
     @ViewBuilder
-    private var pageIndicator: some View {
+    private func pageIndicator(select: @escaping (Int) -> Void) -> some View {
         if images.count > 1 {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 ForEach(0..<images.count, id: \.self) { index in
-                    Circle()
-                        .fill(currentIndex == index ? Color.primary : Color.primary.opacity(0.3))
-                        .frame(width: 6, height: 6)
+                    Button {
+                        select(index)
+                    } label: {
+                        Circle()
+                            .fill(currentIndex == index ? Color.primary : Color.primary.opacity(0.3))
+                            .frame(width: 6, height: 6)
+                            .frame(width: 14, height: 14)   // comfortable hit target
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .accessibilityElement(children: .ignore)

@@ -14,13 +14,10 @@ struct CollectionSortMenu: View {
             .pickerStyle(.inline)
             .labelsHidden()
         } label: {
-            #if os(macOS)
+            // Hosted in a toolbar on both platforms, which sizes the label
+            // natively (and scales with Dynamic Type) — matching FeedFilterMenu,
+            // unlike the old fixed 24pt iOS glyph.
             Label("Sort", systemImage: "arrow.up.arrow.down.circle")
-            #else
-            Image(systemName: "arrow.up.arrow.down.circle")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundColor(.primary)
-            #endif
         }
         .accessibilityLabel("Sort")
     }

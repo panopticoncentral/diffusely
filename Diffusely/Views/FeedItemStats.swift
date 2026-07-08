@@ -1,16 +1,6 @@
 import SwiftUI
 
 struct FeedItemStats: View {
-    private func formatCount(_ count: Int) -> String {
-        if count >= 1000000 {
-            return String(format: "%.1fM", Double(count) / 1000000)
-        } else if count >= 1000 {
-            return String(format: "%.1fK", Double(count) / 1000)
-        } else {
-            return "\(count)"
-        }
-    }
-
     let likeCount: Int
     let heartCount: Int
     let laughCount: Int
@@ -44,7 +34,7 @@ struct FeedItemStats: View {
                 Image(systemName: icon)
                     .font(.caption)
                     .foregroundColor(color)
-                Text(formatCount(count))
+                Text(count.formatted(.number.notation(.compactName)))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

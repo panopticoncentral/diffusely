@@ -35,7 +35,7 @@ struct SyncProgressView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
-                Text("Syncing... \(progress.itemsFetched) items")
+                Text("Syncing… \(progress.itemsFetched) items")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

@@ -194,6 +194,18 @@ struct ImageFeedItemView: View {
                     onTap: { openImageDetail() }
                 )
 
+                // Legibility scrim behind the bottom username overlay — the plain
+                // text shadow washes out over light/busy images. Non-interactive
+                // so taps still reach the media beneath.
+                if showsUsername, image.user?.username != nil {
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.5)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
+                }
+
                 // Overlays
                 VStack {
                     HStack {

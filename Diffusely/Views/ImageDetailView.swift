@@ -285,49 +285,25 @@ struct GenerationDataView: View {
                     CopyablePromptView(label: "Negative Prompt", text: negativePrompt)
                 }
 
-                HStack(spacing: 16) {
+                // Adaptive grid instead of a single HStack: four params (a long
+                // sampler name especially) overflowed the row on narrow iPhones.
+                // The grid wraps to as many rows as needed.
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 88), alignment: .topLeading)],
+                    alignment: .leading,
+                    spacing: 12
+                ) {
                     if let steps = meta.steps {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Steps")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text("\(steps)")
-                                .font(.caption)
-                                .foregroundColor(.primary)
-                        }
+                        metaField("Steps", "\(steps)")
                     }
-
                     if let cfgScale = meta.cfgScale {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("CFG Scale")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text(String(format: "%.1f", cfgScale))
-                                .font(.caption)
-                                .foregroundColor(.primary)
-                        }
+                        metaField("CFG Scale", String(format: "%.1f", cfgScale))
                     }
-
                     if let sampler = meta.sampler {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Sampler")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text(sampler)
-                                .font(.caption)
-                                .foregroundColor(.primary)
-                        }
+                        metaField("Sampler", sampler)
                     }
-
                     if let seed = meta.seed {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Seed")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text("\(seed)")
-                                .font(.caption)
-                                .foregroundColor(.primary)
-                        }
+                        metaField("Seed", "\(seed)")
                     }
                 }
             }
@@ -361,6 +337,20 @@ struct GenerationDataView: View {
             }
         }
     }
+
+    /// A labeled generation-parameter value. Values are text-selectable so the
+    /// seed (and the rest) can be copied out.
+    private func metaField(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.caption)
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+        }
+    }
 }
 
 /// Displays a labeled prompt value with a button to copy it to the clipboard.
@@ -369,6 +359,14 @@ struct CopyablePromptView: View {
     let text: String
 
     @State private var copied = false
+    @State private var expanded = false
+
+    /// Prompts collapse to this many lines until expanded.
+    private let collapsedLineLimit = 6
+    /// Only offer "Show more" for prompts long enough to actually clip at the
+    /// line limit. Character-count heuristic (prompts are dense comma-separated
+    /// tag lists), which avoids a fragile truncation measurement.
+    private var isLong: Bool { text.count > 280 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -396,6 +394,14 @@ struct CopyablePromptView: View {
                 .font(.caption)
                 .foregroundColor(.primary)
                 .textSelection(.enabled)
+                .lineLimit(expanded ? nil : collapsedLineLimit)
+            if isLong {
+                Button(expanded ? "Show less" : "Show more") {
+                    withAnimation { expanded.toggle() }
+                }
+                .font(.caption2)
+                .buttonStyle(.borderless)
+            }
         }
     }
 }

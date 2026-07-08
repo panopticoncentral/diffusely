@@ -49,7 +49,7 @@ struct CachedVideoPlayer: View {
 
             case .loaded(let content):
                 if let player = content.player {
-                    VideoPlayer(player: player)
+                    let video = VideoPlayer(player: player)
                     .onAppear {
                         player.isMuted = isMuted
                         if autoPlay && !isCurrentlyPlaying {
@@ -77,8 +77,12 @@ struct CachedVideoPlayer: View {
                             loopObserver = nil
                         }
                     }
-                    .onTapGesture {
-                        onTap?()
+                    // Only attach the tap gesture when a handler exists — an
+                    // always-on gesture swallows taps meant for views beneath.
+                    if let onTap {
+                        video.onTapGesture(perform: onTap)
+                    } else {
+                        video
                     }
                 }
 

@@ -225,9 +225,15 @@ struct ImageFeedView: View {
                 .foregroundStyle(.secondary)
             Text(videos ? "No Videos" : "No Images")
                 .font(.headline)
+            #if os(macOS)
+            Text("Try a different time period, or press ⌘R to refresh.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #else
             Text("Try a different time period or pull to refresh.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #endif
         }
         .frame(maxWidth: .infinity)
         .padding()

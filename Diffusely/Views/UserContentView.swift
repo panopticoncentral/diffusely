@@ -223,27 +223,7 @@ struct UserContentView: View {
     /// the macOS toolbar's principal slot (22).
     @ViewBuilder
     private func avatarImage(size: CGFloat) -> some View {
-        if let imageURL = user.image, let url = URL(string: imageURL) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                case .failure:
-                    placeholderAvatar(size: size)
-                case .empty:
-                    ProgressView()
-                        .frame(width: size, height: size)
-                @unknown default:
-                    placeholderAvatar(size: size)
-                }
-            }
-            .frame(width: size, height: size)
-            .clipShape(Circle())
-        } else {
-            placeholderAvatar(size: size)
-        }
+        AvatarImage(urlString: user.image, size: size)
     }
 
     @ViewBuilder
@@ -275,18 +255,6 @@ struct UserContentView: View {
         .disabled(isFollowLoading)
         .padding(.horizontal, 16)
         .padding(.bottom, 4)
-    }
-
-    @ViewBuilder
-    private func placeholderAvatar(size: CGFloat) -> some View {
-        Circle()
-            .fill(Color.gray.opacity(0.3))
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: "person.fill")
-                    .foregroundColor(.gray)
-                    .font(.system(size: size * 0.44))
-            )
     }
 
     /// Toolbar shared by both platforms: avatar + name in the principal slot,

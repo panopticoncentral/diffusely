@@ -139,30 +139,6 @@ private struct FollowedUserRowView: View {
 
     @ViewBuilder
     private var avatar: some View {
-        if let imageURL = user.image, let url = URL(string: imageURL) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().aspectRatio(contentMode: .fill)
-                case .failure:
-                    placeholderAvatar
-                case .empty:
-                    ProgressView()
-                @unknown default:
-                    placeholderAvatar
-                }
-            }
-            .frame(width: 40, height: 40)
-            .clipShape(Circle())
-        } else {
-            placeholderAvatar
-        }
-    }
-
-    private var placeholderAvatar: some View {
-        Circle()
-            .fill(Color.gray.opacity(0.3))
-            .frame(width: 40, height: 40)
-            .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
+        AvatarImage(urlString: user.image, size: 40)
     }
 }
