@@ -27,6 +27,7 @@ struct ImageFeedItemView: View {
     // collection → image → user → post deepen the stack and back walks them
     // one at a time — on both platforms.
     @EnvironmentObject private var router: NavigationRouter
+    @Environment(\.zoomTransitionNamespace) private var zoomNamespace
 
     /// The width/height ratio fed into `.aspectRatio(_:contentMode:)` and frame
     /// math for a cell. Civitai returns 0 for some media dimensions; a raw
@@ -208,6 +209,8 @@ struct ImageFeedItemView: View {
         }
         .aspectRatio(displayRatio, contentMode: .fit)
         .clipShape(preserveAspectRatio ? AnyShape(RoundedRectangle(cornerRadius: 8)) : AnyShape(Rectangle()))
+        // Origin of the iOS zoom push into the image detail view.
+        .zoomTransitionSource(id: "image-\(image.id)", in: zoomNamespace)
     }
 
     @ViewBuilder
@@ -263,6 +266,8 @@ struct ImageFeedItemView: View {
             ellipsisMenu
                 .padding(8)
         }
+        // Origin of the iOS zoom push into the image detail view (list mode).
+        .zoomTransitionSource(id: "image-\(image.id)", in: zoomNamespace)
 
         FeedItemStats(
             likeCount: image.stats?.likeCountAllTime ?? 0,

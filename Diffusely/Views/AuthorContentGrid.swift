@@ -48,6 +48,7 @@ struct PostThumbnailView: View {
     @State private var showingCollectionPicker = false
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
     @EnvironmentObject private var router: NavigationRouter
+    @Environment(\.zoomTransitionNamespace) private var zoomNamespace
 
     @ViewBuilder
     var body: some View {
@@ -97,6 +98,8 @@ struct PostThumbnailView: View {
         .onTapGesture {
             router.push(.post(post))
         }
+        // Origin of the iOS zoom push into the post detail view.
+        .zoomTransitionSource(id: "post-\(post.id)", in: zoomNamespace)
         .sheet(isPresented: $showingCollectionPicker) {
             ManageCollectionsSheet(target: .post(post)) {
                 showingCollectionPicker = false
