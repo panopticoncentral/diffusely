@@ -48,6 +48,13 @@ struct ImageFeedView: View {
     @State private var showingSettings = false
     #endif
 
+    #if os(macOS)
+    /// Roaming keyboard focus over the feed (index into `civitaiService.images`).
+    /// Linear next/prev — the masonry fills column-major, so there's no clean 2-D.
+    @State private var focusedIndex: Int?
+    @EnvironmentObject private var router: NavigationRouter
+    #endif
+
     private var isGridLayout: Bool {
         horizontalSizeClass == .regular
     }
@@ -110,32 +117,45 @@ struct ImageFeedView: View {
     }
 
     private var feedScroll: some View {
-        ScrollView {
-            feedContent
+        ScrollViewReader { proxy in
+            ScrollView {
+                feedContent
 
-            if civitaiService.isLoading {
-                ProgressView()
-                    .padding()
-            }
+                if civitaiService.isLoading {
+                    ProgressView()
+                        .padding()
+                }
 
-            if let error = civitaiService.error {
-                errorState(error)
-            } else if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
-                emptyState
+                if let error = civitaiService.error {
+                    errorState(error)
+                } else if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
+                    emptyState
+                }
             }
-        }
-        .refreshable {
-            await refreshImages()
-        }
-        .task {
-            if civitaiService.images.isEmpty {
-                await loadImages()
+            .refreshable {
+                await refreshImages()
             }
-            hasLoadedOnce = true
+            .task {
+                if civitaiService.images.isEmpty {
+                    await loadImages()
+                }
+                hasLoadedOnce = true
+            }
+            .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
+            .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
+            .onChange(of: domainManager.domain) { _, _ in Task { await refreshImages() } }
+            #if os(macOS)
+            // Arrow keys move a focus ring through the feed; Return opens the
+            // focused image (same paged detail as a click).
+            .gridKeyboardNavigation(
+                count: civitaiService.images.count,
+                columns: 1,
+                focusedIndex: $focusedIndex,
+                onActivate: { openFeedItem($0) }
+            )
+            .onChange(of: focusedIndex) { scrollFeedItemIntoView(using: proxy) }
+            #endif
         }
-        .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
-        .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
-        .onChange(of: domainManager.domain) { _, _ in Task { await refreshImages() } }
     }
 
     @ViewBuilder
@@ -150,7 +170,8 @@ struct ImageFeedView: View {
                 isGridMode: true,
                 preserveAspectRatio: true,
                 feedImages: civitaiService.images,
-                showsContextMenu: true   // macOS: native right-click verbs on feed cells
+                showsContextMenu: true,   // macOS: native right-click verbs on feed cells
+                keyboardFocused: image.id == focusedFeedImageID
             )
                 .onAppear { maybeLoadMore(for: image) }
         }
@@ -225,6 +246,26 @@ struct ImageFeedView: View {
             Task { await loadMoreImages() }
         }
     }
+
+    #if os(macOS)
+    /// id of the keyboard-focused feed cell, for its ring.
+    private var focusedFeedImageID: Int? {
+        guard let focusedIndex, civitaiService.images.indices.contains(focusedIndex) else { return nil }
+        return civitaiService.images[focusedIndex].id
+    }
+
+    /// Return opens the focused image with the same paged detail a click gives.
+    private func openFeedItem(_ index: Int) {
+        let images = civitaiService.images
+        guard images.indices.contains(index) else { return }
+        router.push(.browse(images: images, index: index))
+    }
+
+    private func scrollFeedItemIntoView(using proxy: ScrollViewProxy) {
+        guard let focusedIndex, civitaiService.images.indices.contains(focusedIndex) else { return }
+        proxy.scrollTo(civitaiService.images[focusedIndex].id, anchor: .center)
+    }
+    #endif
 
     private func loadImages() async {
         await civitaiService.fetchImages(videos: videos, period: selectedPeriod, sort: selectedSort)

@@ -53,6 +53,18 @@ struct LibraryView: View {
     @State private var showingSortAssistant = false
     @State private var editDescriptionRequest: AlbumDescriptionSheet.Request?
 
+    #if os(macOS)
+    /// Roaming keyboard focus over the flat photo grid: index into `orderedItems`.
+    @State private var focusedIndex: Int?
+    /// Set by Return to push the focused item's detail view.
+    @State private var keyboardOpenItem: FocusedItem?
+    /// Files handed to `QuickLookHost` when Space previews the focused item.
+    @State private var quickLookURLs: [URL] = []
+    @State private var quickLookPresented = false
+
+    struct FocusedItem: Identifiable, Hashable { let id: Int }
+    #endif
+
     /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
     /// with this (instead of `.sheet(isPresented:)` + a separate `[Int]?`) makes
     /// SwiftUI rebuild the sheet's content — and re-read the current
@@ -370,42 +382,63 @@ struct LibraryView: View {
         if content.isEmpty {
             emptyState
         } else {
-            ScrollView {
-                if store.iCloudStatus == .unavailable {
-                    localOnlyBanner
-                }
-                if backfillRemaining > 0 {
-                    backfillBanner(remaining: backfillRemaining)
-                }
-                switch content {
-                case .flat(let items):
-                    LazyVGrid(columns: gridColumns, spacing: gridSpacing) {
-                        cells(for: items)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if store.iCloudStatus == .unavailable {
+                        localOnlyBanner
                     }
-                    .padding(.horizontal, gridEdgePadding)
-                    footer(items: items)
-                case .grouped(let groups):
-                    LazyVGrid(columns: gridColumns, spacing: gridSpacing, pinnedViews: [.sectionHeaders]) {
-                        ForEach(groups) { group in
-                            Section {
-                                if expandedGroups.contains(group.id) {
-                                    cells(for: group.items)
+                    if backfillRemaining > 0 {
+                        backfillBanner(remaining: backfillRemaining)
+                    }
+                    switch content {
+                    case .flat(let items):
+                        LazyVGrid(columns: gridColumns, spacing: gridSpacing) {
+                            cells(for: items)
+                        }
+                        .padding(.horizontal, gridEdgePadding)
+                        footer(items: items)
+                    case .grouped(let groups):
+                        LazyVGrid(columns: gridColumns, spacing: gridSpacing, pinnedViews: [.sectionHeaders]) {
+                            ForEach(groups) { group in
+                                Section {
+                                    if expandedGroups.contains(group.id) {
+                                        cells(for: group.items)
+                                    }
+                                } header: {
+                                    header(for: group)
                                 }
-                            } header: {
-                                header(for: group)
                             }
                         }
+                        .padding(.horizontal, gridEdgePadding)
+                        footer(items: groups.flatMap { $0.items })
                     }
-                    .padding(.horizontal, gridEdgePadding)
-                    footer(items: groups.flatMap { $0.items })
                 }
-            }
-            .background(Color(.systemBackground))
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.width
-            } action: { width in
-                let count = max(2, Int(width / targetTileWidth))
-                if count != gridColumnCount { gridColumnCount = count }
+                .background(Color(.systemBackground))
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: { width in
+                    let count = max(2, Int(width / targetTileWidth))
+                    if count != gridColumnCount { gridColumnCount = count }
+                }
+                #if os(macOS)
+                // Keyboard focus + Return-to-open + Space→Quick Look, but only
+                // for the flat grid: collapsed sections make a roaming focus
+                // index unreliable, so grouped sorts keep click-only behavior.
+                .gridKeyboardNavigation(
+                    count: navigableItemCount(for: content),
+                    columns: gridColumnCount,
+                    focusedIndex: $focusedIndex,
+                    onActivate: { openFocusedItem($0) },
+                    onQuickLook: { quickLookFocusedItem($0) }
+                )
+                .onChange(of: focusedIndex) { scrollFocusedItemIntoView(using: proxy) }
+                .navigationDestination(item: $keyboardOpenItem) { LibraryDetailView(itemID: $0.id) }
+                .background {
+                    QuickLookHost(urls: quickLookURLs, isPresented: $quickLookPresented) {
+                        quickLookPresented = false
+                    }
+                }
+                #endif
             }
         }
     }
@@ -452,6 +485,12 @@ struct LibraryView: View {
                 // omitted: there, drag start (long-press) fights the cell's
                 // context menu and navigation gestures.
                 .draggable(LibraryItemTransfer(itemID: item.itemID, mediaFileName: item.mediaFileName))
+                .overlay {
+                    if item.itemID == focusedItemID {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.accentColor, lineWidth: 3)
+                    }
+                }
                 #endif
             }
         }
@@ -604,6 +643,53 @@ struct LibraryView: View {
     private var allSelected: Bool {
         !allItemIDs.isEmpty && selectedIDs.count == allItemIDs.count
     }
+
+    #if os(macOS)
+    // MARK: - Keyboard focus (flat grid)
+
+    /// The photo items in display order — the sequence keyboard focus walks.
+    private var orderedItems: [PersistedLibraryItem] {
+        switch content {
+        case .flat(let items): return items
+        case .grouped(let groups): return groups.flatMap { $0.items }
+        }
+    }
+
+    /// itemID of the keyboard-focused cell, for drawing its ring. Nil unless a
+    /// flat grid is showing and an index is set.
+    private var focusedItemID: Int? {
+        guard let focusedIndex, orderedItems.indices.contains(focusedIndex) else { return nil }
+        return orderedItems[focusedIndex].itemID
+    }
+
+    /// Keyboard nav is offered only for the flat grid (see `content(for:)`).
+    private func navigableItemCount(for content: LibrarySortService.LibrarySortedContent) -> Int {
+        if case .flat(let items) = content { return items.count }
+        return 0
+    }
+
+    private func openFocusedItem(_ index: Int) {
+        guard orderedItems.indices.contains(index) else { return }
+        keyboardOpenItem = FocusedItem(id: orderedItems[index].itemID)
+    }
+
+    private func quickLookFocusedItem(_ index: Int) {
+        guard orderedItems.indices.contains(index) else { return }
+        let item = orderedItems[index]
+        Task {
+            guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+            quickLookURLs = [dir.appendingPathComponent(item.mediaFileName)]
+            quickLookPresented = true
+        }
+    }
+
+    /// Keeps the focused cell on screen. Scrolls by the ForEach identity
+    /// (the model id), which is what `ScrollView` tracks.
+    private func scrollFocusedItemIntoView(using proxy: ScrollViewProxy) {
+        guard let focusedIndex, orderedItems.indices.contains(focusedIndex) else { return }
+        proxy.scrollTo(orderedItems[focusedIndex].id, anchor: .center)
+    }
+    #endif
 
     private func toggleSelection(_ itemID: Int) {
         if selectedIDs.contains(itemID) {

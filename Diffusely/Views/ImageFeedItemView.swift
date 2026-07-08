@@ -16,6 +16,9 @@ struct ImageFeedItemView: View {
     /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
     /// false elsewhere keeps the main feed and author profile context-menu-free.
     var showsContextMenu: Bool = false
+    /// Draws the keyboard-focus ring (macOS grid arrow-key navigation). Set by
+    /// the feed grid only; defaults off everywhere else.
+    var keyboardFocused: Bool = false
 
     @State private var isLoadingPost = false
     @State private var postLoadError = false
@@ -228,6 +231,12 @@ struct ImageFeedItemView: View {
         }
         .aspectRatio(displayRatio, contentMode: .fit)
         .clipShape(preserveAspectRatio ? AnyShape(RoundedRectangle(cornerRadius: 8)) : AnyShape(Rectangle()))
+        .overlay {
+            if keyboardFocused {
+                RoundedRectangle(cornerRadius: preserveAspectRatio ? 8 : 0)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+            }
+        }
         // Origin of the iOS zoom push into the image detail view.
         .zoomTransitionSource(id: "image-\(image.id)", in: zoomNamespace)
     }
