@@ -25,13 +25,17 @@ struct LibraryAsyncImage: View {
             if let image = state.image {
                 image.resizable().aspectRatio(contentMode: contentMode)
             } else if state.error != nil {
-                placeholder.overlay(
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.title3)
-                        .foregroundColor(.orange)
-                )
-                .contentShape(Rectangle())
-                .onTapGesture { reloadToken += 1 }
+                Button {
+                    reloadToken += 1
+                } label: {
+                    placeholder.overlay(
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.title3)
+                            .foregroundColor(.orange)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Failed to load. \(CachedAsyncImage.retryPrompt).")
             } else {
                 placeholder
             }

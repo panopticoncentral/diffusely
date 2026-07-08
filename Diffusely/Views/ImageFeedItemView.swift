@@ -35,6 +35,7 @@ struct ImageFeedItemView: View {
     @State private var showingUserContent = false
     #endif
     @State private var isLoadingPost = false
+    @State private var postLoadError = false
     @State private var showingCollectionPicker = false
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
@@ -114,6 +115,11 @@ struct ImageFeedItemView: View {
                 showingCollectionPicker = false
             }
         }
+        .alert("Couldn't Open Post", isPresented: $postLoadError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The post couldn't be loaded. Please check your connection and try again.")
+        }
         #if os(iOS)
         .fullScreenCover(isPresented: $showingUserContent) {
             if let user = image.user {
@@ -139,7 +145,7 @@ struct ImageFeedItemView: View {
                 #endif
             }
         } catch {
-            // Silently fail
+            postLoadError = true
         }
         isLoadingPost = false
     }

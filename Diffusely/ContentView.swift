@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 #if os(macOS)
 @MainActor
@@ -37,11 +38,23 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         }
     }
 }
+
+/// Lets the ⌘1–⌘5 Go-menu commands (in `DiffuselyApp`) switch the frontmost
+/// window's sidebar selection, the way Mail/Music/Finder bind number keys to
+/// their top-level sections.
+struct SidebarSelectionKey: FocusedValueKey {
+    typealias Value = Binding<SidebarSection?>
+}
+
+extension FocusedValues {
+    var sidebarSelection: Binding<SidebarSection?>? {
+        get { self[SidebarSelectionKey.self] }
+        set { self[SidebarSelectionKey.self] = newValue }
+    }
+}
 #endif
 
 struct ContentView: View {
-    @State private var selectedPeriod: Timeframe = .week
-    @State private var selectedSort: FeedSort = .mostReactions
     @EnvironmentObject private var libraryStore: LibraryStore
 
     #if os(macOS)
@@ -63,17 +76,9 @@ struct ContentView: View {
                 ZStack {
                     switch selectedSection ?? .images {
                     case .images:
-                        ImageFeedView(
-                            selectedPeriod: $selectedPeriod,
-                            selectedSort: $selectedSort,
-                            videos: false
-                        )
+                        ImageFeedView(videos: false)
                     case .videos:
-                        ImageFeedView(
-                            selectedPeriod: $selectedPeriod,
-                            selectedSort: $selectedSort,
-                            videos: true
-                        )
+                        ImageFeedView(videos: true)
                     case .collections:
                         CollectionsView()
                     case .library:
@@ -97,28 +102,21 @@ struct ContentView: View {
             }
         }
         .environmentObject(feedNavigator)
+        .focusedSceneValue(\.sidebarSelection, $selectedSection)
         // Start the library subsystem at launch so its iCloud/totals state is
         // accurate no matter which section opens first (not only the Library
         // tab). start() is idempotent, so LibraryView's own call is a no-op.
         .task { libraryStore.start() }
         #else
         TabView(selection: $selectedTab) {
-            ImageFeedView(
-                selectedPeriod: $selectedPeriod,
-                selectedSort: $selectedSort,
-                videos: false
-            )
+            ImageFeedView(videos: false)
                 .tabItem {
                     Image(systemName: "photo.on.rectangle.angled")
                     Text("Images")
                 }
                 .tag(0)
 
-            ImageFeedView(
-                selectedPeriod: $selectedPeriod,
-                selectedSort: $selectedSort,
-                videos: true
-            )
+            ImageFeedView(videos: true)
                 .tabItem {
                     Image(systemName: "video")
                     Text("Videos")
@@ -156,5 +154,17 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    let container = try! ModelContainer(
+        for: PersistedCollection.self,
+        PersistedAuthor.self,
+        PersistedImage.self,
+        PersistedPost.self,
+        PersistedPostImage.self,
+        PersistedLibraryItem.self,
+        PersistedAlbum.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
+    return ContentView()
+        .environmentObject(LibraryStore(modelContainer: container))
+        .modelContainer(container)
 }

@@ -18,21 +18,34 @@ struct CachedAsyncImage: View {
         self.expectedAspectRatio = expectedAspectRatio
     }
 
+    /// Verb matches the platform's pointer idiom.
+    static var retryPrompt: String {
+        #if os(macOS)
+        "Click to retry"
+        #else
+        "Tap to retry"
+        #endif
+    }
+
     var body: some View {
         LazyImage(request: request) { state in
             if let image = state.image {
                 image.resizable()
             } else if state.error != nil {
-                placeholder(showsProgress: false).overlay(
-                    VStack {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 30))
-                            .foregroundColor(.orange)
-                        Text("Tap to retry").font(.caption)
-                    }
-                )
-                .contentShape(Rectangle())
-                .onTapGesture { reloadToken += 1 }
+                Button {
+                    reloadToken += 1
+                } label: {
+                    placeholder(showsProgress: false).overlay(
+                        VStack {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 30))
+                                .foregroundColor(.orange)
+                            Text(Self.retryPrompt).font(.caption)
+                        }
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Failed to load. \(Self.retryPrompt).")
             } else {
                 placeholder()
             }

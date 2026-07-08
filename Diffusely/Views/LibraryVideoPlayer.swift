@@ -50,21 +50,24 @@ struct LibraryVideoPlayer: View {
                         }
                     }
             case .failed:
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay(
-                        VStack(spacing: 6) {
-                            Image(systemName: "play.slash")
-                                .font(.title2)
-                                .foregroundColor(.orange)
-                            Text("Tap to retry")
-                                .font(.caption)
-                                .foregroundColor(.orange)
-                        }
-                    )
-                    .onTapGesture {
-                        loader.load(itemID: itemID, mediaFileName: mediaFileName)
-                    }
+                Button {
+                    loader.load(itemID: itemID, mediaFileName: mediaFileName)
+                } label: {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.3))
+                        .overlay(
+                            VStack(spacing: 6) {
+                                Image(systemName: "play.slash")
+                                    .font(.title2)
+                                    .foregroundColor(.orange)
+                                Text(CachedAsyncImage.retryPrompt)
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Video failed to load. \(CachedAsyncImage.retryPrompt).")
             }
         }
         .onAppear {

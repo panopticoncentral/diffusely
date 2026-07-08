@@ -38,7 +38,18 @@ struct FeedGridMedia: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
+        // Grid cells are a tap-gesture ZStack (a Button would fight the .onHover
+        // preview above), so VoiceOver / Full Keyboard Access would otherwise see
+        // an unlabeled raster with no activate action. Expose one labeled,
+        // button-like element with an activate action wired to the open action.
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAction { onTap() }
         #if os(macOS)
+        // Signal the cell is clickable — without this the only hover affordance
+        // is the video preview, so image cells give no pointer feedback at all.
+        .pointerStyle(.link)
         .animation(.easeInOut(duration: 0.2), value: hover.isArmed)
         .onHover { hovering in
             guard image.isVideo else { return }
@@ -46,6 +57,14 @@ struct FeedGridMedia: View {
         }
         .onDisappear { hover.cancel() }
         #endif
+    }
+
+    private var accessibilityLabel: String {
+        let kind = image.isVideo ? "Video" : "Image"
+        if let username = image.user?.username {
+            return "\(kind) by \(username)"
+        }
+        return kind
     }
 
     /// The URL to load as the still poster for a cell. For BOTH images and

@@ -83,21 +83,24 @@ struct CachedVideoPlayer: View {
                 }
 
             case .failed:
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay(
-                        VStack {
-                            Image(systemName: "play.slash")
-                                .font(.system(size: 30))
-                                .foregroundColor(.orange)
-                            Text("Tap to retry")
-                                .font(.caption)
-                                .foregroundColor(.orange)
-                        }
-                    )
-                    .onTapGesture {
-                        mediaCache.retryFailed(url: url, isVideo: true)
-                    }
+                Button {
+                    mediaCache.retryFailed(url: url, isVideo: true)
+                } label: {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.3))
+                        .overlay(
+                            VStack {
+                                Image(systemName: "play.slash")
+                                    .font(.system(size: 30))
+                                    .foregroundColor(.orange)
+                                Text(CachedAsyncImage.retryPrompt)
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Video failed to load. \(CachedAsyncImage.retryPrompt).")
             }
         }
         .onReceive(mediaCache.getStatePublisher(for: url)) { newState in

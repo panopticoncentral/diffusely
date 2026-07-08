@@ -6,39 +6,22 @@ struct FeedFilterMenu: View {
 
     var body: some View {
         Menu {
-            Menu("Time") {
+            // Inline Pickers render the platform-native selected-item checkmark
+            // (a hand-rolled `Button` + trailing `Image("checkmark")` doesn't, and
+            // menus ignore the `Spacer()` that was meant to right-align it).
+            Picker("Time", selection: $selectedPeriod) {
                 ForEach(Timeframe.allCases) { period in
-                    Button {
-                        selectedPeriod = period
-                    } label: {
-                        HStack {
-                            Text(period.displayName)
-                            if period == selectedPeriod {
-                                Spacer()
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                    }
+                    Text(period.displayName).tag(period)
                 }
             }
+            .pickerStyle(.inline)
 
-            Menu("Sort") {
+            Picker("Sort", selection: $selectedSort) {
                 ForEach(FeedSort.allCases) { sort in
-                    Button {
-                        selectedSort = sort
-                    } label: {
-                        HStack {
-                            Text(sort.displayName)
-                            Spacer()
-                            if sort == selectedSort {
-                                Image(systemName: "checkmark")
-                            } else {
-                                Image(systemName: sort.icon)
-                            }
-                        }
-                    }
+                    Label(sort.displayName, systemImage: sort.icon).tag(sort)
                 }
             }
+            .pickerStyle(.inline)
         } label: {
             #if os(macOS)
             Label("Filter", systemImage: "line.3.horizontal.decrease.circle")

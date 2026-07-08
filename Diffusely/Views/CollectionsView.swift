@@ -1,6 +1,28 @@
 import SwiftUI
 import SwiftData
 
+#if os(macOS)
+/// Lets the File ▸ New Collection menu command (in `DiffuselyApp`) trigger the
+/// create-collection sheet in whichever `CollectionsView` is frontmost, so ⌘N
+/// belongs to a real menu item instead of colliding with the WindowGroup's
+/// default File ▸ New Window.
+struct NewCollectionAction {
+    let perform: () -> Void
+    func callAsFunction() { perform() }
+}
+
+struct NewCollectionActionKey: FocusedValueKey {
+    typealias Value = NewCollectionAction
+}
+
+extension FocusedValues {
+    var newCollection: NewCollectionAction? {
+        get { self[NewCollectionActionKey.self] }
+        set { self[NewCollectionActionKey.self] = newValue }
+    }
+}
+#endif
+
 struct CollectionsView: View {
     @StateObject private var apiKeyManager = APIKeyManager.shared
     @StateObject private var civitaiService = CivitaiService()
@@ -161,7 +183,14 @@ struct CollectionsView: View {
                         } label: {
                             Label("New Collection", systemImage: "plus")
                         }
-                        .keyboardShortcut("n")  // ⌘N
+                        #if os(iOS)
+                        // On macOS ⌘N is owned by the File ▸ New Collection menu
+                        // command (see DiffuselyApp) so it doesn't collide with
+                        // the WindowGroup's default New Window. iOS has no such
+                        // conflict, so the toolbar button keeps the shortcut for
+                        // hardware-keyboard users.
+                        .keyboardShortcut("n")
+                        #endif
                         .help("Create a new collection")
                     }
                     ToolbarItem(placement: .primaryAction) {
@@ -170,7 +199,13 @@ struct CollectionsView: View {
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
-                        .keyboardShortcut("r")  // ⌘R; also reachable on Mac where pull-to-refresh doesn't exist
+                        #if os(iOS)
+                        // On macOS ⌘R is owned by the View ▸ Refresh menu command
+                        // (driven by the refreshFeed focused value below) so the
+                        // menu item is enabled instead of appearing disabled while
+                        // a hidden toolbar shortcut secretly handles the key.
+                        .keyboardShortcut("r")
+                        #endif
                         .disabled(listSyncService?.isSyncing == true)
                         .help("Refresh collections")
                     }
@@ -178,7 +213,26 @@ struct CollectionsView: View {
             }
             .refreshable {
                 forceListRefresh()
+                // Keep the pull-to-refresh spinner up until the sync actually
+                // finishes. `forceListRefresh()` kicks off an async sync and
+                // returns immediately, so awaiting here is what ties the
+                // spinner's lifetime to the real work.
+                while listSyncService?.isSyncing == true {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
             }
+            #if os(macOS)
+            .focusedSceneValue(
+                \.newCollection,
+                apiKeyManager.hasAPIKey ? NewCollectionAction { showingCreateCollection = true } : nil
+            )
+            // Publish Refresh so the single View ▸ Refresh menu item (⌘R) works
+            // while Collections is frontmost, instead of the item showing disabled.
+            .focusedSceneValue(
+                \.refreshFeed,
+                apiKeyManager.hasAPIKey ? RefreshFeedAction { forceListRefresh() } : nil
+            )
+            #endif
             .task {
                 guard apiKeyManager.hasAPIKey else { return }
                 initializeServices()

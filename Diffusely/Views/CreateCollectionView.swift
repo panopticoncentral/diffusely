@@ -52,6 +52,7 @@ struct CreateCollectionView: View {
     @State private var privacy: Privacy = .private
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @FocusState private var nameFocused: Bool
 
     private let nameLimit = 30
     private let descriptionLimit = 300
@@ -72,13 +73,19 @@ struct CreateCollectionView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("Name") {
+                Section {
                     TextField("Collection name", text: $name)
+                        .focused($nameFocused)
                         .onChange(of: name) { _, newValue in
                             if newValue.count > nameLimit {
                                 name = String(newValue.prefix(nameLimit))
                             }
                         }
+                } header: {
+                    Text("Name")
+                } footer: {
+                    Text("\(name.count)/\(nameLimit)")
+                        .foregroundStyle(name.count >= nameLimit ? .orange : .secondary)
                 }
 
                 Section("Description") {
@@ -99,6 +106,11 @@ struct CreateCollectionView: View {
                     }
                 }
             }
+            // Grouped form style matches the app's other sheets (AlbumDescription,
+            // Sort Assistant); the default macOS style doesn't scroll and
+            // right-aligns fields, so the multiline description looked off.
+            .formStyle(.grouped)
+            .onAppear { nameFocused = true }
             .navigationTitle("New Collection")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

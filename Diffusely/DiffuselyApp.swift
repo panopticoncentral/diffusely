@@ -15,6 +15,41 @@ struct FeedCommands: Commands {
         }
     }
 }
+
+/// Replaces the WindowGroup's default File ▸ New Window (which otherwise owns
+/// ⌘N) with a File ▸ New Collection item. It's enabled only when a
+/// `CollectionsView` is frontmost and publishing the `newCollection` action.
+struct CollectionCommands: Commands {
+    @FocusedValue(\.newCollection) private var newCollection
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Collection") {
+                newCollection?()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(newCollection == nil)
+        }
+    }
+}
+
+/// ⌘1–⌘5 to jump to each sidebar section, matching Mail/Music/Finder.
+struct NavigationCommands: Commands {
+    @FocusedValue(\.sidebarSelection) private var selection
+
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            Divider()
+            ForEach(Array(SidebarSection.allCases.enumerated()), id: \.element) { index, section in
+                Button(section.rawValue) {
+                    selection?.wrappedValue = section
+                }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .disabled(selection == nil)
+            }
+        }
+    }
+}
 #endif
 
 @main
@@ -109,6 +144,8 @@ struct DiffuselyApp: App {
         .defaultSize(width: 1000, height: 700)
         .commands {
             FeedCommands()
+            CollectionCommands()
+            NavigationCommands()
         }
         #endif
 

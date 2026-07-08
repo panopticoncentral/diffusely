@@ -6,7 +6,6 @@ struct PostDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var civitaiService = CivitaiService()
     @State private var currentImageIndex = 0
-    @State private var dragOffset: CGFloat = 0
     @State private var generationData: GenerationData?
     @State private var isLoadingGenData = false
     @State private var showingCollectionPicker = false
@@ -257,20 +256,25 @@ struct PostDetailView: View {
         #endif
         #if os(macOS)
         .toolbar { macToolbar }
+        // Esc pops the pushed post view, matching the toolbar back button.
+        .onExitCommand { dismiss() }
         #endif
-        .onChange(of: currentImageIndex) { _, newIndex in
+        .onChange(of: currentImageIndex) {
             showAllTags = false
-            Task {
-                await loadGenerationData(for: newIndex)
-            }
-            Task {
-                await loadTags(for: newIndex)
-            }
+        }
+        // Load per-image metadata with `.task(id:)` so swiping/arrow-keying
+        // quickly through pages cancels the in-flight request for the previous
+        // index. Two uncancelled Tasks per page-change used to race: whichever
+        // response landed last won, so the prompt/params/tags under image N
+        // could actually describe image N-1.
+        .task(id: currentImageIndex) {
+            await loadGenerationData(for: currentImageIndex)
+        }
+        .task(id: currentImageIndex) {
+            await loadTags(for: currentImageIndex)
         }
         .task {
             MediaCacheService.shared.preloadImages(post.safeImages)
-            await loadGenerationData(for: currentImageIndex)
-            await loadTags(for: currentImageIndex)
             // Seed keyboard focus so arrow keys work without a prior click.
             // The post view fills the screen and has no competing focusables.
             carouselFocused = true
@@ -325,22 +329,27 @@ struct PostDetailView: View {
     @ViewBuilder
     private func mediaCell(for image: CivitaiImage, maxHeight: CGFloat, isActive: Bool = true) -> some View {
         let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-        if image.isVideo {
-            CachedVideoPlayer(
-                url: image.detailURL,
-                autoPlay: isActive,
-                isMuted: false
-            )
-            .aspectRatio(aspectRatio, contentMode: .fit)
-            .detailMediaFrame(maxHeight: maxHeight)
-        } else {
-            CachedAsyncImage(
-                url: image.detailURL,
-                expectedAspectRatio: aspectRatio
-            )
-            .aspectRatio(contentMode: .fit)
-            .detailMediaFrame(maxHeight: maxHeight)
+        Group {
+            if image.isVideo {
+                // Muted autoplay: opening a post shouldn't blast audio; the
+                // VideoPlayer transport exposes an unmute control.
+                CachedVideoPlayer(
+                    url: image.detailURL,
+                    autoPlay: isActive,
+                    isMuted: true
+                )
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .detailMediaFrame(maxHeight: maxHeight)
+            } else {
+                CachedAsyncImage(
+                    url: image.detailURL,
+                    expectedAspectRatio: aspectRatio
+                )
+                .aspectRatio(contentMode: .fit)
+                .detailMediaFrame(maxHeight: maxHeight)
+            }
         }
+        .contextMenu { postMenuContent }
     }
 
     /// Clamped step through the post's images. Used by left/right arrow keys on
@@ -403,6 +412,12 @@ struct PostDetailView: View {
                 Label("Manage Collections", systemImage: "folder")
             }
         }
+
+        if let shareURL = URL(string: "https://civitai.com/posts/\(post.id)") {
+            ShareLink(item: shareURL) {
+                Label("Share Post", systemImage: "square.and.arrow.up")
+            }
+        }
     }
 
     #if os(macOS)
@@ -456,12 +471,18 @@ struct PostDetailView: View {
         guard index < post.safeImages.count else { return }
         let imageId = post.safeImages[index].id
 
+        // Clear stale data so a failed/empty fetch for the new image doesn't
+        // leave the previous image's params on screen.
+        generationData = nil
         isLoadingGenData = true
         do {
-            generationData = try await civitaiService.fetchGenerationData(imageId: imageId)
+            let data = try await civitaiService.fetchGenerationData(imageId: imageId)
+            guard !Task.isCancelled else { return }
+            generationData = data
         } catch {
             // Silently fail - generation data may not be available for all images
         }
+        guard !Task.isCancelled else { return }
         isLoadingGenData = false
     }
 
@@ -470,6 +491,8 @@ struct PostDetailView: View {
             tags = []
             return
         }
-        tags = await civitaiService.fetchVotableTags(imageId: post.safeImages[index].id)
+        let fetched = await civitaiService.fetchVotableTags(imageId: post.safeImages[index].id)
+        guard !Task.isCancelled else { return }
+        tags = fetched
     }
 }

@@ -7,21 +7,14 @@ struct LibrarySortMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(LibrarySort.allCases) { sort in
-                Button {
-                    selectedSort = sort
-                } label: {
-                    HStack {
-                        Text(sort.displayName)
-                        Spacer()
-                        if sort == selectedSort {
-                            Image(systemName: "checkmark")
-                        } else {
-                            Image(systemName: sort.icon)
-                        }
-                    }
+            // Inline Picker gives the native selected-item checkmark for free.
+            Picker("Sort", selection: $selectedSort) {
+                ForEach(LibrarySort.allCases) { sort in
+                    Label(sort.displayName, systemImage: sort.icon).tag(sort)
                 }
             }
+            .pickerStyle(.inline)
+            .labelsHidden()
         } label: {
             #if os(macOS)
             Label("Sort", systemImage: "arrow.up.arrow.down.circle")

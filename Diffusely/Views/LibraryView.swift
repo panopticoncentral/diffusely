@@ -15,6 +15,12 @@ struct LibraryView: View {
     /// Title for scoped instances (album name, or "Not in any Album").
     var scopeTitle: String? = nil
 
+    /// Live album name for scoped instances. Seeded from `scopeTitle` on first
+    /// appearance and updated in place after a rename, so the navigation title
+    /// and the rename alert's seed text reflect the new name immediately instead
+    /// of the value captured when the view was pushed.
+    @State private var currentScopeTitle: String? = nil
+
     @State private var sortService: LibrarySortService?
     @State private var backfillService: LibraryDateBackfillService?
     @State private var backfillRemaining: Int = 0
@@ -58,6 +64,19 @@ struct LibraryView: View {
         let membershipCounts: [UUID: Int]
     }
 
+    /// The album name to display: the live, rename-aware value once seeded,
+    /// falling back to the value passed in at push time.
+    private var resolvedScopeTitle: String? {
+        currentScopeTitle ?? scopeTitle
+    }
+
+    /// True when the top-level Library is showing the Albums browser rather than
+    /// the photo grid. Selection, sorting, and bulk actions all operate on the
+    /// (hidden) photo content, so they must not be offered here.
+    private var isAlbumsMode: Bool {
+        filter == .all && mode == .albums
+    }
+
     @ViewBuilder
     private var rootContent: some View {
         if filter == .all && mode == .albums {
@@ -73,7 +92,7 @@ struct LibraryView: View {
 
     var body: some View {
         rootContent
-            .navigationTitle(isSelecting ? selectionTitle : (scopeTitle ?? "Library"))
+            .navigationTitle(isSelecting ? selectionTitle : (resolvedScopeTitle ?? "Library"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -120,6 +139,7 @@ struct LibraryView: View {
                         Task {
                             await store.albumService.renameAlbum(albumID, to: name)
                             store.notifyAlbumsChanged()
+                            currentScopeTitle = name
                         }
                     }
                 }
@@ -160,6 +180,7 @@ struct LibraryView: View {
                     .environmentObject(store)
             }
             .task {
+                if currentScopeTitle == nil { currentScopeTitle = scopeTitle }
                 store.start()
                 initializeServices()
                 reloadContent()
@@ -235,12 +256,18 @@ struct LibraryView: View {
                     .frame(maxWidth: 220)
                 }
             }
-            ToolbarItem(placement: .primaryAction) {
-                LibrarySortMenu(selectedSort: $selectedSort)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Select") { isSelecting = true }
-                    .disabled(content.isEmpty)
+            // Sort and Select act on the photo grid. In Albums mode that grid is
+            // hidden behind the album browser, so offering them there would sort
+            // or select content the user can't see (Select All + delete could
+            // then bulk-remove invisible items). Hide both in Albums mode.
+            if !isAlbumsMode {
+                ToolbarItem(placement: .primaryAction) {
+                    LibrarySortMenu(selectedSort: $selectedSort)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Select") { isSelecting = true }
+                        .disabled(content.isEmpty)
+                }
             }
             if filter == .all && mode == .albums {
                 ToolbarItem(placement: .primaryAction) {
@@ -255,7 +282,7 @@ struct LibraryView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button {
-                            renameAlbumText = scopeTitle ?? ""
+                            renameAlbumText = resolvedScopeTitle ?? ""
                             showingRenameAlbum = true
                         } label: { Label("Rename Album", systemImage: "pencil") }
                         Button {

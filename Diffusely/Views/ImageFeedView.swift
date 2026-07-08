@@ -21,11 +21,24 @@ extension FocusedValues {
 struct ImageFeedView: View {
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var domainManager = DomainManager.shared
-    @Binding var selectedPeriod: Timeframe
-    @Binding var selectedSort: FeedSort
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     let videos: Bool
+
+    // Each media type owns its own filter, persisted per type. Images and Videos
+    // previously shared one period/sort pair, so changing the sort in one silently
+    // changed (and refreshed) the other; the state was also non-persistent, so it
+    // reset to Week / Most Reactions every launch. Keying @AppStorage by media
+    // type fixes both.
+    @AppStorage private var selectedPeriod: Timeframe
+    @AppStorage private var selectedSort: FeedSort
+
+    init(videos: Bool) {
+        self.videos = videos
+        let suffix = videos ? "videos" : "images"
+        _selectedPeriod = AppStorage(wrappedValue: .week, "feedPeriod.\(suffix)")
+        _selectedSort = AppStorage(wrappedValue: .mostReactions, "feedSort.\(suffix)")
+    }
 
     /// Gates the empty state so it can't flash on the first frame, before the
     /// initial `.task` load has had a chance to run.

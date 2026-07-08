@@ -105,21 +105,28 @@ struct ImageDetailView: View {
                 GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        // Image/Video
-                        if image.isVideo {
-                            let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                            CachedVideoPlayer(
-                                url: image.detailURL,
-                                autoPlay: true,
-                                isMuted: false
-                            )
-                            .aspectRatio(aspectRatio, contentMode: .fit)
-                            .detailMediaFrame(maxHeight: proxy.size.height)
-                        } else {
-                            CachedAsyncImage(url: image.detailURL)
-                                .aspectRatio(contentMode: .fit)
+                        // Image/Video. Videos autoplay muted so opening a
+                        // detail view doesn't blast audio (the VideoPlayer
+                        // transport exposes an unmute control). Right-click /
+                        // long-press mirrors the toolbar/menu actions on the
+                        // media itself, which is the most natural target.
+                        Group {
+                            if image.isVideo {
+                                let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
+                                CachedVideoPlayer(
+                                    url: image.detailURL,
+                                    autoPlay: true,
+                                    isMuted: true
+                                )
+                                .aspectRatio(aspectRatio, contentMode: .fit)
                                 .detailMediaFrame(maxHeight: proxy.size.height)
+                            } else {
+                                CachedAsyncImage(url: image.detailURL)
+                                    .aspectRatio(contentMode: .fit)
+                                    .detailMediaFrame(maxHeight: proxy.size.height)
+                            }
                         }
+                        .contextMenu { detailMenuContent }
 
                         // Stats section
                         VStack(alignment: .leading, spacing: 12) {
@@ -167,6 +174,8 @@ struct ImageDetailView: View {
             #endif
             #if os(macOS)
             .toolbar { macToolbar }
+            // Esc pops the pushed detail view, matching the toolbar back button.
+            .onExitCommand { dismiss() }
             #endif
             .task {
                 await loadGenerationData()
@@ -251,6 +260,12 @@ struct ImageDetailView: View {
                 showingCollectionPicker = true
             }) {
                 Label("Manage Collections", systemImage: "folder")
+            }
+        }
+
+        if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
+            ShareLink(item: shareURL) {
+                Label("Share", systemImage: "square.and.arrow.up")
             }
         }
     }

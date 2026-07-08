@@ -14,6 +14,9 @@ struct TagFeedView: View {
     @ObservedObject private var domainManager = DomainManager.shared
     @State private var selectedPeriod: Timeframe = .week
     @State private var selectedSort: FeedSort = .mostCollected
+    /// Gates the empty state so "No images found" can't flash on the first frame
+    /// before the initial `.task` load runs.
+    @State private var hasLoadedOnce = false
 
     #if os(macOS)
     // Route inner pushes through THIS view's stack slot rather than the
@@ -48,7 +51,7 @@ struct TagFeedView: View {
                         .padding()
                 }
 
-                if civitaiService.images.isEmpty && !civitaiService.isLoading {
+                if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
                     emptyStateView
                 }
             }
@@ -63,6 +66,7 @@ struct TagFeedView: View {
         #endif
         .task {
             await loadContent()
+            hasLoadedOnce = true
         }
         .onChange(of: selectedPeriod) { _, _ in
             Task { await refreshContent() }

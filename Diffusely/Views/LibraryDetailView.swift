@@ -78,8 +78,17 @@ struct LibraryDetailView: View {
                     }
                     .padding()
                 } else if loadFailed {
-                    ContentUnavailableView("Couldn't load item", systemImage: "exclamationmark.triangle")
-                        .padding(.top, 80)
+                    ContentUnavailableView {
+                        Label("Couldn't load item", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text("The item couldn't be loaded from iCloud.")
+                    } actions: {
+                        Button("Retry") {
+                            loadFailed = false
+                            Task { await loadMetadata() }
+                        }
+                    }
+                    .padding(.top, 80)
                 } else {
                     ProgressView().padding(.top, 80)
                 }
@@ -88,6 +97,10 @@ struct LibraryDetailView: View {
         .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
+        #if os(macOS)
+        // Esc pops the pushed library item, matching the toolbar back button.
+        .onExitCommand { dismiss() }
         #endif
         .toolbar {
             ToolbarItem(placement: .destructiveAction) {
@@ -121,24 +134,41 @@ struct LibraryDetailView: View {
     @ViewBuilder
     private func media(for metadata: LibraryItemMetadata, maxHeight: CGFloat) -> some View {
         let aspect = metadata.height > 0 ? CGFloat(metadata.width) / CGFloat(metadata.height) : 1
-        if metadata.mediaType == .video {
-            LibraryVideoPlayer(
-                itemID: metadata.itemID,
-                mediaFileName: metadata.mediaFileName,
-                autoPlay: true,
-                isMuted: false
-            )
-            .aspectRatio(aspect, contentMode: .fit)
-            .detailMediaFrame(maxHeight: maxHeight)
-        } else {
-            LibraryAsyncImage(
-                itemID: metadata.itemID,
-                mediaFileName: metadata.mediaFileName,
-                maxDimension: 2048,
-                contentMode: .fit
-            )
-            .aspectRatio(aspect, contentMode: .fit)
-            .detailMediaFrame(maxHeight: maxHeight)
+        Group {
+            if metadata.mediaType == .video {
+                // Muted autoplay: opening a saved item shouldn't blast audio;
+                // the VideoPlayer transport exposes an unmute control.
+                LibraryVideoPlayer(
+                    itemID: metadata.itemID,
+                    mediaFileName: metadata.mediaFileName,
+                    autoPlay: true,
+                    isMuted: true
+                )
+                .aspectRatio(aspect, contentMode: .fit)
+                .detailMediaFrame(maxHeight: maxHeight)
+            } else {
+                LibraryAsyncImage(
+                    itemID: metadata.itemID,
+                    mediaFileName: metadata.mediaFileName,
+                    maxDimension: 2048,
+                    contentMode: .fit
+                )
+                .aspectRatio(aspect, contentMode: .fit)
+                .detailMediaFrame(maxHeight: maxHeight)
+            }
+        }
+        .contextMenu {
+            if let url = URL(string: metadata.canonicalPageURL) {
+                Button {
+                    openURL(url)
+                } label: { Label("Open on Civitai", systemImage: "safari") }
+                Button {
+                    Clipboard.copy(metadata.canonicalPageURL)
+                } label: { Label("Copy Link", systemImage: "doc.on.doc") }
+                ShareLink(item: url) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
         }
     }
 

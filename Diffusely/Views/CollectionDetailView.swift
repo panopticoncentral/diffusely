@@ -37,9 +37,6 @@ struct CollectionDetailView: View {
         ZStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header with title and controls
-                    headerView
-
                     // Sync progress indicator
                     if let syncService = syncService,
                        let progress = syncService.syncProgress[collection.id] {
@@ -55,14 +52,8 @@ struct CollectionDetailView: View {
                         sortedContent
                     }
                 }
-                #if os(iOS)
-                .padding(.top, 100)
-                #endif
                 .padding(.bottom, 20)
             }
-            #if os(iOS)
-            .ignoresSafeArea(.all)
-            #endif
             .refreshable {
                 await refreshContent()
             }
@@ -94,8 +85,13 @@ struct CollectionDetailView: View {
                 syncService?.cancelSync(for: collection.id)
             }
         }
+        // A real navigation title replaces the former in-content 34pt header.
+        // On iOS that header was faked under an inline bar with a hard-coded
+        // 100pt top padding that broke in landscape / Stage Manager; on macOS
+        // the window/toolbar title was left blank. `.navigationTitle` fixes both.
+        .navigationTitle(collection.name)
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         .fullScreenCover(item: $userForContent) { user in
             UserContentView(user: user)
         }
@@ -121,7 +117,11 @@ struct CollectionDetailView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .keyboardShortcut("r")  // ⌘R; also reachable on Mac where pull-to-refresh doesn't exist
+                #if os(iOS)
+                // macOS ⌘R is owned by the View ▸ Refresh menu command (driven
+                // by the refreshFeed focused value below).
+                .keyboardShortcut("r")
+                #endif
                 .disabled(syncService?.isSyncing(collectionId: collection.id) == true)
                 .help("Refresh collection contents")
             }
@@ -129,23 +129,12 @@ struct CollectionDetailView: View {
                 CollectionSortMenu(selectedSort: $selectedSort)
             }
         }
+        #if os(macOS)
+        .focusedSceneValue(\.refreshFeed, RefreshFeedAction { Task { await refreshContent() } })
+        #endif
     }
 
     // MARK: - Views
-
-    @ViewBuilder
-    private var headerView: some View {
-        HStack {
-            Text(collection.name)
-                .font(.system(size: 34, weight: .bold, design: .default))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .padding(.bottom, 16)
-            Spacer()
-        }
-        .background(Color(.systemBackground))
-    }
 
     @ViewBuilder
     private var loadingView: some View {
@@ -376,6 +365,13 @@ struct CollectionDetailView: View {
         persistenceService.updateSyncCursor(for: collection.id, cursor: nil)
 
         startSync(force: true)
+
+        // Keep the pull-to-refresh spinner up until the sync completes.
+        // `startSync` kicks off an async sync and returns immediately, so
+        // awaiting here is what ties the spinner's lifetime to the real work.
+        while syncService?.isSyncing(collectionId: collection.id) == true {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
     }
 
     private func toggleAuthor(_ authorId: Int) {
