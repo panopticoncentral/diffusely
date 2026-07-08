@@ -28,6 +28,30 @@ struct MediaCarousel<CellMenu: View>: View {
 
     @FocusState private var focused: Bool
 
+    #if os(macOS)
+    /// The page to open on (the tapped cell). The paged `ScrollView` starts
+    /// pinned at offset 0, so we scroll here on appear; captured once at init
+    /// because the read-back below rewrites `currentIndex`.
+    @State private var initialIndex: Int
+    /// Gate: ignore the read-back until the initial jump to `initialIndex`
+    /// lands, otherwise the first offset-0 geometry read clobbers `currentIndex`
+    /// back to 0 (the reported bug — opening any non-first image showed image 1).
+    @State private var didInitialScroll = false
+
+    init(
+        images: [CivitaiImage],
+        currentIndex: Binding<Int>,
+        maxHeight: CGFloat,
+        @ViewBuilder cellMenu: @escaping () -> CellMenu
+    ) {
+        self.images = images
+        self._currentIndex = currentIndex
+        self.maxHeight = maxHeight
+        self.cellMenu = cellMenu
+        self._initialIndex = State(initialValue: currentIndex.wrappedValue)
+    }
+    #endif
+
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geometry in
@@ -68,7 +92,35 @@ struct MediaCarousel<CellMenu: View>: View {
                         return Int((geo.contentOffset.x / pageWidth).rounded())
                     } action: { _, page in
                         let clamped = max(0, min(page, images.count - 1))
+                        guard didInitialScroll else {
+                            // Start tracking only once we've settled on the
+                            // tapped image; earlier offset-0 reads are the
+                            // pre-scroll layout and must not overwrite it.
+                            if clamped == initialIndex { didInitialScroll = true }
+                            return
+                        }
                         if clamped != currentIndex { currentIndex = clamped }
+                    }
+                    .onAppear {
+                        // Jump to the tapped image. Non-animated so it's in place
+                        // before the first paint.
+                        if initialIndex > 0 {
+                            scrollProxy.scrollTo(initialIndex, anchor: .center)
+                        }
+                    }
+                    .task {
+                        // Re-assert the position a tick later in case the eager
+                        // layout wasn't measured on the first onAppear attempt.
+                        if initialIndex > 0 && !didInitialScroll {
+                            try? await Task.sleep(for: .milliseconds(50))
+                            if !didInitialScroll {
+                                scrollProxy.scrollTo(initialIndex, anchor: .center)
+                            }
+                        }
+                        // Safety net: enable swipe/scroll tracking even if the
+                        // settle read never matched (e.g. a fractional offset).
+                        try? await Task.sleep(for: .milliseconds(400))
+                        didInitialScroll = true
                     }
                     .overlay(alignment: .bottom) {
                         // Float the indicator inside the carousel (which fills
