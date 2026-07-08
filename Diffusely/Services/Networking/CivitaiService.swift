@@ -58,6 +58,16 @@ fileprivate enum Cursor: Codable {
 /// of treating a rate-limit or transient server error as fatal.
 struct HTTPStatusError: Error, Equatable {
     let statusCode: Int
+    /// The server's own message when one could be extracted (e.g. from a tRPC
+    /// error envelope, like the API gate's "Please use the public API
+    /// instead…"). Display-only — retry classification keys on `statusCode`.
+    var message: String? = nil
+}
+
+extension HTTPStatusError: LocalizedError {
+    var errorDescription: String? {
+        message ?? "Civitai returned an error (HTTP \(statusCode))."
+    }
 }
 
 @MainActor
@@ -96,6 +106,29 @@ class CivitaiService: ObservableObject {
         }
     }
 
+    /// Builds a request for the Civitai tRPC API with the headers the server
+    /// now requires. As of 2026-07 production gates the internal tRPC API by
+    /// Origin/Referer host (401 "Please use the public API instead" without
+    /// one) — and, despite the source suggesting Bearer auth exempts a
+    /// request, a valid API key alone is still rejected. A same-host Referer
+    /// is what the allowlist accepts, so every request carries one.
+    private func makeRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        if let host = url.host {
+            request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
+        }
+        return request
+    }
+
+    /// The message inside a tRPC error envelope: `[{"error":{"json":{"message":…}}}]`.
+    private struct TRPCErrorEnvelope: Decodable {
+        struct ErrorBody: Decodable {
+            struct ErrorJSON: Decodable { let message: String? }
+            let json: ErrorJSON
+        }
+        let error: ErrorBody
+    }
+
     /// Fetches `request` with a hard wall-clock deadline. The session's
     /// `timeoutIntervalForRequest` does NOT fire while a request is waiting for a
     /// connection/stream (e.g. a stalled HTTP/3/QUIC handshake), so a wedged
@@ -122,6 +155,14 @@ class CivitaiService: ObservableObject {
             // First child to finish wins; the other is cancelled by the defer.
             guard let result = try await group.next() else {
                 throw URLError(.timedOut)
+            }
+            // Surface HTTP-level rejections (e.g. the tRPC API gate's 401) with
+            // the server's own message instead of letting callers decode the
+            // error envelope as feed data and fail cryptically.
+            if let http = result.1 as? HTTPURLResponse, http.statusCode >= 400 {
+                let message = (try? JSONDecoder().decode([TRPCErrorEnvelope].self, from: result.0))?
+                    .first?.error.json.message
+                throw HTTPStatusError(statusCode: http.statusCode, message: message)
             }
             return result
         }
@@ -196,7 +237,7 @@ class CivitaiService: ObservableObject {
                     throw URLError(.badURL)
                 }
 
-                var request = URLRequest(url: url)
+                var request = makeRequest(url: url)
 
                 // Add API key if available
                 if let apiKey = APIKeyManager.shared.apiKey {
@@ -291,7 +332,7 @@ class CivitaiService: ObservableObject {
                     throw URLError(.badURL)
                 }
 
-                var request = URLRequest(url: url)
+                var request = makeRequest(url: url)
 
                 // Add API key if available
                 if let apiKey = APIKeyManager.shared.apiKey {
@@ -356,7 +397,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         if let apiKey = APIKeyManager.shared.apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -413,7 +454,7 @@ class CivitaiService: ObservableObject {
                 throw URLError(.badURL)
             }
 
-            var request = URLRequest(url: url)
+            var request = makeRequest(url: url)
             if let apiKey = APIKeyManager.shared.apiKey {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
@@ -475,7 +516,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         if let apiKey = APIKeyManager.shared.apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -523,7 +564,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         if let apiKey = APIKeyManager.shared.apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -579,7 +620,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var imageRequest = URLRequest(url: imageUrl)
+        var imageRequest = makeRequest(url: imageUrl)
         if let apiKey = APIKeyManager.shared.apiKey {
             imageRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -630,7 +671,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
 
         // Add API key if available
         if let apiKey = APIKeyManager.shared.apiKey {
@@ -720,7 +761,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
 
         // Add API key if available
         if let apiKey = APIKeyManager.shared.apiKey {
@@ -792,7 +833,7 @@ class CivitaiService: ObservableObject {
             print("Request body: \(bodyString)")
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = bodyData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -862,7 +903,7 @@ class CivitaiService: ObservableObject {
         let tRPCInput = ["0": ["json": inputParams]]
         let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = bodyData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -904,7 +945,7 @@ class CivitaiService: ObservableObject {
 
         guard let url = components.url else { throw URLError(.badURL) }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         guard let apiKey = APIKeyManager.shared.apiKey else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -947,7 +988,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
 
         // API key is required for this endpoint
         guard let apiKey = APIKeyManager.shared.apiKey else {
@@ -998,7 +1039,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
 
         guard let apiKey = APIKeyManager.shared.apiKey else {
             throw URLError(.userAuthenticationRequired)
@@ -1047,7 +1088,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
 
         guard let apiKey = APIKeyManager.shared.apiKey else {
             throw URLError(.userAuthenticationRequired)
@@ -1088,7 +1129,7 @@ class CivitaiService: ObservableObject {
 
         let bodyData = try JSONSerialization.data(withJSONObject: tRPCInput)
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = bodyData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1128,7 +1169,7 @@ class CivitaiService: ObservableObject {
 
         guard let url = components.url else { throw URLError(.badURL) }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         // `user.getById` is a public endpoint, so the API key is optional here
         // (unlike `getFollowingUserIds`, which requires an authenticated account).
         if let apiKey = APIKeyManager.shared.apiKey {
@@ -1188,7 +1229,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         if let apiKey = APIKeyManager.shared.apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -1239,7 +1280,7 @@ class CivitaiService: ObservableObject {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: url)
+        var request = makeRequest(url: url)
         if let apiKey = APIKeyManager.shared.apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -1283,7 +1324,7 @@ class CivitaiService: ObservableObject {
                 throw URLError(.badURL)
             }
 
-            var request = URLRequest(url: url)
+            var request = makeRequest(url: url)
             if let apiKey = APIKeyManager.shared.apiKey {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
@@ -1319,7 +1360,7 @@ class CivitaiService: ObservableObject {
                 throw URLError(.badURL)
             }
 
-            var request = URLRequest(url: url)
+            var request = makeRequest(url: url)
             if let apiKey = APIKeyManager.shared.apiKey {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
