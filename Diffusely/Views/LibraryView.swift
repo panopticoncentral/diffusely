@@ -106,7 +106,13 @@ struct LibraryView: View {
                 onNewAlbum: { presentAddToAlbum([]) },   // empty selection → create-only flow
                 onRenameAlbum: { beginRenameAlbum(id: $0.id, name: $0.name) },
                 onEditAlbumDescription: { presentEditDescription(albumID: $0) },
-                onDeleteAlbum: { deleteAlbumTarget = AlbumRef(id: $0.id, name: $0.name) }
+                onDeleteAlbum: { deleteAlbumTarget = AlbumRef(id: $0.id, name: $0.name) },
+                onDropItems: { itemIDs, albumID in
+                    Task {
+                        await store.albumService.addItems(itemIDs, toAlbum: albumID)
+                        store.notifyAlbumsChanged()
+                    }
+                }
             )
         } else {
             content(for: content)
@@ -441,6 +447,12 @@ struct LibraryView: View {
                         Label("Delete", systemImage: "trash")
                     }
                 }
+                #if os(macOS)
+                // Drag a saved item out to Finder / Photos / other apps. iOS is
+                // omitted: there, drag start (long-press) fights the cell's
+                // context menu and navigation gestures.
+                .draggable(LibraryItemTransfer(itemID: item.itemID, mediaFileName: item.mediaFileName))
+                #endif
             }
         }
     }

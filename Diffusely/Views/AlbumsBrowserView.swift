@@ -14,10 +14,15 @@ struct AlbumsBrowserView: View {
     var onRenameAlbum: (LibrarySortService.AlbumSummary) -> Void = { _ in }
     var onEditAlbumDescription: (UUID) -> Void = { _ in }
     var onDeleteAlbum: (LibrarySortService.AlbumSummary) -> Void = { _ in }
+    /// Called when Library items are dropped on an album tile (macOS drag).
+    var onDropItems: (_ itemIDs: [Int], _ albumID: UUID) -> Void = { _, _ in }
 
     // Top-align cells so tiles with different caption-line counts (e.g. "New Album"
     // has no count line) keep their square covers aligned across the row.
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .top)]
+
+    /// The album currently under a drag (macOS), for the drop-target highlight.
+    @State private var dropTargetAlbumID: UUID?
 
     var body: some View {
         ScrollView {
@@ -49,6 +54,25 @@ struct AlbumsBrowserView: View {
                             onDeleteAlbum(album)
                         } label: { Label("Delete Album", systemImage: "trash") }
                     }
+                    #if os(macOS)
+                    // Accept Library items dragged onto the tile. Not reachable
+                    // while Photos/Albums are exclusive modes of one window, but
+                    // wired so a future album strip/sidebar gets it for free.
+                    .dropDestination(for: LibraryItemTransfer.self) { transfers, _ in
+                        dropTargetAlbumID = nil
+                        guard !transfers.isEmpty else { return false }
+                        onDropItems(transfers.map(\.itemID), album.id)
+                        return true
+                    } isTargeted: { targeted in
+                        dropTargetAlbumID = targeted ? album.id : nil
+                    }
+                    .overlay {
+                        if dropTargetAlbumID == album.id {
+                            RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(Color.accentColor, lineWidth: 3)
+                        }
+                    }
+                    #endif
                 }
 
                 Button(action: onNewAlbum) {
