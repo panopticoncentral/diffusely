@@ -1,142 +1,72 @@
 import SwiftUI
 
 struct ImageDetailView: View {
-    let image: CivitaiImage
+    /// The feed slice being browsed. A bare `.image` route wraps a single
+    /// image; feed grids pass their whole loaded slice so next/previous
+    /// paging works from any image (swipe/arrows, like PostDetailView).
+    let images: [CivitaiImage]
 
+    @State private var currentIndex: Int
     @Environment(\.dismiss) private var dismiss
     @StateObject private var civitaiService = CivitaiService()
     @State private var generationData: GenerationData?
     @State private var isLoadingGenData = false
-    @State private var navigateToPost: CivitaiPost?
     @State private var isLoadingPost = false
     @State private var postLoadFailed = false
     @State private var showingCollectionPicker = false
-    #if os(iOS)
-    @State private var showingUserContent = false
-    #else
-    // Push the author's content above THIS view's stack slot rather than at the
-    // NavigationStack root, so back returns to the image — not to the collection
-    // list it was opened from.
-    @State private var pushedUser: CivitaiUser?
-    #endif
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
     @State private var tags: [CivitaiVotableTag] = []
     @State private var showAllTags = false
-    #if os(iOS)
-    @State private var selectedTag: CivitaiVotableTag?
-    #else
-    @State private var pushedTag: CivitaiVotableTag?
-    #endif
+    // This view is always pushed by the enclosing stack's router (on both
+    // platforms), and every drill-in — post, user, tag — pushes another Route,
+    // so back walks the chain one level at a time.
+    @EnvironmentObject private var router: NavigationRouter
 
-    var body: some View {
-        // iOS presents this via fullScreenCover and needs its own NavigationStack
-        // to host inner pushes (e.g. View Post). On Mac the view is pushed onto
-        // the parent's NavigationStack, so an inner NavigationStack here would
-        // be nested — and a nested NavigationStack on macOS clobbers the outer
-        // path when an inner-stack push is popped, so back blows past every
-        // intermediate view all the way to root. Render bare on Mac so
-        // $navigateToPost / $pushedUser attach to the outer stack and back
-        // walks the path one level at a time, like the other detail views.
-        #if os(iOS)
-        NavigationStack {
-            coreBody
-        }
-        #else
-        coreBody
-        #endif
+    init(image: CivitaiImage) {
+        self.init(images: [image], initialIndex: 0)
     }
 
-    @ViewBuilder
-    private var coreBody: some View {
+    init(images: [CivitaiImage], initialIndex: Int) {
+        self.images = images
+        _currentIndex = State(initialValue: min(max(0, initialIndex), max(0, images.count - 1)))
+    }
+
+    /// The image currently visible in the carousel. `currentIndex` is clamped
+    /// at init and by the carousel, but guard anyway since it's unconstrained
+    /// @State.
+    private var currentImage: CivitaiImage? {
+        images.indices.contains(currentIndex) ? images[currentIndex] : nil
+    }
+
+    var body: some View {
         ZStack {
             Color(.systemBackground)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                #if os(iOS)
-                // iOS-only header. On Mac the equivalent affordances (back via
-                // NavigationStack chrome, username, menu) live in `.toolbar`
-                // attached at the end of `coreBody` — having a second in-content
-                // header on top of the navigation title bar reads as a stray
-                // second toolbar.
-                HStack {
-                    Button(action: {
-                        dismiss()
-                    }) {
-                        Image(systemName: "xmark")
-                            .font(.title3)
-                            .foregroundColor(.primary)
-                            .padding()
-                    }
-                    .accessibilityLabel("Close")
-
-                    if let user = image.user, let username = user.username {
-                        Button(action: {
-                            showingUserContent = true
-                        }) {
-                            HStack(spacing: 4) {
-                                Text(username)
-                                    .font(.headline)
-                                    .foregroundColor(.primary)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    Spacer()
-
-                    Menu {
-                        detailMenuContent
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.title3)
-                            .foregroundColor(.primary)
-                            .padding()
-                    }
-                    .accessibilityLabel("More actions")
-                }
-                .background(Color(.systemBackground))
-                #endif
-
                 // Main content - scrollable
                 GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        // Image/Video. Videos autoplay muted so opening a
-                        // detail view doesn't blast audio (the VideoPlayer
-                        // transport exposes an unmute control). Right-click /
-                        // long-press mirrors the toolbar/menu actions on the
-                        // media itself, which is the most natural target.
-                        Group {
-                            if image.isVideo {
-                                let aspectRatio = CGFloat(image.width) / CGFloat(image.height)
-                                CachedVideoPlayer(
-                                    url: image.detailURL,
-                                    autoPlay: true,
-                                    isMuted: true
-                                )
-                                .aspectRatio(aspectRatio, contentMode: .fit)
-                                .detailMediaFrame(maxHeight: proxy.size.height)
-                            } else {
-                                CachedAsyncImage(url: image.detailURL)
-                                    .aspectRatio(contentMode: .fit)
-                                    .detailMediaFrame(maxHeight: proxy.size.height)
+                        if !images.isEmpty {
+                            MediaCarousel(
+                                images: images,
+                                currentIndex: $currentIndex,
+                                maxHeight: proxy.size.height
+                            ) {
+                                detailMenuContent
                             }
                         }
-                        .contextMenu { detailMenuContent }
 
                         // Stats section
                         VStack(alignment: .leading, spacing: 12) {
                             FeedItemStats(
-                                likeCount: image.stats?.likeCountAllTime ?? 0,
-                                heartCount: image.stats?.heartCountAllTime ?? 0,
-                                laughCount: image.stats?.laughCountAllTime ?? 0,
-                                cryCount: image.stats?.cryCountAllTime ?? 0,
-                                commentCount: image.stats?.commentCountAllTime ?? 0,
-                                dislikeCount: image.stats?.dislikeCountAllTime ?? 0
+                                likeCount: currentImage?.stats?.likeCountAllTime ?? 0,
+                                heartCount: currentImage?.stats?.heartCountAllTime ?? 0,
+                                laughCount: currentImage?.stats?.laughCountAllTime ?? 0,
+                                cryCount: currentImage?.stats?.cryCountAllTime ?? 0,
+                                commentCount: currentImage?.stats?.commentCountAllTime ?? 0,
+                                dislikeCount: currentImage?.stats?.dislikeCountAllTime ?? 0
                             )
 
                             Divider()
@@ -154,11 +84,11 @@ struct ImageDetailView: View {
                             if !tags.isEmpty {
                                 Divider()
                                 TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
-                                    #if os(iOS)
-                                    selectedTag = tag
-                                    #else
-                                    pushedTag = tag
-                                    #endif
+                                    router.push(.tag(
+                                        id: tag.id,
+                                        name: tag.name,
+                                        videos: currentImage?.isVideo ?? false
+                                    ))
                                 }
                             }
                         }
@@ -169,41 +99,31 @@ struct ImageDetailView: View {
                 }
                 }
             }
+            .toolbar { detailToolbar }
             #if os(iOS)
-            .navigationBarHidden(true)
+            .navigationBarTitleDisplayMode(.inline)
             #endif
             #if os(macOS)
-            .toolbar { macToolbar }
             // Esc pops the pushed detail view, matching the toolbar back button.
             .onExitCommand { dismiss() }
             #endif
-            .task {
+            .onChange(of: currentIndex) {
+                showAllTags = false
+            }
+            // Load per-image metadata with `.task(id:)` so paging quickly
+            // cancels the in-flight request for the previous index (same
+            // stale-response guard as PostDetailView).
+            .task(id: currentIndex) {
                 await loadGenerationData()
             }
-            .task {
-                tags = await civitaiService.fetchVotableTags(imageId: image.id)
+            .task(id: currentIndex) {
+                await loadTags()
             }
-            .navigationDestination(item: $navigateToPost) { post in
-                PostDetailView(post: post)
-            }
-            #if os(macOS)
-            .navigationDestination(item: $pushedUser) { user in
-                UserContentView(user: user)
-            }
-            #endif
-            #if os(macOS)
-            // Capture `image.isVideo` by value. Reading `image` directly inside the
-            // destination closure captures `self` (the whole ImageDetailView), which
-            // ties this pushed destination's identity to the entire view's state and
-            // drove an infinite SwiftUI re-evaluation → AppKit "Update Constraints in
-            // Window" loop (100% CPU beachball on macOS).
-            .navigationDestination(item: $pushedTag) { [isVideo = image.isVideo] tag in
-                TagFeedView(tagId: tag.id, tagName: tag.name, videos: isVideo)
-            }
-            #endif
             .sheet(isPresented: $showingCollectionPicker) {
-                ManageCollectionsSheet(target: .image(image)) {
-                    showingCollectionPicker = false
+                if let currentImage {
+                    ManageCollectionsSheet(target: .image(currentImage)) {
+                        showingCollectionPicker = false
+                    }
                 }
             }
             .alert("Couldn't Load Post", isPresented: $postLoadFailed) {
@@ -211,87 +131,70 @@ struct ImageDetailView: View {
             } message: {
                 Text("The post couldn't be loaded. Check your connection and try again.")
             }
-            #if os(iOS)
-            .fullScreenCover(isPresented: $showingUserContent) {
-                if let user = image.user {
-                    UserContentView(user: user)
-                }
-            }
-            #endif
-            #if os(iOS)
-            // Capture by value (see the macOS navigationDestination above) so the
-            // closure doesn't retain `self`.
-            .fullScreenCover(item: $selectedTag) { [isVideo = image.isVideo] tag in
-                TagFeedView(tagId: tag.id, tagName: tag.name, videos: isVideo)
-            }
-            #endif
     }
 
-    /// Buttons shared between the iOS in-content menu and the macOS toolbar
-    /// menu. Same actions, different chrome wrapping them. The "View User"
-    /// entry is Mac-only — on iOS the username is already a button in the
-    /// in-content header, so the menu would be redundant.
+    /// Buttons for the toolbar's ellipsis menu and the media context menu.
+    /// All actions target the image currently visible in the carousel.
     @ViewBuilder
     private var detailMenuContent: some View {
-        Button(action: {
-            librarySaveService.save(image)
-        }) {
-            Label(
-                librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
-                systemImage: "square.and.arrow.down"
-            )
-        }
-        .disabled(librarySaveService.isSaving(itemID: image.id))
-
-        if image.postId != nil {
+        if let image = currentImage {
             Button(action: {
-                Task { await loadPost() }
+                librarySaveService.save(image)
             }) {
                 Label(
-                    isLoadingPost ? "Loading Post…" : "View Post",
-                    systemImage: "photo.stack"
+                    librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
+                    systemImage: "square.and.arrow.down"
                 )
             }
-            .disabled(isLoadingPost)
-        }
+            .disabled(librarySaveService.isSaving(itemID: image.id))
 
-        if APIKeyManager.shared.hasAPIKey {
-            Button(action: {
-                showingCollectionPicker = true
-            }) {
-                Label("Manage Collections", systemImage: "folder")
+            if image.postId != nil {
+                Button(action: {
+                    Task { await loadPost() }
+                }) {
+                    Label(
+                        isLoadingPost ? "Loading Post…" : "View Post",
+                        systemImage: "photo.stack"
+                    )
+                }
+                .disabled(isLoadingPost)
             }
-        }
 
-        if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
-            ShareLink(item: shareURL) {
-                Label("Share", systemImage: "square.and.arrow.up")
+            if APIKeyManager.shared.hasAPIKey {
+                Button(action: {
+                    showingCollectionPicker = true
+                }) {
+                    Label("Manage Collections", systemImage: "folder")
+                }
+            }
+
+            if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
+                ShareLink(item: shareURL) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
             }
         }
     }
 
-    #if os(macOS)
-    /// macOS toolbar — replaces the in-content header used on iOS. Extracted
-    /// to a @ToolbarContentBuilder so the SwiftUI type-checker doesn't time
-    /// out on the already-long `coreBody` modifier chain.
+    /// Toolbar shared by both platforms (this view is pushed on both now).
+    /// Extracted to a @ToolbarContentBuilder so the SwiftUI type-checker
+    /// doesn't time out on the already-long body modifier chain.
     ///
     /// The username sits in `.principal` as a Menu so it's both visible and
-    /// obviously clickable (Menu renders a small disclosure chevron natively
-    /// on Mac). We deliberately do NOT set `.navigationTitle` here — when
-    /// both are set on macOS, both render and the username appears twice.
+    /// obviously clickable. We deliberately do NOT set `.navigationTitle` —
+    /// when both are set on macOS, both render and the username appears twice.
     @ToolbarContentBuilder
-    private var macToolbar: some ToolbarContent {
-        if let user = image.user, let username = user.username {
+    private var detailToolbar: some ToolbarContent {
+        if let user = currentImage?.user, let username = user.username {
             ToolbarItem(placement: .principal) {
                 Menu {
-                    Button(action: { pushedUser = user }) {
+                    Button(action: { router.push(.user(user)) }) {
                         Label("View \(username)'s content", systemImage: "person.crop.circle")
                     }
                 } label: {
                     Text(username)
                         .font(.headline)
                 }
-                .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("\(username) — click for actions")
             }
@@ -305,25 +208,42 @@ struct ImageDetailView: View {
             .help("More actions")
         }
     }
-    #endif
 
     private func loadGenerationData() async {
+        guard let image = currentImage else { return }
+
+        // Clear stale data so a failed/empty fetch for the new image doesn't
+        // leave the previous image's params on screen.
+        generationData = nil
         isLoadingGenData = true
         do {
-            generationData = try await civitaiService.fetchGenerationData(imageId: image.id)
+            let data = try await civitaiService.fetchGenerationData(imageId: image.id)
+            guard !Task.isCancelled else { return }
+            generationData = data
         } catch {
             // Silently fail - generation data may not be available for all images
         }
+        guard !Task.isCancelled else { return }
         isLoadingGenData = false
     }
 
+    private func loadTags() async {
+        guard let image = currentImage else {
+            tags = []
+            return
+        }
+        let fetched = await civitaiService.fetchVotableTags(imageId: image.id)
+        guard !Task.isCancelled else { return }
+        tags = fetched
+    }
+
     private func loadPost() async {
-        guard let postId = image.postId, !isLoadingPost else { return }
+        guard let postId = currentImage?.postId, !isLoadingPost else { return }
 
         isLoadingPost = true
         do {
             let post = try await civitaiService.getPost(postId: postId)
-            navigateToPost = post
+            router.push(.post(post))
         } catch {
             postLoadFailed = true
         }

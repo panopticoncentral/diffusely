@@ -2,23 +2,6 @@ import SwiftUI
 import SwiftData
 
 #if os(macOS)
-@MainActor
-final class FeedNavigator: ObservableObject {
-    @Published var image: CivitaiImage?
-    @Published var user: CivitaiUser?
-    @Published var post: CivitaiPost?
-
-    func push(_ image: CivitaiImage) { self.image = image }
-    func push(_ user: CivitaiUser) { self.user = user }
-    func push(_ post: CivitaiPost) { self.post = post }
-
-    func reset() {
-        image = nil
-        user = nil
-        post = nil
-    }
-}
-
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case images = "Images"
     case videos = "Videos"
@@ -59,7 +42,7 @@ struct ContentView: View {
 
     #if os(macOS)
     @State private var selectedSection: SidebarSection? = .images
-    @StateObject private var feedNavigator = FeedNavigator()
+    @StateObject private var router = NavigationRouter()
     #else
     @State private var selectedTab = 0
     #endif
@@ -72,7 +55,7 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
         } detail: {
-            NavigationStack {
+            NavigationStack(path: $router.path) {
                 ZStack {
                     switch selectedSection ?? .images {
                     case .images:
@@ -87,50 +70,51 @@ struct ContentView: View {
                         FollowingView()
                     }
                 }
-                .navigationDestination(item: $feedNavigator.image) { image in
-                    ImageDetailView(image: image)
-                }
-                .navigationDestination(item: $feedNavigator.post) { post in
-                    PostDetailView(post: post)
-                }
-                .navigationDestination(item: $feedNavigator.user) { user in
-                    UserContentView(user: user)
-                }
+                .routeDestinations()
             }
             .onChange(of: selectedSection) { _, _ in
-                feedNavigator.reset()
+                router.popToRoot()
             }
         }
-        .environmentObject(feedNavigator)
+        .environmentObject(router)
         .focusedSceneValue(\.sidebarSelection, $selectedSection)
         // Start the library subsystem at launch so its iCloud/totals state is
         // accurate no matter which section opens first (not only the Library
         // tab). start() is idempotent, so LibraryView's own call is a no-op.
         .task { libraryStore.start() }
         #else
+        // Every tab is a routed NavigationStack: drill-ins (user, post, tag,
+        // image) push with a system back button and edge swipe-back, instead
+        // of the old chained fullScreenCovers with stacked custom X buttons.
         TabView(selection: $selectedTab) {
-            ImageFeedView(videos: false)
+            RoutedNavigationStack {
+                ImageFeedView(videos: false)
+            }
                 .tabItem {
                     Image(systemName: "photo.on.rectangle.angled")
                     Text("Images")
                 }
                 .tag(0)
 
-            ImageFeedView(videos: true)
+            RoutedNavigationStack {
+                ImageFeedView(videos: true)
+            }
                 .tabItem {
                     Image(systemName: "video")
                     Text("Videos")
                 }
                 .tag(1)
 
-            CollectionsView()
+            RoutedNavigationStack {
+                CollectionsView()
+            }
                 .tabItem {
                     Image(systemName: "square.stack.3d.up")
                     Text("Collections")
                 }
                 .tag(2)
 
-            NavigationStack {
+            RoutedNavigationStack {
                 FollowingView()
             }
                 .tabItem {
@@ -139,7 +123,7 @@ struct ContentView: View {
                 }
                 .tag(3)
 
-            NavigationStack {
+            RoutedNavigationStack {
                 LibraryView()
             }
                 .tabItem {

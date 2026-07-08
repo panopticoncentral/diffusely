@@ -18,20 +18,10 @@ struct CollectionDetailView: View {
     @State private var expandedAuthors: Set<Int> = []
     @State private var isInitialLoad = true
 
-    #if os(macOS)
-    // Locally-owned navigation pushes. By attaching `.navigationDestination(item:)`
-    // to this view (rather than at the NavigationStack root in ContentView),
-    // pushes stack on top of CollectionDetailView — back returns here instead
-    // of jumping past us to the collection list. The root-level
-    // `feedNavigator.push` was clobbering this view's stack slot.
-    @State private var pushedImage: CivitaiImage?
-    @State private var pushedPost: CivitaiPost?
-    @State private var pushedUser: CivitaiUser?
-    #else
-    // iOS presents the author's content as a full-screen cover, matching
-    // ImageDetailView / PostDetailView.
-    @State private var userForContent: CivitaiUser?
-    #endif
+    // Author drill-ins push Routes onto the enclosing stack (this view is
+    // itself pushed via a value-based NavigationLink from CollectionsView, so
+    // router pushes deepen the stack instead of clobbering it).
+    @EnvironmentObject private var router: NavigationRouter
 
     var body: some View {
         ZStack {
@@ -92,23 +82,6 @@ struct CollectionDetailView: View {
         .navigationTitle(collection.name)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
-        .fullScreenCover(item: $userForContent) { user in
-            UserContentView(user: user)
-        }
-        #else
-        // Push detail views ABOVE CollectionDetailView (not at the root of the
-        // NavigationStack). Attaching `.navigationDestination(item:)` here —
-        // not in ContentView — is what makes the back arrow return to the
-        // collection rather than to the collection list.
-        .navigationDestination(item: $pushedImage) { image in
-            ImageDetailView(image: image)
-        }
-        .navigationDestination(item: $pushedPost) { post in
-            PostDetailView(post: post)
-        }
-        .navigationDestination(item: $pushedUser) { user in
-            UserContentView(user: user)
-        }
         #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -172,10 +145,7 @@ struct CollectionDetailView: View {
                 images: images,
                 posts: [],
                 collectionType: "Image",
-                showsItemContextMenus: true,
-                onSelectImage: macImageSelector,
-                onSelectPost: macPostSelector,
-                onSelectUser: macUserSelector
+                showsItemContextMenus: true
             )
             .padding(.bottom, 8)
         case .flatPosts(let posts):
@@ -183,51 +153,15 @@ struct CollectionDetailView: View {
                 images: [],
                 posts: posts,
                 collectionType: "Post",
-                showsItemContextMenus: true,
-                onSelectImage: macImageSelector,
-                onSelectPost: macPostSelector,
-                onSelectUser: macUserSelector
+                showsItemContextMenus: true
             )
             .padding(.bottom, 8)
         }
     }
 
-    /// Mac-only: set the local @State so the `.navigationDestination(item:)`
-    /// attached to this view pushes the detail above us. Nil on iOS, where
-    /// children fall back to their own `fullScreenCover`.
-    private var macImageSelector: ((CivitaiImage) -> Void)? {
-        #if os(macOS)
-        return { pushedImage = $0 }
-        #else
-        return nil
-        #endif
-    }
-
-    private var macPostSelector: ((CivitaiPost) -> Void)? {
-        #if os(macOS)
-        return { pushedPost = $0 }
-        #else
-        return nil
-        #endif
-    }
-
-    private var macUserSelector: ((CivitaiUser) -> Void)? {
-        #if os(macOS)
-        return { pushedUser = $0 }
-        #else
-        return nil
-        #endif
-    }
-
-    /// Drill into an author's content: a local push on macOS (kept above this
-    /// view's stack slot, like the image/post selectors) and a full-screen
-    /// cover on iOS.
+    /// Drill into an author's content, stacking on top of this view.
     private func selectAuthor(_ author: CivitaiUser) {
-        #if os(macOS)
-        pushedUser = author
-        #else
-        userForContent = author
-        #endif
+        router.push(.user(author))
     }
 
     @ViewBuilder
@@ -240,10 +174,7 @@ struct CollectionDetailView: View {
                             images: group.images,
                             posts: group.posts,
                             collectionType: collection.type ?? "Image",
-                            showsItemContextMenus: true,
-                            onSelectImage: macImageSelector,
-                            onSelectPost: macPostSelector,
-                            onSelectUser: macUserSelector
+                            showsItemContextMenus: true
                         )
                         .padding(.bottom, 8)
                     }

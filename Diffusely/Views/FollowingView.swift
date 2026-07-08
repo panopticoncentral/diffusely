@@ -6,12 +6,6 @@ struct FollowingView: View {
     @Environment(\.modelContext) private var modelContext
 
     @State private var showingSettings = false
-    #if os(iOS)
-    @State private var selectedUser: CivitaiUser?
-    #endif
-    #if os(macOS)
-    @EnvironmentObject private var feedNavigator: FeedNavigator
-    #endif
 
     var body: some View {
         content
@@ -30,11 +24,6 @@ struct FollowingView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
-            #if os(iOS)
-            .fullScreenCover(item: $selectedUser) { user in
-                UserContentView(user: user)
-            }
-            #endif
             .task {
                 store.configure(
                     dataSource: civitaiService,
@@ -80,9 +69,7 @@ struct FollowingView: View {
     private var listView: some View {
         List {
             ForEach(store.rows) { row in
-                Button {
-                    open(row.civitaiUser)
-                } label: {
+                NavigationLink(value: Route.user(row.civitaiUser)) {
                     FollowedUserRowView(user: row.civitaiUser, failed: row.failed)
                 }
                 .buttonStyle(.plain)
@@ -100,6 +87,7 @@ struct FollowingView: View {
         .listStyle(.plain)
         .refreshable { await store.refresh() }
     }
+
 
     @ViewBuilder
     private func messageView(
@@ -128,14 +116,6 @@ struct FollowingView: View {
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-    private func open(_ user: CivitaiUser) {
-        #if os(macOS)
-        feedNavigator.push(user)
-        #else
-        selectedUser = user
-        #endif
-    }
 }
 
 /// One row: circular avatar + username, mirroring `AuthorSectionHeader`.
@@ -143,6 +123,8 @@ private struct FollowedUserRowView: View {
     let user: CivitaiUser
     let failed: Bool
 
+    // No manual chevron: the enclosing NavigationLink adds the disclosure
+    // indicator automatically on iOS, and list chevrons aren't a Mac idiom.
     var body: some View {
         HStack(spacing: 12) {
             avatar
@@ -150,9 +132,6 @@ private struct FollowedUserRowView: View {
                 .font(.headline)
                 .foregroundStyle(failed ? .secondary : .primary)
             Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())

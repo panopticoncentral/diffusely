@@ -147,12 +147,15 @@ struct LibraryDetailView: View {
                 .aspectRatio(aspect, contentMode: .fit)
                 .detailMediaFrame(maxHeight: maxHeight)
             } else {
-                LibraryAsyncImage(
-                    itemID: metadata.itemID,
-                    mediaFileName: metadata.mediaFileName,
-                    maxDimension: 2048,
-                    contentMode: .fit
-                )
+                ZoomableView {
+                    LibraryAsyncImage(
+                        itemID: metadata.itemID,
+                        mediaFileName: metadata.mediaFileName,
+                        maxDimension: 2048,
+                        contentMode: .fit
+                    )
+                    .aspectRatio(aspect, contentMode: .fit)
+                }
                 .aspectRatio(aspect, contentMode: .fit)
                 .detailMediaFrame(maxHeight: maxHeight)
             }

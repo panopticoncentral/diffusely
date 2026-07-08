@@ -4,45 +4,29 @@ struct ImageFeedItemView: View {
     let image: CivitaiImage
     var isGridMode: Bool = false
     var preserveAspectRatio: Bool = false
-    /// Optional override for the image-tap action. When provided, this runs
-    /// INSTEAD of the platform default. Lets a parent view (e.g.
-    /// `CollectionDetailView`) push the detail via a local
-    /// `.navigationDestination(item:)` it owns — needed because the root-level
-    /// `feedNavigator.push` clobbers any intermediate `NavigationLink`-pushed
-    /// view (like CollectionDetailView itself).
-    var onSelectImage: (() -> Void)? = nil
-    /// Same story as `onSelectImage`, but for the username overlay. Without
-    /// this, parents pushed below the NavigationStack root collapse their own
-    /// stack slot when a thumbnail's username is tapped, because the default
-    /// path calls `feedNavigator.push(user)`.
-    var onSelectUser: ((CivitaiUser) -> Void)? = nil
-    /// Same story for the "View Post" entry in the ellipsis / context menu.
-    /// When this view is hosted inside an intermediate pushed view (e.g.
-    /// `UserContentView` opened from a collection author header, or the
-    /// `CollectionDetailView` image grid), the default `feedNavigator.push(post)`
-    /// fires the root-level navigationDestination and collapses every view
-    /// between the root and the new post — so back returns to the section
-    /// root instead of where the user came from.
-    var onSelectPost: ((CivitaiPost) -> Void)? = nil
+    /// Hidden by `UserContentView`, where every thumbnail is by the profile's
+    /// own user — the overlay would be redundant and tapping it would push a
+    /// duplicate of the profile.
+    var showsUsername: Bool = true
+    /// The feed slice this cell belongs to. When set, tapping the cell opens
+    /// the detail view with next/previous paging across the slice; when nil,
+    /// the detail shows just this image.
+    var feedImages: [CivitaiImage]? = nil
     /// When true, the item gains a right-click / long-press context menu
     /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
     /// false elsewhere keeps the main feed and author profile context-menu-free.
     var showsContextMenu: Bool = false
 
-    #if os(iOS)
-    @State private var showingDetail = false
-    @State private var navigateToPost: CivitaiPost?
-    @State private var showingUserContent = false
-    #endif
     @State private var isLoadingPost = false
     @State private var postLoadError = false
     @State private var showingCollectionPicker = false
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
-    #if os(macOS)
-    @EnvironmentObject private var feedNavigator: FeedNavigator
-    #endif
+    // All taps push Routes onto the enclosing stack's router, so chains like
+    // collection → image → user → post deepen the stack and back walks them
+    // one at a time — on both platforms.
+    @EnvironmentObject private var router: NavigationRouter
 
     /// The width/height ratio fed into `.aspectRatio(_:contentMode:)` and frame
     /// math for a cell. Civitai returns 0 for some media dimensions; a raw
@@ -56,28 +40,16 @@ struct ImageFeedItemView: View {
     }
 
     private func openImageDetail() {
-        if let onSelectImage = onSelectImage {
-            onSelectImage()
-            return
+        if let feedImages, let index = feedImages.firstIndex(where: { $0.id == image.id }) {
+            router.push(.browse(images: feedImages, index: index))
+        } else {
+            router.push(.image(image))
         }
-        #if os(macOS)
-        feedNavigator.push(image)
-        #else
-        showingDetail = true
-        #endif
     }
 
     private func openUserContent() {
         guard let user = image.user else { return }
-        if let onSelectUser = onSelectUser {
-            onSelectUser(user)
-            return
-        }
-        #if os(macOS)
-        feedNavigator.push(user)
-        #else
-        showingUserContent = true
-        #endif
+        router.push(.user(user))
     }
 
     // Opt-in context menu — only the collection grid sets
@@ -102,14 +74,6 @@ struct ImageFeedItemView: View {
             }
         }
         .background(Color(.systemBackground))
-        #if os(iOS)
-        .fullScreenCover(isPresented: $showingDetail) {
-            ImageDetailView(image: image)
-        }
-        .fullScreenCover(item: $navigateToPost) { post in
-            PostDetailView(post: post)
-        }
-        #endif
         .sheet(isPresented: $showingCollectionPicker) {
             ManageCollectionsSheet(target: .image(image)) {
                 showingCollectionPicker = false
@@ -120,13 +84,6 @@ struct ImageFeedItemView: View {
         } message: {
             Text("The post couldn't be loaded. Please check your connection and try again.")
         }
-        #if os(iOS)
-        .fullScreenCover(isPresented: $showingUserContent) {
-            if let user = image.user {
-                UserContentView(user: user)
-            }
-        }
-        #endif
     }
 
     private func loadPost() async {
@@ -135,15 +92,7 @@ struct ImageFeedItemView: View {
         isLoadingPost = true
         do {
             let post = try await civitaiService.getPost(postId: postId)
-            if let onSelectPost = onSelectPost {
-                onSelectPost(post)
-            } else {
-                #if os(macOS)
-                feedNavigator.push(post)
-                #else
-                navigateToPost = post
-                #endif
-            }
+            router.push(.post(post))
         } catch {
             postLoadError = true
         }
@@ -239,7 +188,7 @@ struct ImageFeedItemView: View {
                     }
                     .padding(8)
                     Spacer()
-                    if let user = image.user, let username = user.username {
+                    if showsUsername, let user = image.user, let username = user.username {
                         HStack {
                             Button(action: { openUserContent() }) {
                                 Text(username)
@@ -263,7 +212,7 @@ struct ImageFeedItemView: View {
 
     @ViewBuilder
     private var listContent: some View {
-        if let user = image.user, let username = user.username {
+        if showsUsername, let user = image.user, let username = user.username {
             Button(action: { openUserContent() }) {
                 HStack(spacing: 4) {
                     Text(username)

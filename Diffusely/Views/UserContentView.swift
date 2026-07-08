@@ -8,7 +8,6 @@ enum UserContentType: String, CaseIterable {
 struct UserContentView: View {
     let user: CivitaiUser
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var domainManager = DomainManager.shared
@@ -18,23 +17,6 @@ struct UserContentView: View {
     @State private var isFollowing: Bool = false
     @State private var isFollowLoading: Bool = false
     @State private var followError: String?
-
-    #if os(macOS)
-    // Push image details ABOVE THIS view's stack slot rather than at the
-    // NavigationStack root via feedNavigator. Without this, tapping an image
-    // here when UserContentView was itself pushed onto an intermediate stack
-    // (e.g. opened from a post's author button) sets feedNavigator.image,
-    // which replaces the root-level navigationDestination and collapses every
-    // pushed view between Feed and the new image — so back returns to Feed
-    // instead of this user content. Matches the pushed*-local pattern in
-    // CollectionDetailView / ImageDetailView / PostDetailView.
-    @State private var pushedImage: CivitaiImage?
-    // Same rationale for "View Post" on a thumbnail's ellipsis menu: without
-    // a local push, ImageFeedItemView.loadPost would route through
-    // feedNavigator.push(post) and collapse this view (and any view we were
-    // pushed under, like CollectionDetailView).
-    @State private var pushedPost: CivitaiPost?
-    #endif
 
     private var hasAPIKey: Bool {
         APIKeyManager.shared.hasAPIKey
@@ -55,14 +37,12 @@ struct UserContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             #if os(iOS)
-            // iOS presents this in a fullScreenCover, so we own all the chrome
-            // (close button, title, filter menu, follow button). On macOS the
-            // view is pushed into the NavigationStack and the equivalent
-            // affordances live in `.toolbar` below.
-            headerView
-
+            // The avatar + name live in the toolbar's principal slot (shared
+            // with macOS); the full-width Follow button stays in-content on
+            // iOS where the large tap target suits the platform.
             if hasAPIKey {
                 followButton
+                    .padding(.top, 8)
             }
             #endif
 
@@ -104,8 +84,10 @@ struct UserContentView: View {
         .background(Color(.systemBackground))
         #if os(macOS)
         .navigationTitle(user.username ?? "Unknown")
-        .toolbar { macToolbar }
+        #else
+        .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar { contentToolbar }
         .alert(
             "Couldn't update follow",
             isPresented: Binding(
@@ -141,18 +123,13 @@ struct UserContentView: View {
                 await refreshContent()
             }
         }
-        #if os(macOS)
-        .navigationDestination(item: $pushedImage) { image in
-            ImageDetailView(image: image)
-        }
-        .navigationDestination(item: $pushedPost) { post in
-            PostDetailView(post: post)
-        }
-        #endif
     }
 
     @ViewBuilder
     private var feedContent: some View {
+        // showsUsername: false throughout — every thumbnail here is by `user`
+        // (the feed is filtered by username), so the overlay would be redundant
+        // and tapping it would push a duplicate of this profile.
         #if os(macOS)
         MasonryGrid(
             items: civitaiService.images,
@@ -162,19 +139,8 @@ struct UserContentView: View {
                 image: image,
                 isGridMode: true,
                 preserveAspectRatio: true,
-                // Route through THIS view's local pushedImage instead of the
-                // default feedNavigator.push(image), which would replace the
-                // root-level destination and collapse the stack above us.
-                onSelectImage: { pushedImage = image },
-                // Every thumbnail here is by `user` (we filtered by username),
-                // so the username overlay tap is a no-op rather than pushing
-                // a duplicate of this same view onto the stack. Also dodges
-                // the feedNavigator.push(user) collapse-the-stack bug.
-                onSelectUser: { _ in },
-                // Same reason as onSelectImage: keep "View Post" pushes local
-                // so back returns here (and to whatever pushed us) instead of
-                // jumping past every intermediate view to the section root.
-                onSelectPost: { pushedPost = $0 }
+                showsUsername: false,
+                feedImages: civitaiService.images
             )
                 .onAppear {
                     if image.id == civitaiService.images.last?.id {
@@ -186,7 +152,7 @@ struct UserContentView: View {
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: true)
+                    ImageFeedItemView(image: image, isGridMode: true, showsUsername: false, feedImages: civitaiService.images)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
@@ -198,7 +164,7 @@ struct UserContentView: View {
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: false)
+                    ImageFeedItemView(image: image, isGridMode: false, showsUsername: false, feedImages: civitaiService.images)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
@@ -210,46 +176,7 @@ struct UserContentView: View {
         #endif
     }
 
-    @ViewBuilder
-    private var headerView: some View {
-        HStack(spacing: 12) {
-            // Close button
-            Button(action: { dismiss() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.primary)
-                    .frame(width: 32, height: 32)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(Circle())
-                    // Keep the 32pt visual circle but give the button the
-                    // full 44pt HIG-minimum hit area.
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Close")
-
-            Spacer()
-
-            // User avatar and name
-            HStack(spacing: 8) {
-                avatarImage(size: 32)
-                Text(user.username ?? "Unknown")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-            }
-
-            Spacer()
-
-            // Filter menu
-            filterMenu
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color(.systemBackground))
-    }
-
-    /// Filter (time + sort) menu — shared between the iOS in-content header
-    /// and the macOS toolbar.
+    /// Filter (time + sort) menu, shown in the toolbar on both platforms.
     @ViewBuilder
     private var filterMenu: some View {
         Menu {
@@ -362,12 +289,14 @@ struct UserContentView: View {
             )
     }
 
-    #if os(macOS)
-    /// macOS toolbar content. Extracted from the view body to keep the
-    /// SwiftUI type-checker fast — chaining `.toolbar { … }` inline with the
-    /// rest of the modifier stack pushes it over the timeout threshold.
+    /// Toolbar shared by both platforms: avatar + name in the principal slot,
+    /// filter menu trailing. macOS additionally gets a compact Follow button
+    /// (iOS keeps the full-width in-content one). Extracted from the view
+    /// body to keep the SwiftUI type-checker fast — chaining `.toolbar { … }`
+    /// inline with the rest of the modifier stack pushes it over the timeout
+    /// threshold.
     @ToolbarContentBuilder
-    private var macToolbar: some ToolbarContent {
+    private var contentToolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 8) {
                 avatarImage(size: 22)
@@ -375,16 +304,19 @@ struct UserContentView: View {
                     .font(.headline)
             }
         }
+        #if os(macOS)
         if hasAPIKey {
             ToolbarItem(placement: .primaryAction) {
                 macFollowButton
             }
         }
+        #endif
         ToolbarItem(placement: .primaryAction) {
             filterMenu
         }
     }
 
+    #if os(macOS)
     /// Compact Follow/Following button for the macOS toolbar. Unlike the iOS
     /// full-width version, this renders as a normal toolbar button — sized to
     /// its label, not the window. Word-only (no glyph) because a bare `+` in

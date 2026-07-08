@@ -8,7 +8,6 @@ struct TagFeedView: View {
     let tagName: String
     let videos: Bool
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var domainManager = DomainManager.shared
@@ -17,13 +16,6 @@ struct TagFeedView: View {
     /// Gates the empty state so "No images found" can't flash on the first frame
     /// before the initial `.task` load runs.
     @State private var hasLoadedOnce = false
-
-    #if os(macOS)
-    // Route inner pushes through THIS view's stack slot rather than the
-    // NavigationStack root, so back returns here. Matches UserContentView.
-    @State private var pushedImage: CivitaiImage?
-    @State private var pushedPost: CivitaiPost?
-    #endif
 
     private var isGridLayout: Bool {
         horizontalSizeClass == .regular
@@ -39,10 +31,6 @@ struct TagFeedView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            #if os(iOS)
-            headerView
-            #endif
-
             ScrollView {
                 feedContent
 
@@ -60,10 +48,15 @@ struct TagFeedView: View {
             }
         }
         .background(Color(.systemBackground))
-        #if os(macOS)
         .navigationTitle(tagName)
-        .toolbar { macToolbar }
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                filterMenu
+            }
+        }
         .task {
             await loadContent()
             hasLoadedOnce = true
@@ -77,14 +70,6 @@ struct TagFeedView: View {
         .onChange(of: domainManager.domain) { _, _ in
             Task { await refreshContent() }
         }
-        #if os(macOS)
-        .navigationDestination(item: $pushedImage) { image in
-            ImageDetailView(image: image)
-        }
-        .navigationDestination(item: $pushedPost) { post in
-            PostDetailView(post: post)
-        }
-        #endif
     }
 
     @ViewBuilder
@@ -98,9 +83,7 @@ struct TagFeedView: View {
                 image: image,
                 isGridMode: true,
                 preserveAspectRatio: true,
-                onSelectImage: { pushedImage = image },
-                onSelectUser: { _ in },
-                onSelectPost: { pushedPost = $0 }
+                feedImages: civitaiService.images
             )
             .onAppear {
                 if image.id == civitaiService.images.last?.id {
@@ -112,7 +95,7 @@ struct TagFeedView: View {
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: true)
+                    ImageFeedItemView(image: image, isGridMode: true, feedImages: civitaiService.images)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
@@ -124,7 +107,7 @@ struct TagFeedView: View {
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: false)
+                    ImageFeedItemView(image: image, isGridMode: false, feedImages: civitaiService.images)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
@@ -136,41 +119,8 @@ struct TagFeedView: View {
         #endif
     }
 
-    #if os(iOS)
-    @ViewBuilder
-    private var headerView: some View {
-        HStack(spacing: 12) {
-            Button(action: { dismiss() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.primary)
-                    .frame(width: 32, height: 32)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(Circle())
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Close")
-
-            Spacer()
-
-            Text(tagName)
-                .font(.headline)
-                .foregroundColor(.primary)
-                .lineLimit(1)
-
-            Spacer()
-
-            filterMenu
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color(.systemBackground))
-    }
-    #endif
-
-    /// Filter (time + sort) menu — shared between the iOS in-content header and
-    /// the macOS toolbar. Matches UserContentView's menu.
+    /// Filter (time + sort) menu, shown in the toolbar on both platforms.
+    /// Matches UserContentView's menu.
     @ViewBuilder
     private var filterMenu: some View {
         Menu {
@@ -212,15 +162,6 @@ struct TagFeedView: View {
         }
         .help("Filter and sort")
     }
-
-    #if os(macOS)
-    @ToolbarContentBuilder
-    private var macToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            filterMenu
-        }
-    }
-    #endif
 
     @ViewBuilder
     private var emptyStateView: some View {

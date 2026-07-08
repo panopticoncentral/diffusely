@@ -23,19 +23,12 @@ struct FeedFilterMenu: View {
             }
             .pickerStyle(.inline)
         } label: {
-            #if os(macOS)
+            // Both platforms host this in a toolbar now, which sizes the label
+            // natively (and scales with Dynamic Type, unlike the old fixed
+            // 24pt glyph the iOS in-content header used).
             Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
-            #else
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundColor(.primary)
-            #endif
         }
         .accessibilityLabel("Filter")
-        #if os(iOS)
-        .frame(width: 44, height: 44)
-        .padding(.trailing, 16)
-        .padding(.top, 8)
-        #endif
+        .help("Filter and sort")
     }
 }

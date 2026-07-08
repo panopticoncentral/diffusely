@@ -51,19 +51,10 @@ struct CollectionsView: View {
         GridItem(.adaptive(minimum: 160, maximum: 220), spacing: 12)
     ]
 
+    // The enclosing NavigationStack is provided by the host on both platforms
+    // now (the routed tab stack on iOS, the split-view detail column on macOS).
     var body: some View {
-        collectionsContent
-    }
-
-    @ViewBuilder
-    private var collectionsContent: some View {
-        #if os(iOS)
-        NavigationStack {
-            collectionsInner
-        }
-        #else
         collectionsInner
-        #endif
     }
 
     @ViewBuilder
@@ -108,7 +99,12 @@ struct CollectionsView: View {
 
                             LazyVGrid(columns: columns, spacing: 12) {
                                 ForEach(filteredCollections) { collection in
-                                    NavigationLink(destination: CollectionDetailView(collection: collection)) {
+                                    // Value-based link (not destination-based):
+                                    // this stack's path is pushed to by the
+                                    // router from inside the detail view, and a
+                                    // path change would drop a destination-based
+                                    // link's view off the top of the stack.
+                                    NavigationLink(value: Route.collection(collection)) {
                                         CollectionCard(
                                             collection: collection,
                                             previewImage: previewImages[collection.id]

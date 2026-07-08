@@ -83,39 +83,29 @@ struct ImageFeedView: View {
                 Task { await refreshImages() }
             })
         #else
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text(videos ? "Videos" : "Images")
-                    .font(.largeTitle.bold())
-                    .foregroundStyle(.primary)
-                    .padding(.leading, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 16)
-                Spacer()
-
-                FeedFilterMenu(
-                    selectedPeriod: $selectedPeriod,
-                    selectedSort: $selectedSort
-                )
-
-                Button {
-                    showingSettings = true
-                } label: {
-                    Image(systemName: "gear")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundColor(.primary)
+        // Real navigation bar (the tab's NavigationStack provides it): large
+        // title that collapses on scroll and scroll-edge material for free,
+        // replacing the old hand-rolled largeTitle header.
+        feedScroll
+            .navigationTitle(videos ? "Videos" : "Images")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    FeedFilterMenu(
+                        selectedPeriod: $selectedPeriod,
+                        selectedSort: $selectedSort
+                    )
                 }
-                .accessibilityLabel("Settings")
-                .frame(width: 44, height: 44)
-                .padding(.trailing, 16)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gear")
+                    }
+                }
             }
-            .background(Color(.systemBackground))
-
-            feedScroll
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
-        }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
         #endif
     }
 
@@ -155,14 +145,19 @@ struct ImageFeedView: View {
             items: civitaiService.images,
             aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
         ) { image in
-            ImageFeedItemView(image: image, isGridMode: true, preserveAspectRatio: true)
+            ImageFeedItemView(
+                image: image,
+                isGridMode: true,
+                preserveAspectRatio: true,
+                feedImages: civitaiService.images
+            )
                 .onAppear { maybeLoadMore(for: image) }
         }
         #else
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(civitaiService.images, id: \.id) { image in
-                    ImageFeedItemView(image: image, isGridMode: true)
+                    ImageFeedItemView(image: image, isGridMode: true, feedImages: civitaiService.images)
                         .onAppear { maybeLoadMore(for: image) }
                 }
             }
@@ -170,7 +165,7 @@ struct ImageFeedView: View {
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images, id: \.id) { image in
-                    ImageFeedItemView(image: image, isGridMode: false)
+                    ImageFeedItemView(image: image, isGridMode: false, feedImages: civitaiService.images)
                         .onAppear { maybeLoadMore(for: image) }
                 }
             }
