@@ -7,6 +7,13 @@ struct AlbumsBrowserView: View {
     let summaries: [LibrarySortService.AlbumSummary]
     let notInAnyAlbumCount: Int
     let onNewAlbum: () -> Void
+    /// Album-management verbs surfaced on each tile's context menu (right-click
+    /// on macOS, long-press on iOS). The parent `LibraryView` owns the rename
+    /// alert / description sheet / delete confirmation these trigger, so the
+    /// browser stays a dumb, testable view.
+    var onRenameAlbum: (LibrarySortService.AlbumSummary) -> Void = { _ in }
+    var onEditAlbumDescription: (UUID) -> Void = { _ in }
+    var onDeleteAlbum: (LibrarySortService.AlbumSummary) -> Void = { _ in }
 
     // Top-align cells so tiles with different caption-line counts (e.g. "New Album"
     // has no count line) keep their square covers aligned across the row.
@@ -31,6 +38,17 @@ struct AlbumsBrowserView: View {
                         albumTile(album)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button {
+                            onRenameAlbum(album)
+                        } label: { Label("Rename Album", systemImage: "pencil") }
+                        Button {
+                            onEditAlbumDescription(album.id)
+                        } label: { Label("Edit Description", systemImage: "text.quote") }
+                        Button(role: .destructive) {
+                            onDeleteAlbum(album)
+                        } label: { Label("Delete Album", systemImage: "trash") }
+                    }
                 }
 
                 Button(action: onNewAlbum) {

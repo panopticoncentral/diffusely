@@ -106,6 +106,12 @@ struct ImageDetailView: View {
             #if os(macOS)
             // Esc pops the pushed detail view, matching the toolbar back button.
             .onExitCommand { dismiss() }
+            // ⌘C copies the current carousel image. Responder-chain based so it
+            // doesn't steal Copy from selected generation-metadata text.
+            .onCopyCommand {
+                guard let image = currentImage, !image.isVideo else { return [] }
+                return ImageCopy.remoteImageProviders(urlString: image.detailURL)
+            }
             #endif
             .onChange(of: currentIndex) {
                 showAllTags = false
@@ -167,6 +173,16 @@ struct ImageDetailView: View {
                     Label("Manage Collections", systemImage: "folder")
                 }
             }
+
+            #if os(macOS)
+            if !image.isVideo {
+                Button(action: {
+                    ImageCopy.copyRemoteImage(urlString: image.detailURL)
+                }) {
+                    Label("Copy Image", systemImage: "doc.on.doc")
+                }
+            }
+            #endif
 
             if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
                 ShareLink(item: shareURL) {

@@ -28,6 +28,7 @@ struct ImageFeedItemView: View {
     // one at a time — on both platforms.
     @EnvironmentObject private var router: NavigationRouter
     @Environment(\.zoomTransitionNamespace) private var zoomNamespace
+    @Environment(\.openURL) private var openURL
 
     /// The width/height ratio fed into `.aspectRatio(_:contentMode:)` and frame
     /// math for a cell. Civitai returns 0 for some media dimensions; a raw
@@ -137,6 +138,24 @@ struct ImageFeedItemView: View {
             }
         }
 
+        #if os(macOS)
+        // macOS power-user verbs. Right-click on a feed cell is a native
+        // expectation there (see the macOS-only `showsContextMenu` on the feed
+        // grid); on iOS the feed stays context-menu-free by design.
+        Divider()
+        if !image.isVideo {
+            Button(action: { ImageCopy.copyRemoteImage(urlString: image.detailURL) }) {
+                Label("Copy Image", systemImage: "doc.on.doc")
+            }
+        }
+        Button(action: {
+            if let url = URL(string: "https://civitai.com/images/\(image.id)") {
+                openURL(url)
+            }
+        }) {
+            Label("Open in Browser", systemImage: "safari")
+        }
+        #endif
     }
 
     @ViewBuilder

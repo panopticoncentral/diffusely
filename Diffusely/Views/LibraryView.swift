@@ -33,9 +33,12 @@ struct LibraryView: View {
     @State private var selectedIDs: Set<Int> = []
     @State private var showingBulkDeleteConfirm = false
     @State private var pendingDeleteID: Int?
-    @State private var showingRenameAlbum = false
     @State private var renameAlbumText = ""
-    @State private var showingDeleteAlbumConfirm = false
+    /// Target for the rename alert / delete confirmation. Set from either the
+    /// scoped album's ellipsis menu or an album tile's context menu in the
+    /// browser, so both entry points drive the same alert and dialog.
+    @State private var renameAlbumTarget: AlbumRef?
+    @State private var deleteAlbumTarget: AlbumRef?
 
     enum Mode: Hashable { case photos, albums }
     @State private var mode: Mode = .photos
@@ -64,10 +67,27 @@ struct LibraryView: View {
         let membershipCounts: [UUID: Int]
     }
 
+    /// Which album a rename/delete action targets. `id` doubles as the
+    /// `Identifiable` key so the confirmation dialog can present it directly.
+    struct AlbumRef: Identifiable {
+        let id: UUID
+        let name: String
+    }
+
     /// The album name to display: the live, rename-aware value once seeded,
     /// falling back to the value passed in at push time.
     private var resolvedScopeTitle: String? {
         currentScopeTitle ?? scopeTitle
+    }
+
+    /// Optional-backed presentation bindings for the rename alert and delete
+    /// dialog. Extracted from the body's modifier chain so the SwiftUI
+    /// type-checker doesn't time out on the already-long expression.
+    private var renameAlbumPresented: Binding<Bool> {
+        Binding(get: { renameAlbumTarget != nil }, set: { if !$0 { renameAlbumTarget = nil } })
+    }
+    private var deleteAlbumPresented: Binding<Bool> {
+        Binding(get: { deleteAlbumTarget != nil }, set: { if !$0 { deleteAlbumTarget = nil } })
     }
 
     /// True when the top-level Library is showing the Albums browser rather than
@@ -83,7 +103,10 @@ struct LibraryView: View {
             AlbumsBrowserView(
                 summaries: albumSummaries,
                 notInAnyAlbumCount: notInAnyAlbumCount,
-                onNewAlbum: { presentAddToAlbum([]) }   // empty selection → create-only flow
+                onNewAlbum: { presentAddToAlbum([]) },   // empty selection → create-only flow
+                onRenameAlbum: { beginRenameAlbum(id: $0.id, name: $0.name) },
+                onEditAlbumDescription: { presentEditDescription(albumID: $0) },
+                onDeleteAlbum: { deleteAlbumTarget = AlbumRef(id: $0.id, name: $0.name) }
             )
         } else {
             content(for: content)
@@ -129,16 +152,19 @@ struct LibraryView: View {
             } message: { _ in
                 Text("This deletes your saved copy and its metadata from iCloud.")
             }
-            .alert("Rename Album", isPresented: $showingRenameAlbum) {
+            .alert("Rename Album", isPresented: renameAlbumPresented) {
                 TextField("Album name", text: $renameAlbumText)
                 Button("Cancel", role: .cancel) {}
                 Button("Save") {
-                    if case .album(let albumID) = filter {
-                        let name = renameAlbumText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !name.isEmpty else { return }
-                        Task {
-                            await store.albumService.renameAlbum(albumID, to: name)
-                            store.notifyAlbumsChanged()
+                    guard let target = renameAlbumTarget else { return }
+                    let name = renameAlbumText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty else { return }
+                    Task {
+                        await store.albumService.renameAlbum(target.id, to: name)
+                        store.notifyAlbumsChanged()
+                        // Keep the navigation title live if we're renaming the
+                        // album this scoped instance is currently showing.
+                        if case .album(let scopedID) = filter, scopedID == target.id {
                             currentScopeTitle = name
                         }
                     }
@@ -146,20 +172,23 @@ struct LibraryView: View {
             }
             .confirmationDialog(
                 "Delete this album?",
-                isPresented: $showingDeleteAlbumConfirm,
-                titleVisibility: .visible
-            ) {
+                isPresented: deleteAlbumPresented,
+                titleVisibility: .visible,
+                presenting: deleteAlbumTarget
+            ) { target in
                 Button("Delete Album", role: .destructive) {
-                    if case .album(let albumID) = filter {
-                        Task {
-                            await store.albumService.deleteAlbum(albumID)
-                            store.notifyAlbumsChanged()
+                    Task {
+                        await store.albumService.deleteAlbum(target.id)
+                        store.notifyAlbumsChanged()
+                        // Only pop when we're deleting the album we're inside;
+                        // deleting from the browser just refreshes the grid.
+                        if case .album(let scopedID) = filter, scopedID == target.id {
                             dismiss()
                         }
                     }
                 }
                 Button("Cancel", role: .cancel) {}
-            } message: {
+            } message: { _ in
                 Text("The album is removed. Your photos and videos are kept.")
             }
             .sheet(item: $addToAlbumRequest) { request in
@@ -212,6 +241,9 @@ struct LibraryView: View {
                     }
                 }
                 .disabled(allItemIDs.isEmpty)
+                // ⌘A toggles select-all while in selection mode (only present
+                // then, so it never shadows text Select All elsewhere).
+                .keyboardShortcut("a", modifiers: .command)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("Done") { exitSelection() }
@@ -223,6 +255,9 @@ struct LibraryView: View {
                     Image(systemName: "trash")
                 }
                 .disabled(selectedIDs.isEmpty)
+                // Delete key removes the current selection (disabled → no-op
+                // when nothing is selected).
+                .keyboardShortcut(.delete, modifiers: [])
             }
             ToolbarItem(placement: .secondaryAction) {
                 Button {
@@ -282,8 +317,9 @@ struct LibraryView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button {
-                            renameAlbumText = resolvedScopeTitle ?? ""
-                            showingRenameAlbum = true
+                            if case .album(let albumID) = filter {
+                                beginRenameAlbum(id: albumID, name: resolvedScopeTitle ?? "")
+                            }
                         } label: { Label("Rename Album", systemImage: "pencil") }
                         Button {
                             if case .album(let albumID) = filter {
@@ -291,7 +327,9 @@ struct LibraryView: View {
                             }
                         } label: { Label("Edit Description", systemImage: "text.quote") }
                         Button(role: .destructive) {
-                            showingDeleteAlbumConfirm = true
+                            if case .album(let albumID) = filter {
+                                deleteAlbumTarget = AlbumRef(id: albumID, name: resolvedScopeTitle ?? "")
+                            }
                         } label: { Label("Delete Album", systemImage: "trash") }
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
@@ -601,6 +639,13 @@ struct LibraryView: View {
         if sortService == nil {
             sortService = LibrarySortService(modelContext: modelContext)
         }
+    }
+
+    /// Seeds the rename field and arms the rename alert for the given album.
+    /// Shared by the scoped ellipsis menu and the browser tile context menu.
+    private func beginRenameAlbum(id: UUID, name: String) {
+        renameAlbumText = name
+        renameAlbumTarget = AlbumRef(id: id, name: name)
     }
 
     /// Reads the album's current description/profile from the index *now* and

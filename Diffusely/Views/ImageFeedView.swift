@@ -149,7 +149,8 @@ struct ImageFeedView: View {
                 image: image,
                 isGridMode: true,
                 preserveAspectRatio: true,
-                feedImages: civitaiService.images
+                feedImages: civitaiService.images,
+                showsContextMenu: true   // macOS: native right-click verbs on feed cells
             )
                 .onAppear { maybeLoadMore(for: image) }
         }

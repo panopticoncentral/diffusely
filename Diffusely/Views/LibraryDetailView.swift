@@ -1,4 +1,8 @@
 import SwiftUI
+import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
 
 struct LibraryDetailView: View {
     let itemID: Int
@@ -101,6 +105,9 @@ struct LibraryDetailView: View {
         #if os(macOS)
         // Esc pops the pushed library item, matching the toolbar back button.
         .onExitCommand { dismiss() }
+        // ⌘C copies the displayed image. Responder-chain based, so it doesn't
+        // steal Copy from selected generation-metadata text.
+        .onCopyCommand { imageItemProviders() }
         #endif
         .toolbar {
             ToolbarItem(placement: .destructiveAction) {
@@ -161,6 +168,13 @@ struct LibraryDetailView: View {
             }
         }
         .contextMenu {
+            #if os(macOS)
+            if metadata.mediaType == .image {
+                Button {
+                    copyCurrentImage()
+                } label: { Label("Copy Image", systemImage: "doc.on.doc") }
+            }
+            #endif
             if let url = URL(string: metadata.canonicalPageURL) {
                 Button {
                     openURL(url)
@@ -174,6 +188,53 @@ struct LibraryDetailView: View {
             }
         }
     }
+
+    #if os(macOS)
+    /// Reads the item's original file off the main actor and writes it to the
+    /// general pasteboard as an image, so ⌘C / "Copy Image" pastes it elsewhere.
+    /// Images only — the file is already materialized because the detail view is
+    /// displaying it. Silently no-ops if the read fails.
+    private func copyCurrentImage() {
+        guard let metadata, metadata.mediaType == .image else { return }
+        Task {
+            guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+            let fileURL = dir.appendingPathComponent(metadata.mediaFileName)
+            let nsImage = await Task.detached(priority: .userInitiated) {
+                NSImage(contentsOf: fileURL)
+            }.value
+            guard let nsImage else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([nsImage])
+        }
+    }
+
+    /// Item providers backing the standard Copy command (⌘C / Edit ▸ Copy).
+    /// Going through `.onCopyCommand` (rather than a view-level keyboard
+    /// shortcut) keeps Copy on selected prompt text working — the command only
+    /// reaches here when no text field is the first responder. The provider
+    /// streams the original file bytes lazily, so no work happens unless Copy
+    /// actually fires.
+    private func imageItemProviders() -> [NSItemProvider] {
+        guard let metadata, metadata.mediaType == .image else { return [] }
+        let mediaFileName = metadata.mediaFileName
+        let ext = (mediaFileName as NSString).pathExtension
+        let typeID = UTType(filenameExtension: ext)?.identifier ?? UTType.image.identifier
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: typeID, visibility: .all) { completion in
+            Task.detached(priority: .userInitiated) {
+                guard let dir = try? await LibraryContainer.shared.itemsDirectory() else {
+                    completion(nil, CocoaError(.fileNoSuchFile)); return
+                }
+                let fileURL = dir.appendingPathComponent(mediaFileName)
+                let data = try? Data(contentsOf: fileURL)
+                completion(data, data == nil ? CocoaError(.fileReadCorruptFile) : nil)
+            }
+            return nil
+        }
+        return [provider]
+    }
+    #endif
 
     private func loadMetadata() async {
         guard
