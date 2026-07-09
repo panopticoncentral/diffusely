@@ -162,11 +162,20 @@ struct SortReviewGroupView: View {
                     selectedIDs.insert(item.itemID)
                 }
             }
-            .onLongPressGesture {
-                manageRequest = LibraryView.AddToAlbumRequest(
-                    itemIDs: [item.itemID],
-                    membershipCounts: LibrarySortService(modelContext: modelContext)
-                        .albumMembershipCounts(for: [item.itemID]))
+            // Context menu (right-click on macOS, long-press on iOS) — a
+            // discoverable home for Manage Albums and Preview, replacing the
+            // undiscoverable long-press-only gesture (which also collided with
+            // the iOS context-menu long-press).
+            .contextMenu {
+                Button {
+                    manageRequest = LibraryView.AddToAlbumRequest(
+                        itemIDs: [item.itemID],
+                        membershipCounts: LibrarySortService(modelContext: modelContext)
+                            .albumMembershipCounts(for: [item.itemID]))
+                } label: { Label("Manage Albums", systemImage: "rectangle.stack") }
+                Button {
+                    previewItem = item
+                } label: { Label("Preview", systemImage: "magnifyingglass") }
             }
             .overlay(alignment: .bottomTrailing) {
                 // Inspect at full size — grid tiles are too small to judge

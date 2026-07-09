@@ -88,7 +88,7 @@ struct CreateCollectionView: View {
                         .foregroundStyle(name.count >= nameLimit ? .orange : .secondary)
                 }
 
-                Section("Description") {
+                Section {
                     TextField("Optional", text: $description, axis: .vertical)
                         .lineLimit(3...6)
                         .onChange(of: description) { _, newValue in
@@ -96,6 +96,11 @@ struct CreateCollectionView: View {
                                 description = String(newValue.prefix(descriptionLimit))
                             }
                         }
+                } header: {
+                    Text("Description")
+                } footer: {
+                    Text("\(description.count)/\(descriptionLimit)")
+                        .foregroundStyle(description.count >= descriptionLimit ? .orange : .secondary)
                 }
 
                 Section("Privacy") {

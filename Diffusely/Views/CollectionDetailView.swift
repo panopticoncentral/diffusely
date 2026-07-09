@@ -30,7 +30,9 @@ struct CollectionDetailView: View {
                     // Sync progress indicator
                     if let syncService = syncService,
                        let progress = syncService.syncProgress[collection.id] {
-                        SyncProgressView(progress: progress)
+                        SyncProgressView(progress: progress) {
+                            Task { await refreshContent() }
+                        }
                     }
 
                     // Content - sorted per selectedSort

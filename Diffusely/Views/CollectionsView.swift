@@ -94,7 +94,9 @@ struct CollectionsView: View {
                         VStack(spacing: 0) {
                             if let progress = listSyncService?.progress,
                                !progress.isComplete {
-                                SyncProgressView(progress: progress)
+                                SyncProgressView(progress: progress) {
+                                    forceListRefresh()
+                                }
                             }
 
                             LazyVGrid(columns: columns, spacing: 12) {

@@ -59,7 +59,9 @@ struct ManageAlbumsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                // Changes apply immediately, so Done is the confirming action
+                // (bold, trailing) rather than a cancel.
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
                 // Always-visible create affordance, so a new album can be made

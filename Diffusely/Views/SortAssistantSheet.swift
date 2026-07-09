@@ -29,7 +29,9 @@ struct SortAssistantSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                // Suggestions are applied as they're accepted, so Done is the
+                // confirming action (bold, trailing) rather than a cancel.
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         service?.cancel()
                         dismiss()

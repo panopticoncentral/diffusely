@@ -2,8 +2,26 @@ import SwiftUI
 
 struct SyncProgressView: View {
     let progress: CollectionSyncService.SyncProgress
+    /// When set and the sync is in its error state, the whole row becomes a
+    /// tappable retry affordance.
+    var onRetry: (() -> Void)? = nil
+
+    /// True when there's a failure to retry and a handler to run.
+    private var isRetryable: Bool {
+        progress.lastError != nil && progress.retryState == nil && onRetry != nil
+    }
 
     var body: some View {
+        if isRetryable {
+            Button { onRetry?() } label: { rowContent }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Sync error. Tap to retry.")
+        } else {
+            rowContent
+        }
+    }
+
+    private var rowContent: some View {
         HStack(spacing: 8) {
             if progress.retryState != nil {
                 Image(systemName: "clock.arrow.circlepath")
@@ -27,7 +45,7 @@ struct SyncProgressView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else if progress.lastError != nil {
-                Text("Sync error")
+                Text(isRetryable ? "Sync error — tap to retry" : "Sync error")
                     .font(.caption)
                     .foregroundColor(.orange)
             } else if progress.isComplete {
@@ -44,6 +62,7 @@ struct SyncProgressView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
         .background(Color(.secondarySystemBackground))
     }
 }

@@ -18,7 +18,9 @@ struct ManageCollectionsSheet: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    // Membership changes apply immediately, so Done is the
+                    // confirming action (bold, trailing) rather than a cancel.
+                    ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { onDismiss() }
                     }
                 }
@@ -104,22 +106,34 @@ struct ManageCollectionsSheet: View {
 
     @ViewBuilder
     private func collectionRow(_ collection: CivitaiCollection, vm: ManageCollectionsViewModel) -> some View {
+        let isMember = vm.membership.contains(collection.id)
         VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: Binding(
-                get: { vm.membership.contains(collection.id) },
-                set: { _ in Task { await vm.toggle(collection) } }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(collection.name)
-                    if let desc = collection.description, !desc.isEmpty {
-                        Text(desc)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+            // Leading checkmark row (matching ManageAlbumsSheet) instead of a
+            // trailing Toggle, so the two membership sheets read the same. A
+            // collection targets a single item, so it's binary — no tri-state.
+            Button {
+                Task { await vm.toggle(collection) }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: isMember ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isMember ? Color.accentColor : Color.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(collection.name)
+                        if let desc = collection.description, !desc.isEmpty {
+                            Text(desc)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
                     }
+                    Spacer()
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .disabled(vm.pendingFlips.contains(collection.id))
+            .accessibilityAddTraits(isMember ? .isSelected : [])
 
             if let message = vm.rowErrors[collection.id] {
                 HStack(spacing: 4) {

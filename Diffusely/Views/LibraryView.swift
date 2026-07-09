@@ -52,6 +52,9 @@ struct LibraryView: View {
     @State private var addToAlbumRequest: AddToAlbumRequest?
     @State private var showingSortAssistant = false
     @State private var editDescriptionRequest: AlbumDescriptionSheet.Request?
+    #if os(iOS)
+    @State private var showingSettings = false
+    #endif
 
     #if os(macOS)
     /// Roaming keyboard focus over the flat photo grid: index into `orderedItems`.
@@ -226,6 +229,11 @@ struct LibraryView: View {
                 AlbumDescriptionSheet(request: request)
                     .environmentObject(store)
             }
+            #if os(iOS)
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
+            #endif
             .task {
                 if currentScopeTitle == nil { currentScopeTitle = scopeTitle }
                 store.start()
@@ -309,6 +317,19 @@ struct LibraryView: View {
                     .frame(maxWidth: 220)
                 }
             }
+            #if os(iOS)
+            // iOS reaches Settings from each feed's toolbar gear; the Library
+            // tab needs its own (macOS uses the app menu ▸ Settings).
+            if filter == .all {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gear")
+                    }
+                }
+            }
+            #endif
             // Sort and Select act on the photo grid. In Albums mode that grid is
             // hidden behind the album browser, so offering them there would sort
             // or select content the user can't see (Select All + delete could
