@@ -120,10 +120,15 @@ struct ImageDetailView: View {
                 .aspectRatio(aspectRatio, contentMode: .fit)
                 .detailMediaFrame(maxHeight: maxHeight)
             } else {
+                // ZoomableView wraps a GeometryReader, which has no intrinsic
+                // size and would collapse to near-zero inside the scroll view.
+                // The .aspectRatio here gives it a concrete width×(width/ratio)
+                // box to fill (same as LibraryDetailView).
                 ZoomableView {
                     CachedAsyncImage(url: image.detailURL, expectedAspectRatio: aspectRatio)
                         .aspectRatio(contentMode: .fit)
                 }
+                .aspectRatio(aspectRatio, contentMode: .fit)
                 .detailMediaFrame(maxHeight: maxHeight)
             }
         }
