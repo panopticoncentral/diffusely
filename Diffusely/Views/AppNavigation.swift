@@ -25,10 +25,6 @@ import SwiftUI
 /// (The Library stack keeps plain links because nothing in it routes.)
 enum Route: Hashable {
     case image(CivitaiImage)
-    /// An image opened from a feed grid, carrying the surrounding loaded
-    /// slice so the detail view supports next/previous paging. The slice is
-    /// captured at tap time; pages loaded afterward don't extend it.
-    case browse(images: [CivitaiImage], index: Int)
     case post(CivitaiPost)
     case user(CivitaiUser)
     case tag(id: Int, name: String, videos: Bool)
@@ -109,12 +105,6 @@ struct RouteDestinationView: View {
         case .image(let image):
             ImageDetailView(image: image)
                 .zoomTransition(sourceID: "image-\(image.id)", in: zoomNamespace)
-        case .browse(let images, let index):
-            // The zoom pairs with the cell that was tapped (the initial index),
-            // so paging away and going back still lands on that cell.
-            let tappedID = images.indices.contains(index) ? "image-\(images[index].id)" : nil
-            ImageDetailView(images: images, initialIndex: index)
-                .zoomTransition(sourceID: tappedID, in: zoomNamespace)
         case .post(let post):
             PostDetailView(post: post)
                 .zoomTransition(sourceID: "post-\(post.id)", in: zoomNamespace)

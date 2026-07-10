@@ -1,12 +1,12 @@
 import SwiftUI
 
+/// Detail view for a single feed image. Feeds are terminal: tapping an image
+/// opens exactly that image with no left/right paging — browsing happens in
+/// the grid, not here. Multi-item paging (`MediaCarousel`) is reserved for
+/// genuine containers like a post's images.
 struct ImageDetailView: View {
-    /// The feed slice being browsed. A bare `.image` route wraps a single
-    /// image; feed grids pass their whole loaded slice so next/previous
-    /// paging works from any image (swipe/arrows, like PostDetailView).
-    let images: [CivitaiImage]
+    let image: CivitaiImage
 
-    @State private var currentIndex: Int
     @Environment(\.dismiss) private var dismiss
     @StateObject private var civitaiService = CivitaiService()
     @State private var generationData: GenerationData?
@@ -22,22 +22,6 @@ struct ImageDetailView: View {
     // so back walks the chain one level at a time.
     @EnvironmentObject private var router: NavigationRouter
 
-    init(image: CivitaiImage) {
-        self.init(images: [image], initialIndex: 0)
-    }
-
-    init(images: [CivitaiImage], initialIndex: Int) {
-        self.images = images
-        _currentIndex = State(initialValue: min(max(0, initialIndex), max(0, images.count - 1)))
-    }
-
-    /// The image currently visible in the carousel. `currentIndex` is clamped
-    /// at init and by the carousel, but guard anyway since it's unconstrained
-    /// @State.
-    private var currentImage: CivitaiImage? {
-        images.indices.contains(currentIndex) ? images[currentIndex] : nil
-    }
-
     var body: some View {
         ZStack {
             Color(.systemBackground)
@@ -48,25 +32,17 @@ struct ImageDetailView: View {
                 GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        if !images.isEmpty {
-                            MediaCarousel(
-                                images: images,
-                                currentIndex: $currentIndex,
-                                maxHeight: proxy.size.height
-                            ) {
-                                detailMenuContent
-                            }
-                        }
+                        media(maxHeight: proxy.size.height)
 
                         // Stats section
                         VStack(alignment: .leading, spacing: 12) {
                             FeedItemStats(
-                                likeCount: currentImage?.stats?.likeCountAllTime ?? 0,
-                                heartCount: currentImage?.stats?.heartCountAllTime ?? 0,
-                                laughCount: currentImage?.stats?.laughCountAllTime ?? 0,
-                                cryCount: currentImage?.stats?.cryCountAllTime ?? 0,
-                                commentCount: currentImage?.stats?.commentCountAllTime ?? 0,
-                                dislikeCount: currentImage?.stats?.dislikeCountAllTime ?? 0
+                                likeCount: image.stats?.likeCountAllTime ?? 0,
+                                heartCount: image.stats?.heartCountAllTime ?? 0,
+                                laughCount: image.stats?.laughCountAllTime ?? 0,
+                                cryCount: image.stats?.cryCountAllTime ?? 0,
+                                commentCount: image.stats?.commentCountAllTime ?? 0,
+                                dislikeCount: image.stats?.dislikeCountAllTime ?? 0
                             )
 
                             Divider()
@@ -84,11 +60,7 @@ struct ImageDetailView: View {
                             if !tags.isEmpty {
                                 Divider()
                                 TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
-                                    router.push(.tag(
-                                        id: tag.id,
-                                        name: tag.name,
-                                        videos: currentImage?.isVideo ?? false
-                                    ))
+                                    router.push(.tag(id: tag.id, name: tag.name, videos: image.isVideo))
                                 }
                             }
                         }
@@ -97,97 +69,113 @@ struct ImageDetailView: View {
                 }
                 .background(Color(.systemBackground))
                 }
+            }
+        }
+        .toolbar { detailToolbar }
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        #if os(macOS)
+        // Esc pops the pushed detail view, matching the toolbar back button.
+        .onExitCommand { dismiss() }
+        // ⌘C copies the image. Responder-chain based so it doesn't steal
+        // Copy from selected generation-metadata text.
+        .onCopyCommand {
+            guard !image.isVideo else { return [] }
+            return ImageCopy.remoteImageProviders(urlString: image.detailURL)
+        }
+        #endif
+        .task {
+            await loadGenerationData()
+        }
+        .task {
+            await loadTags()
+        }
+        .sheet(isPresented: $showingCollectionPicker) {
+            ManageCollectionsSheet(target: .image(image)) {
+                showingCollectionPicker = false
+            }
+        }
+        .alert("Couldn't Load Post", isPresented: $postLoadFailed) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("The post couldn't be loaded. Check your connection and try again.")
+        }
+    }
+
+    /// The single media view. Videos autoplay muted so opening a detail view
+    /// doesn't blast audio (the transport exposes an unmute control); stills
+    /// get the zoomable wrapper. Right-click / long-press mirrors the toolbar
+    /// actions on the media itself.
+    @ViewBuilder
+    private func media(maxHeight: CGFloat) -> some View {
+        let aspectRatio = ImageFeedItemView.displayAspectRatio(width: image.width, height: image.height)
+        Group {
+            if image.isVideo {
+                CachedVideoPlayer(
+                    url: image.detailURL,
+                    autoPlay: true,
+                    isMuted: true
+                )
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .detailMediaFrame(maxHeight: maxHeight)
+            } else {
+                ZoomableView {
+                    CachedAsyncImage(url: image.detailURL, expectedAspectRatio: aspectRatio)
+                        .aspectRatio(contentMode: .fit)
                 }
+                .detailMediaFrame(maxHeight: maxHeight)
             }
-            .toolbar { detailToolbar }
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            #if os(macOS)
-            // Esc pops the pushed detail view, matching the toolbar back button.
-            .onExitCommand { dismiss() }
-            // ⌘C copies the current carousel image. Responder-chain based so it
-            // doesn't steal Copy from selected generation-metadata text.
-            .onCopyCommand {
-                guard let image = currentImage, !image.isVideo else { return [] }
-                return ImageCopy.remoteImageProviders(urlString: image.detailURL)
-            }
-            #endif
-            .onChange(of: currentIndex) {
-                showAllTags = false
-            }
-            // Load per-image metadata with `.task(id:)` so paging quickly
-            // cancels the in-flight request for the previous index (same
-            // stale-response guard as PostDetailView).
-            .task(id: currentIndex) {
-                await loadGenerationData()
-            }
-            .task(id: currentIndex) {
-                await loadTags()
-            }
-            .sheet(isPresented: $showingCollectionPicker) {
-                if let currentImage {
-                    ManageCollectionsSheet(target: .image(currentImage)) {
-                        showingCollectionPicker = false
-                    }
-                }
-            }
-            .alert("Couldn't Load Post", isPresented: $postLoadFailed) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text("The post couldn't be loaded. Check your connection and try again.")
-            }
+        }
+        .contextMenu { detailMenuContent }
     }
 
     /// Buttons for the toolbar's ellipsis menu and the media context menu.
-    /// All actions target the image currently visible in the carousel.
     @ViewBuilder
     private var detailMenuContent: some View {
-        if let image = currentImage {
+        Button(action: {
+            librarySaveService.save(image)
+        }) {
+            Label(
+                librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
+                systemImage: "square.and.arrow.down"
+            )
+        }
+        .disabled(librarySaveService.isSaving(itemID: image.id))
+
+        if image.postId != nil {
             Button(action: {
-                librarySaveService.save(image)
+                Task { await loadPost() }
             }) {
                 Label(
-                    librarySaveService.isSaving(itemID: image.id) ? "Saving to Library…" : "Save to Library",
-                    systemImage: "square.and.arrow.down"
+                    isLoadingPost ? "Loading Post…" : "View Post",
+                    systemImage: "photo.stack"
                 )
             }
-            .disabled(librarySaveService.isSaving(itemID: image.id))
+            .disabled(isLoadingPost)
+        }
 
-            if image.postId != nil {
-                Button(action: {
-                    Task { await loadPost() }
-                }) {
-                    Label(
-                        isLoadingPost ? "Loading Post…" : "View Post",
-                        systemImage: "photo.stack"
-                    )
-                }
-                .disabled(isLoadingPost)
+        if APIKeyManager.shared.hasAPIKey {
+            Button(action: {
+                showingCollectionPicker = true
+            }) {
+                Label("Manage Collections", systemImage: "folder")
             }
+        }
 
-            if APIKeyManager.shared.hasAPIKey {
-                Button(action: {
-                    showingCollectionPicker = true
-                }) {
-                    Label("Manage Collections", systemImage: "folder")
-                }
+        #if os(macOS)
+        if !image.isVideo {
+            Button(action: {
+                ImageCopy.copyRemoteImage(urlString: image.detailURL)
+            }) {
+                Label("Copy Image", systemImage: "doc.on.doc")
             }
+        }
+        #endif
 
-            #if os(macOS)
-            if !image.isVideo {
-                Button(action: {
-                    ImageCopy.copyRemoteImage(urlString: image.detailURL)
-                }) {
-                    Label("Copy Image", systemImage: "doc.on.doc")
-                }
-            }
-            #endif
-
-            if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
-                ShareLink(item: shareURL) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
+        if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
+            ShareLink(item: shareURL) {
+                Label("Share", systemImage: "square.and.arrow.up")
             }
         }
     }
@@ -201,7 +189,7 @@ struct ImageDetailView: View {
     /// when both are set on macOS, both render and the username appears twice.
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
-        if let user = currentImage?.user, let username = user.username {
+        if let user = image.user, let username = user.username {
             ToolbarItem(placement: .principal) {
                 Menu {
                     Button(action: { router.push(.user(user)) }) {
@@ -226,11 +214,6 @@ struct ImageDetailView: View {
     }
 
     private func loadGenerationData() async {
-        guard let image = currentImage else { return }
-
-        // Clear stale data so a failed/empty fetch for the new image doesn't
-        // leave the previous image's params on screen.
-        generationData = nil
         isLoadingGenData = true
         do {
             let data = try await civitaiService.fetchGenerationData(imageId: image.id)
@@ -244,17 +227,13 @@ struct ImageDetailView: View {
     }
 
     private func loadTags() async {
-        guard let image = currentImage else {
-            tags = []
-            return
-        }
         let fetched = await civitaiService.fetchVotableTags(imageId: image.id)
         guard !Task.isCancelled else { return }
         tags = fetched
     }
 
     private func loadPost() async {
-        guard let postId = currentImage?.postId, !isLoadingPost else { return }
+        guard let postId = image.postId, !isLoadingPost else { return }
 
         isLoadingPost = true
         do {
@@ -266,6 +245,7 @@ struct ImageDetailView: View {
         isLoadingPost = false
     }
 }
+
 
 struct GenerationDataView: View {
     let data: GenerationData

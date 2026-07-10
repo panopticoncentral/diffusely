@@ -169,7 +169,6 @@ struct ImageFeedView: View {
                 image: image,
                 isGridMode: true,
                 preserveAspectRatio: true,
-                feedImages: civitaiService.images,
                 showsContextMenu: true,   // macOS: native right-click verbs on feed cells
                 keyboardFocused: image.id == focusedFeedImageID
             )
@@ -179,7 +178,7 @@ struct ImageFeedView: View {
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(civitaiService.images, id: \.id) { image in
-                    ImageFeedItemView(image: image, isGridMode: true, feedImages: civitaiService.images)
+                    ImageFeedItemView(image: image, isGridMode: true)
                         .onAppear { maybeLoadMore(for: image) }
                 }
             }
@@ -187,7 +186,7 @@ struct ImageFeedView: View {
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images, id: \.id) { image in
-                    ImageFeedItemView(image: image, isGridMode: false, feedImages: civitaiService.images)
+                    ImageFeedItemView(image: image, isGridMode: false)
                         .onAppear { maybeLoadMore(for: image) }
                 }
             }
@@ -260,11 +259,11 @@ struct ImageFeedView: View {
         return civitaiService.images[focusedIndex].id
     }
 
-    /// Return opens the focused image with the same paged detail a click gives.
+    /// Return opens the focused image, same as a click.
     private func openFeedItem(_ index: Int) {
         let images = civitaiService.images
         guard images.indices.contains(index) else { return }
-        router.push(.browse(images: images, index: index))
+        router.push(.image(images[index]))
     }
 
     private func scrollFeedItemIntoView(using proxy: ScrollViewProxy) {

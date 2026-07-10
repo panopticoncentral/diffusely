@@ -8,10 +8,6 @@ struct ImageFeedItemView: View {
     /// own user — the overlay would be redundant and tapping it would push a
     /// duplicate of the profile.
     var showsUsername: Bool = true
-    /// The feed slice this cell belongs to. When set, tapping the cell opens
-    /// the detail view with next/previous paging across the slice; when nil,
-    /// the detail shows just this image.
-    var feedImages: [CivitaiImage]? = nil
     /// When true, the item gains a right-click / long-press context menu
     /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
     /// false elsewhere keeps the main feed and author profile context-menu-free.
@@ -45,11 +41,7 @@ struct ImageFeedItemView: View {
     }
 
     private func openImageDetail() {
-        if let feedImages, let index = feedImages.firstIndex(where: { $0.id == image.id }) {
-            router.push(.browse(images: feedImages, index: index))
-        } else {
-            router.push(.image(image))
-        }
+        router.push(.image(image))
     }
 
     private func openUserContent() {

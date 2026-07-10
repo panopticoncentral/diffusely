@@ -82,8 +82,7 @@ struct TagFeedView: View {
             ImageFeedItemView(
                 image: image,
                 isGridMode: true,
-                preserveAspectRatio: true,
-                feedImages: civitaiService.images
+                preserveAspectRatio: true
             )
             .onAppear {
                 if image.id == civitaiService.images.last?.id {
@@ -95,7 +94,7 @@ struct TagFeedView: View {
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: true, feedImages: civitaiService.images)
+                    ImageFeedItemView(image: image, isGridMode: true)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
@@ -107,7 +106,7 @@ struct TagFeedView: View {
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: false, feedImages: civitaiService.images)
+                    ImageFeedItemView(image: image, isGridMode: false)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }

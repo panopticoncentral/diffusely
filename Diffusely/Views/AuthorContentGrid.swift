@@ -18,7 +18,6 @@ struct AuthorContentGrid: View {
                     image: image,
                     isGridMode: true,
                     preserveAspectRatio: true,
-                    feedImages: images,
                     showsContextMenu: showsItemContextMenus
                 )
             }

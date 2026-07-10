@@ -139,8 +139,7 @@ struct UserContentView: View {
                 image: image,
                 isGridMode: true,
                 preserveAspectRatio: true,
-                showsUsername: false,
-                feedImages: civitaiService.images
+                showsUsername: false
             )
                 .onAppear {
                     if image.id == civitaiService.images.last?.id {
@@ -152,7 +151,7 @@ struct UserContentView: View {
         if isGridLayout {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: true, showsUsername: false, feedImages: civitaiService.images)
+                    ImageFeedItemView(image: image, isGridMode: true, showsUsername: false)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
@@ -164,7 +163,7 @@ struct UserContentView: View {
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: false, showsUsername: false, feedImages: civitaiService.images)
+                    ImageFeedItemView(image: image, isGridMode: false, showsUsername: false)
                         .onAppear {
                             if image.id == civitaiService.images.last?.id {
                                 Task { await loadMore() }
