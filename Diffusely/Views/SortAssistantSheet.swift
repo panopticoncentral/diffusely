@@ -135,13 +135,9 @@ private struct SortAssistantFlowView: View {
         // The default macOS form style doesn't scroll; grouped matches the
         // iOS appearance and scrolls when the sheet bounds the height.
         .formStyle(.grouped)
-        .toolbar {
-            // Always-visible Continue: with many albums the in-form button
-            // sits below the fold, so mirror it in the toolbar.
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Continue") { service.beginClassification() }
-            }
-        }
+        // No toolbar Continue: it would sit beside the sheet's Done (both are
+        // .confirmationAction). The in-form Continue above is the single
+        // forward action; scroll to it when the album list is long.
     }
 
     private var reviewList: some View {
