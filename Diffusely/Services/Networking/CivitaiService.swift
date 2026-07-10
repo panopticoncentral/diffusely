@@ -106,12 +106,13 @@ class CivitaiService: ObservableObject {
         }
     }
 
-    /// Builds a request for the Civitai tRPC API with the headers the server
-    /// now requires. As of 2026-07 production gates the internal tRPC API by
-    /// Origin/Referer host (401 "Please use the public API instead" without
-    /// one) — and, despite the source suggesting Bearer auth exempts a
-    /// request, a valid API key alone is still rejected. A same-host Referer
-    /// is what the allowlist accepts, so every request carries one.
+    /// Builds a request for the Civitai tRPC API. As of 2026-05 production
+    /// gates the internal tRPC API as CSRF protection (401 "Please use the
+    /// public API instead"): a request must carry either a valid Bearer API
+    /// key or an allowlisted Origin/Referer host (verified live 2026-07-08).
+    /// Requests with a key pass on the key alone; the same-host Referer is a
+    /// deliberate fallback so keyless browsing — and browsing with an
+    /// expired/corrupted key — keeps working instead of blanking every feed.
     private func makeRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         if let host = url.host {
