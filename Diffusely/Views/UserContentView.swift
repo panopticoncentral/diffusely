@@ -175,49 +175,6 @@ struct UserContentView: View {
         #endif
     }
 
-    /// Filter (time + sort) menu, shown in the toolbar on both platforms.
-    @ViewBuilder
-    private var filterMenu: some View {
-        Menu {
-            Menu("Time") {
-                ForEach(Timeframe.allCases) { period in
-                    Button {
-                        selectedPeriod = period
-                    } label: {
-                        HStack {
-                            Text(period.displayName)
-                            if period == selectedPeriod {
-                                Spacer()
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                    }
-                }
-            }
-
-            Menu("Sort") {
-                ForEach(FeedSort.allCases) { sort in
-                    Button {
-                        selectedSort = sort
-                    } label: {
-                        HStack {
-                            Text(sort.displayName)
-                            Spacer()
-                            if sort == selectedSort {
-                                Image(systemName: "checkmark")
-                            } else {
-                                Image(systemName: sort.icon)
-                            }
-                        }
-                    }
-                }
-            }
-        } label: {
-            Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
-        }
-        .help("Filter and sort")
-    }
-
     /// Round avatar image, sized for either the in-content iOS header (32) or
     /// the macOS toolbar's principal slot (22).
     @ViewBuilder
@@ -279,7 +236,7 @@ struct UserContentView: View {
         }
         #endif
         ToolbarItem(placement: .primaryAction) {
-            filterMenu
+            FeedFilterMenu(selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
         }
     }
 
