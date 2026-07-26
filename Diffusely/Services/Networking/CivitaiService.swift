@@ -169,6 +169,15 @@ class CivitaiService: ObservableObject {
         }
     }
 
+    /// Decodes a tRPC batch response, first normalizing the envelope so both the
+    /// legacy superjson shape (`result.data = { json: … }`) and Civitai's current
+    /// devalue shape (`result.data` is a devalue string) decode into `T`. This is
+    /// the app's union READ — every tRPC response is routed through it so call
+    /// sites stay format-agnostic. See `TRPCEnvelope` / `DevalueDecoder`.
+    private func decodeTRPC<T: Decodable>(_ type: T.Type, from data: Foundation.Data) throws -> T {
+        try JSONDecoder().decode(type, from: TRPCEnvelope.normalize(data))
+    }
+
     func clear() {
         currentTask?.cancel()
         images.removeAll()
@@ -250,7 +259,7 @@ class CivitaiService: ObservableObject {
                 // Check if task was cancelled
                 try Task.checkCancellation()
 
-                let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
+                let tRPCResponse = try decodeTRPC([Response<CivitaiImage>].self, from: data)
                 let response = tRPCResponse[0].result.data.json
 
                 let newImages = response.items
@@ -345,7 +354,7 @@ class CivitaiService: ObservableObject {
                 // Check if task was cancelled
                 try Task.checkCancellation()
 
-                let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
+                let tRPCResponse = try decodeTRPC([Response<CivitaiPost>].self, from: data)
                 let response = tRPCResponse[0].result.data.json
 
                 posts.append(contentsOf: response.items)
@@ -417,7 +426,7 @@ class CivitaiService: ObservableObject {
             let json: GenerationData
         }
 
-        let tRPCResponse = try JSONDecoder().decode([SingleResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([SingleResponse].self, from: data)
         return tRPCResponse[0].result.data.json
     }
 
@@ -473,7 +482,7 @@ class CivitaiService: ObservableObject {
                 let json: [CivitaiVotableTag]
             }
 
-            let tRPCResponse = try JSONDecoder().decode([TagsResponse].self, from: data)
+            let tRPCResponse = try decodeTRPC([TagsResponse].self, from: data)
             let tags = tRPCResponse[0].result.data.json
 
             return tags
@@ -535,7 +544,7 @@ class CivitaiService: ObservableObject {
             let json: CivitaiImage
         }
 
-        let tRPCResponse = try JSONDecoder().decode([SingleResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([SingleResponse].self, from: data)
         return tRPCResponse[0].result.data.json
     }
 
@@ -591,7 +600,7 @@ class CivitaiService: ObservableObject {
             let json: PostDetail
         }
 
-        let tRPCResponse = try JSONDecoder().decode([SingleResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([SingleResponse].self, from: data)
         let postDetail = tRPCResponse[0].result.data.json
 
         // Now fetch the images for this post
@@ -627,7 +636,7 @@ class CivitaiService: ObservableObject {
         }
         let (imageData, _) = try await session.data(for: imageRequest)
 
-        let imageTRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: imageData)
+        let imageTRPCResponse = try decodeTRPC([Response<CivitaiImage>].self, from: imageData)
         let imageResponse = imageTRPCResponse[0].result.data.json
 
         // Combine the post detail and images into a CivitaiPost
@@ -693,7 +702,7 @@ class CivitaiService: ObservableObject {
             let json: [CivitaiCollection]
         }
 
-        let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([CollectionResponse].self, from: data)
         let basicCollections = tRPCResponse[0].result.data.json
 
         // The basic list lacks the `type` field, so enrich each collection with
@@ -787,7 +796,7 @@ class CivitaiService: ObservableObject {
             let collection: CivitaiCollection
         }
 
-        let tRPCResponse = try JSONDecoder().decode([CollectionDetailResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([CollectionDetailResponse].self, from: data)
         return tRPCResponse[0].result.data.json.collection
     }
 
@@ -873,7 +882,7 @@ class CivitaiService: ObservableObject {
             let id: Int
         }
 
-        let decoded = try JSONDecoder().decode([UpsertResponse].self, from: data)
+        let decoded = try decodeTRPC([UpsertResponse].self, from: data)
         guard let id = decoded.first?.result.data.json.id else {
             throw URLError(.cannotParseResponse)
         }
@@ -960,7 +969,7 @@ class CivitaiService: ObservableObject {
             struct DataBox: Decodable { let json: [Item] }
             struct Item: Decodable { let collectionId: Int }
         }
-        let decoded = try JSONDecoder().decode([Envelope].self, from: data)
+        let decoded = try decodeTRPC([Envelope].self, from: data)
         return decoded[0].result.data.json.map(\.collectionId)
     }
 
@@ -1011,7 +1020,7 @@ class CivitaiService: ObservableObject {
             let json: [CivitaiCollection]
         }
 
-        let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([CollectionResponse].self, from: data)
         return tRPCResponse[0].result.data.json
     }
 
@@ -1061,7 +1070,7 @@ class CivitaiService: ObservableObject {
             let json: [CivitaiCollection]
         }
 
-        let tRPCResponse = try JSONDecoder().decode([CollectionResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([CollectionResponse].self, from: data)
         return tRPCResponse[0].result.data.json
     }
 
@@ -1110,7 +1119,7 @@ class CivitaiService: ObservableObject {
             let json: [Int]
         }
 
-        let tRPCResponse = try JSONDecoder().decode([FollowingResponse].self, from: data)
+        let tRPCResponse = try decodeTRPC([FollowingResponse].self, from: data)
         return tRPCResponse[0].result.data.json
     }
 
@@ -1190,7 +1199,7 @@ class CivitaiService: ObservableObject {
             let deletedAt: String?
         }
 
-        let decoded = try JSONDecoder().decode([UserByIdResponse].self, from: data)
+        let decoded = try decodeTRPC([UserByIdResponse].self, from: data)
         guard let json = decoded.first?.result.data.json else { return nil }
         if json.deletedAt != nil { return nil }
         return CivitaiUser(id: json.id, username: json.username, image: json.image)
@@ -1237,7 +1246,7 @@ class CivitaiService: ObservableObject {
 
         let (data, httpResponse) = try await fetchWithTimeout(request)
         try validateStatus(httpResponse)
-        let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
+        let tRPCResponse = try decodeTRPC([Response<CivitaiImage>].self, from: data)
         let response = tRPCResponse[0].result.data.json
 
         return (images: response.items, nextCursor: response.nextCursor?.stringValue)
@@ -1288,7 +1297,7 @@ class CivitaiService: ObservableObject {
 
         let (data, httpResponse) = try await fetchWithTimeout(request)
         try validateStatus(httpResponse)
-        let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
+        let tRPCResponse = try decodeTRPC([Response<CivitaiPost>].self, from: data)
         let response = tRPCResponse[0].result.data.json
 
         // Handle both Int and String cursor formats by using stringValue
@@ -1331,7 +1340,7 @@ class CivitaiService: ObservableObject {
             }
 
             let (data, _) = try await session.data(for: request)
-            let tRPCResponse = try JSONDecoder().decode([Response<CivitaiImage>].self, from: data)
+            let tRPCResponse = try decodeTRPC([Response<CivitaiImage>].self, from: data)
             return tRPCResponse[0].result.data.json.items.first
         } else if collectionType == "Post" {
             // Fetch from posts and get first image
@@ -1367,7 +1376,7 @@ class CivitaiService: ObservableObject {
             }
 
             let (data, _) = try await session.data(for: request)
-            let tRPCResponse = try JSONDecoder().decode([Response<CivitaiPost>].self, from: data)
+            let tRPCResponse = try decodeTRPC([Response<CivitaiPost>].self, from: data)
             return tRPCResponse[0].result.data.json.items.first?.images?.first
         }
 
