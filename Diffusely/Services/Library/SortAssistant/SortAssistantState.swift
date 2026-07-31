@@ -37,23 +37,36 @@ struct SortAssistantState: Codable, Equatable {
     }
 }
 
-/// Coordinated reader/writer for the state file, mirroring `LibraryAlbumStore`:
-/// synchronous `NSFileCoordinator` I/O that the CALLER must dispatch onto a
-/// dedicated serial queue, never the cooperative pool or main actor
-/// (grey-spinner rule).
+/// Coordinated reader/writer for the state file, routed through
+/// `LibraryFileStore`'s aux helpers (mirrors `LibraryAlbumStore`): plaintext
+/// mode still produces/reads the literal `sort-assistant-state.json` name
+/// (byte-identical to the pre-store implementation), while an encrypted store
+/// seals the same JSON under an opaque `.x` name. The `write` call is
+/// synchronous coordinated I/O that the CALLER must dispatch onto a dedicated
+/// serial queue, never the cooperative pool or main actor (grey-spinner rule).
 struct SortAssistantStateStore {
-    let itemsDirectory: URL
+    let store: LibraryFileStore
 
     static let fileName = "sort-assistant-state.json"
 
-    private var url: URL {
-        itemsDirectory.appendingPathComponent(Self.fileName, isDirectory: false)
+    init(store: LibraryFileStore) {
+        self.store = store
+    }
+
+    /// Convenience for callers/tests that haven't been migrated to the
+    /// vault-aware store yet: builds a passthrough store (`crypto: nil`) over
+    /// `itemsDirectory`, preserving today's plaintext layout exactly. Mirrors
+    /// `LibraryFileWriter(itemsDirectory:)`.
+    init(itemsDirectory: URL) {
+        self.init(store: LibraryFileStore(itemsDirectory: itemsDirectory, crypto: nil))
     }
 
     /// Missing or unreadable file reads as `.empty` — losing rejection memory
-    /// only means some declined suggestions reappear once; never fatal.
+    /// only means some declined suggestions reappear once; never fatal. Also
+    /// what a locked vault reads as (its passthrough store can't find the real
+    /// opaque file), which is an acceptable degrade for this best-effort state.
     func read() -> SortAssistantState {
-        guard let data = try? Data(contentsOf: url),
+        guard let data = store.readAux(name: Self.fileName),
               let state = try? JSONDecoder().decode(SortAssistantState.self, from: data) else {
             return .empty
         }
@@ -61,17 +74,9 @@ struct SortAssistantStateStore {
     }
 
     func write(_ state: SortAssistantState) throws {
-        try FileManager.default.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let json = try encoder.encode(state)
-        let coordinator = NSFileCoordinator()
-        var coordinationError: NSError?
-        var thrown: Error?
-        coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { dest in
-            do { try json.write(to: dest, options: .atomic) } catch { thrown = error }
-        }
-        if let coordinationError { throw coordinationError }
-        if let thrown { throw thrown }
+        try store.writeAux(json, name: Self.fileName)
     }
 }

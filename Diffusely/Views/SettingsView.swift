@@ -4,11 +4,16 @@ struct SettingsView: View {
     @StateObject private var apiKeyManager = APIKeyManager.shared
     @StateObject private var openRouterConfig = OpenRouterConfig.shared
     @ObservedObject private var domainManager = DomainManager.shared
+    @ObservedObject private var vaultProvider = LibraryVaultProvider.shared
     @EnvironmentObject private var libraryStore: LibraryStore
     @State private var apiKeyInput = ""
     @State private var openRouterKeyInput = ""
     @State private var showingAPIKeyInfo = false
     @State private var showingResetConfirmation = false
+    @State private var showingLibraryEncryption = false
+    /// Resume direction for an interrupted migration (or `nil` when complete),
+    /// so the row status reads the right way for a partial disable too.
+    @State private var libraryEncryptionDirection: LibraryMigrationDirection?
     @State private var cacheLimitGB: Int = 2
 
     private static let cacheLimitOptions = [1, 2, 5, 10, 20]
@@ -31,6 +36,17 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("This permanently deletes all \(libraryStore.itemCount) items from your library, including originals in iCloud on all your devices. This cannot be undone.")
+            }
+            // macOS's Settings scene has no navigation stack to push into, so
+            // "Library Encryption" opens as a sheet there; iOS instead uses a
+            // plain `NavigationLink` inside the Form (see `formSections`).
+            // Declaring the sheet unconditionally (rather than under
+            // `#if os(macOS)`) is harmless on iOS: `showingLibraryEncryption`
+            // is never set `true` there.
+            .sheet(isPresented: $showingLibraryEncryption) {
+                NavigationStack {
+                    LibraryEncryptionSettingsView(provider: vaultProvider)
+                }
             }
     }
 
@@ -186,6 +202,31 @@ struct SettingsView: View {
             Button("Rebuild Index") {
                 Task { await libraryStore.rebuildIndex() }
             }
+            .disabled(!canRebuildIndex)
+
+            // Explains the disabled state above rather than letting the tap
+            // silently no-op against `LibraryStore.rebuildIndex()`'s own gate
+            // (mirrors BE-f's "no silent caps" convention).
+            if !canRebuildIndex {
+                Text("Rebuild Index is unavailable while Library Encryption is finishing setup.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            #if os(iOS)
+            NavigationLink {
+                LibraryEncryptionSettingsView(provider: vaultProvider)
+            } label: {
+                libraryEncryptionRow
+            }
+            #else
+            Button {
+                showingLibraryEncryption = true
+            } label: {
+                libraryEncryptionRow
+            }
+            .buttonStyle(.plain)
+            #endif
 
             Button("Reset Library", role: .destructive) {
                 showingResetConfirmation = true
@@ -200,7 +241,58 @@ struct SettingsView: View {
         .onAppear {
             cacheLimitGB = max(1, libraryStore.cacheLimitBytes / (1024 * 1024 * 1024))
         }
+        .task(id: vaultProvider.state) {
+            libraryEncryptionDirection = await vaultProvider.incompleteMigrationDirection()
+        }
 
+        aboutSection
+    }
+
+    /// "Library Encryption" row content shared by the iOS `NavigationLink`
+    /// and the macOS sheet-presenting `Button` in `formSections`. Status text
+    /// mirrors `LibraryEncryptionSettingsView`'s own section switch (Off /
+    /// Finishing setup… / On) so the two never say something different about
+    /// the same state.
+    private var libraryEncryptionRow: some View {
+        HStack {
+            Text("Library Encryption")
+            Spacer()
+            Text(libraryEncryptionStatusText)
+                .foregroundColor(libraryEncryptionStatusColor)
+        }
+    }
+
+    /// Mirrors `LibraryStore.rebuildIndex()`'s own gate (`libraryGate ==
+    /// .browsable`) so the button is disabled — not just a silent no-op tap —
+    /// whenever the store would skip the rebuild anyway: `.migrating` or
+    /// `.setupIncomplete` (both unlocked, and Settings is reachable in both).
+    private var canRebuildIndex: Bool {
+        vaultProvider.libraryGate == .browsable
+    }
+
+    private var libraryEncryptionStatusText: String {
+        switch vaultProvider.state {
+        case .notConfigured:
+            return "Off"
+        case .locked, .unlocked:
+            switch libraryEncryptionDirection {
+            case .enable: return "Finishing setup…"
+            case .disable: return "Turning off…"
+            case nil: return "On"
+            }
+        }
+    }
+
+    private var libraryEncryptionStatusColor: Color {
+        switch vaultProvider.state {
+        case .notConfigured:
+            return .secondary
+        case .locked, .unlocked:
+            return libraryEncryptionDirection == nil ? .green : .orange
+        }
+    }
+
+    private var aboutSection: some View {
         Section("About") {
             HStack {
                 Text("Version")

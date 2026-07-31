@@ -77,6 +77,21 @@ enum EmbeddedMetadataReader {
         return result
     }
 
+    /// Reads embedded generation metadata from already-in-memory bytes — the
+    /// decrypted-media counterpart to `read(fileURL:)` for a Library store
+    /// that can only vend `Data` (`LibraryFileStore.readMedia`), never a
+    /// plaintext on-disk URL, once encrypted. No `NSFileCoordinator` (there's
+    /// nothing left to coordinate — the bytes are already fully in memory),
+    /// but still CPU work worth keeping off the main actor, matching
+    /// `read(fileURL:)`'s call-site contract.
+    static func read(data: Data) -> EmbeddedMetadata? {
+        guard data.count >= 8 else { return nil }
+        if data.prefix(8).elementsEqual(pngSignature) {
+            return embeddedMetadata(fromPNG: Data(data.prefix(pngPrefixCap)))
+        }
+        return embeddedMetadata(fromEXIFData: data)
+    }
+
     /// Selects the highest-priority text chunk and parses it.
     private static func embeddedMetadata(fromPNG data: Data) -> EmbeddedMetadata? {
         let chunks = pngTextChunks(in: data)
@@ -95,9 +110,20 @@ enum EmbeddedMetadataReader {
     /// Software field holds a useless generation UUID, so it is intentionally ignored.)
     private static func embeddedMetadata(fromEXIFFile url: URL) -> EmbeddedMetadata? {
         let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else { return nil }
+        return embeddedMetadata(fromEXIF: source)
+    }
+
+    /// `Data`-backed counterpart to `embeddedMetadata(fromEXIFFile:)`, for
+    /// already-decrypted bytes with no on-disk plaintext to point ImageIO at.
+    private static func embeddedMetadata(fromEXIFData data: Data) -> EmbeddedMetadata? {
+        let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }
+        return embeddedMetadata(fromEXIF: source)
+    }
+
+    private static func embeddedMetadata(fromEXIF source: CGImageSource) -> EmbeddedMetadata? {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
 
         if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
            let comment = exif[kCGImagePropertyExifUserComment] as? String,

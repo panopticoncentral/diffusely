@@ -52,6 +52,14 @@ actor LibraryContainer {
         return resolved
     }
 
+    /// `vault.json` + backup live in `Documents/` (siblings of `Items/`), so they
+    /// are never enumerated as library items.
+    func vaultURLs() throws -> (vault: URL, backup: URL) {
+        let documents = try itemsDirectory().deletingLastPathComponent()
+        return (documents.appendingPathComponent("vault.json"),
+                documents.appendingPathComponent("vault.backup.json"))
+    }
+
     func metadataURL(forItemID id: Int) throws -> URL {
         try itemsDirectory().appendingPathComponent("\(id).json", isDirectory: false)
     }

@@ -40,7 +40,12 @@ final class SortAssistantService: ObservableObject {
     private let albumService: LibraryAlbumService
     private let classifier: PromptClassifying
     private let itemsDirectory: URL
-    private let stateStore: SortAssistantStateStore
+    /// Resolves the vault's current lock state and (when unlocked) its crypto
+    /// for the state-file store. Defaults to the process-wide
+    /// `LibraryVaultProvider.shared` singleton, so production call sites need
+    /// no change. Overridable so tests can drive `.locked` without touching
+    /// the shared singleton — mirrors the seam on `LibraryAlbumService`.
+    private let resolveVaultContext: () async -> (state: LibraryVault.State, crypto: LibraryFileCrypto?)
     private var state = SortAssistantState.empty
     private var pendingScan: SortAssistantScanner.ScanResult?
     private var runTask: Task<Void, Never>?
@@ -55,11 +60,28 @@ final class SortAssistantService: ObservableObject {
         qos: .utility
     )
 
-    init(albumService: LibraryAlbumService, classifier: PromptClassifying, itemsDirectory: URL) {
+    init(
+        albumService: LibraryAlbumService,
+        classifier: PromptClassifying,
+        itemsDirectory: URL,
+        resolveVaultContext: @escaping () async -> (state: LibraryVault.State, crypto: LibraryFileCrypto?) = {
+            let ctx = await LibraryVaultProvider.shared.reconcileContext()
+            return (ctx.state, ctx.store.crypto)
+        }
+    ) {
         self.albumService = albumService
         self.classifier = classifier
         self.itemsDirectory = itemsDirectory
-        self.stateStore = SortAssistantStateStore(itemsDirectory: itemsDirectory)
+        self.resolveVaultContext = resolveVaultContext
+    }
+
+    /// Atomic `(state, store)` pair for the state file, merging `itemsDirectory`
+    /// with the vault's current lock state + crypto — mirrors
+    /// `LibraryAlbumService.context()`.
+    private func stateFileContext() async -> (state: LibraryVault.State, store: SortAssistantStateStore) {
+        let vault = await resolveVaultContext()
+        let fileStore = LibraryFileStore(itemsDirectory: itemsDirectory, crypto: vault.crypto)
+        return (vault.state, SortAssistantStateStore(store: fileStore))
     }
 
     // MARK: - Task-tracked entry points (UI)
@@ -95,8 +117,15 @@ final class SortAssistantService: ObservableObject {
     /// Internal (not private) so tests drive it directly without task polling.
     func run() async {
         phase = .scanning
-        let scan = await SortAssistantScanner(itemsDirectory: itemsDirectory).scan()
-        let store = stateStore
+        // Shares this service's `resolveVaultContext` with the scanner (same
+        // seam the state-file store uses via `stateFileContext()`) so a
+        // test-injected `.locked` override drives both consistently, rather
+        // than the scanner independently reading the real
+        // `LibraryVaultProvider.shared` singleton.
+        let scan = await SortAssistantScanner(
+            itemsDirectory: itemsDirectory, resolveVaultContext: resolveVaultContext
+        ).scan()
+        let store = await stateFileContext().store
         state = await Self.onStateQueue { store.read() }
 
         // Prompts of every prompt-bearing member, per album uuidString.
@@ -251,9 +280,16 @@ final class SortAssistantService: ObservableObject {
             break
         }
 
-        let snapshot = state
-        let store = stateStore
-        await Self.onStateQueue { try? store.write(snapshot) }
+        // Guard-skip the state-file save while locked — never write plaintext
+        // rejection memory into an encrypted-but-locked container. The group
+        // is still cleared from the pending review list either way: it's
+        // in-memory UI state, not persisted, and membership writes above are
+        // already independently guarded by `LibraryAlbumService`.
+        let (vaultState, store) = await stateFileContext()
+        if vaultState != .locked {
+            let snapshot = state
+            await Self.onStateQueue { try? store.write(snapshot) }
+        }
         groups.removeAll { $0.id == group.id }
     }
 

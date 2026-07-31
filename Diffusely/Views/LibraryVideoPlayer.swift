@@ -28,7 +28,7 @@ struct LibraryVideoPlayer: View {
                         ProgressView().tint(.white)
                     }
                 }
-            case .video(let player):
+            case .video(let player, let tempURL):
                 VideoPlayer(player: player)
                     .onAppear {
                         player.isMuted = isMuted
@@ -47,6 +47,12 @@ struct LibraryVideoPlayer: View {
                         if let observer = loopObserver {
                             NotificationCenter.default.removeObserver(observer)
                             loopObserver = nil
+                        }
+                        // Decrypt-to-temp path only (`tempURL` is nil for the
+                        // plaintext/iCloud path, which plays the real container
+                        // file and must not be deleted here).
+                        if let tempURL {
+                            LibraryTempMedia.remove(tempURL)
                         }
                     }
             case .failed:

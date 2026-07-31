@@ -57,6 +57,13 @@ struct DiffuselyApp: App {
     let sharedModelContainer: ModelContainer
     @StateObject private var libraryStore: LibraryStore
 
+    @Environment(\.scenePhase) private var scenePhase
+    /// When we last entered the background; nil while foregrounded. Used to
+    /// decide whether an idle auto-lock is due on the next return to `.active`.
+    @State private var backgroundedAt: Date?
+    /// Idle timeout after which a returning app re-locks the Library vault.
+    private let autoLockThreshold: TimeInterval = 300
+
     init() {
         AppImagePipeline.configure()
         let container = Self.makeModelContainer()
@@ -138,6 +145,30 @@ struct DiffuselyApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(libraryStore)
+                // Idle auto-lock: on return to the foreground past the idle
+                // threshold, re-lock the Library vault so it demands an unlock
+                // again. We don't lock on `.background` itself — only on the
+                // next `.active` if enough time has passed (matches the plan).
+                // Locking is a structural no-op when the vault isn't unlocked
+                // (it just clears an already-nil DEK), and it touches ONLY the
+                // Library gate — the feed tabs stay fully usable.
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .background:
+                        backgroundedAt = Date()
+                    case .active:
+                        if let at = backgroundedAt,
+                           Date().timeIntervalSince(at) > autoLockThreshold {
+                            Task {
+                                await LibraryVaultProvider.shared.vault?.lock()
+                                await LibraryVaultProvider.shared.refreshState()
+                            }
+                        }
+                        backgroundedAt = nil
+                    default:
+                        break
+                    }
+                }
         }
         .modelContainer(sharedModelContainer)
         #if os(macOS)

@@ -197,4 +197,45 @@ import CoreGraphics
         defer { try? FileManager.default.removeItem(at: url) }
         #expect(EmbeddedMetadataReader.read(fileURL: url)?.source == .pngText(keyword: "Comment"))
     }
+
+    // MARK: read(data:) — the decrypted-media counterpart used once a Library
+    // read goes through `LibraryFileStore.readMedia` (Data, not a URL).
+    // Mirrors the `read(fileURL:)` cases above so both entry points agree.
+
+    @Test func dataReadExtractsParametersFromPNGBytes() {
+        let png = Self.makePNG(textChunks: [("parameters", "a prompt\nNegative prompt: bad\nSteps: 20, Sampler: DDIM")])
+        let meta = EmbeddedMetadataReader.read(data: png)
+        #expect(meta?.source == .pngText(keyword: "parameters"))
+        #expect(meta?.parameters?.prompt == "a prompt")
+        #expect(meta?.parameters?.negativePrompt == "bad")
+    }
+
+    @Test func dataReadExtractsUserCommentFromJPEGBytes() throws {
+        let url = try Self.makeJPEGWithUserComment("a bare prompt from civitai generator")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let data = try Data(contentsOf: url)
+
+        let meta = EmbeddedMetadataReader.read(data: data)
+        #expect(meta?.source == .exifUserComment)
+        #expect(meta?.raw == "a bare prompt from civitai generator")
+        #expect(meta?.parameters == nil) // not A1111-shaped -> raw only
+    }
+
+    @Test func dataReadReturnsNilForDataWithNoMetadata() {
+        let png = Self.makePNG(textChunks: [])
+        #expect(EmbeddedMetadataReader.read(data: png) == nil)
+    }
+
+    @Test func dataReadReturnsNilForEmptyData() {
+        #expect(EmbeddedMetadataReader.read(data: Data()) == nil)
+    }
+
+    @Test func dataReadAgreesWithFileReadForTheSameBytes() throws {
+        let png = Self.makePNG(textChunks: [("parameters", "p\nSteps: 5")])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("emd-\(UUID().uuidString).png")
+        try png.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(EmbeddedMetadataReader.read(data: png) == EmbeddedMetadataReader.read(fileURL: url))
+    }
 }

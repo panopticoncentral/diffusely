@@ -45,15 +45,16 @@ struct LibraryAlbumFile: Codable, Equatable {
     }
 }
 
-/// Coordinated reader/writer for album files in the container. Directory-injected
-/// so it is unit-testable against a temp directory without iCloud. The write/delete
-/// use `NSFileCoordinator` exactly like `LibraryFileWriter`. The `write`/`delete`
-/// calls are synchronous coordinated file I/O; the caller (`LibraryAlbumService`,
-/// added later) MUST dispatch them onto a dedicated serial queue, never the
-/// cooperative pool or main actor, to avoid the grey-spinner cooperative-pool
-/// starvation regression.
+/// Coordinated reader/writer for album files in the container, routed through
+/// `LibraryFileStore`'s aux helpers — plaintext mode still produces/reads/deletes
+/// the literal `album-{uuid}.json` name (byte-identical to the pre-store
+/// implementation), while an encrypted store seals the same JSON under an
+/// opaque `.x` name. The `write`/`delete` calls are synchronous coordinated
+/// file I/O; the caller (`LibraryAlbumService`) MUST dispatch them onto a
+/// dedicated serial queue, never the cooperative pool or main actor, to avoid
+/// the grey-spinner cooperative-pool starvation regression.
 struct LibraryAlbumStore {
-    let itemsDirectory: URL
+    let store: LibraryFileStore
 
     static let fileNamePrefix = "album-"
 
@@ -68,37 +69,31 @@ struct LibraryAlbumStore {
         return UUID(uuidString: String(name[start..<end]))
     }
 
-    private func url(for id: UUID) -> URL {
-        itemsDirectory.appendingPathComponent(Self.fileName(for: id), isDirectory: false)
+    init(store: LibraryFileStore) {
+        self.store = store
     }
 
+    /// Convenience for callers/tests that haven't been migrated to the
+    /// vault-aware store yet: builds a passthrough store (`crypto: nil`) over
+    /// `itemsDirectory`, preserving today's plaintext `album-<uuid>.json`
+    /// layout exactly. Mirrors `LibraryFileWriter(itemsDirectory:)`.
+    init(itemsDirectory: URL) {
+        self.init(store: LibraryFileStore(itemsDirectory: itemsDirectory, crypto: nil))
+    }
+
+    var itemsDirectory: URL { store.itemsDirectory }
+
     func read(id: UUID) -> LibraryAlbumFile? {
-        guard let data = try? Data(contentsOf: url(for: id)) else { return nil }
+        guard let data = store.readAux(name: Self.fileName(for: id)) else { return nil }
         return try? LibraryAlbumFile.decoder().decode(LibraryAlbumFile.self, from: data)
     }
 
     func write(_ file: LibraryAlbumFile) throws {
-        try FileManager.default.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
         let json = try LibraryAlbumFile.encoder().encode(file)
-        let coordinator = NSFileCoordinator()
-        var coordinationError: NSError?
-        var thrown: Error?
-        coordinator.coordinate(writingItemAt: url(for: file.id), options: .forReplacing, error: &coordinationError) { dest in
-            do { try json.write(to: dest, options: .atomic) } catch { thrown = error }
-        }
-        if let coordinationError { throw coordinationError }
-        if let thrown { throw thrown }
+        try store.writeAux(json, name: Self.fileName(for: file.id))
     }
 
     func delete(id: UUID) {
-        let target = url(for: id)
-        guard FileManager.default.fileExists(atPath: target.path) else { return }
-        let coordinator = NSFileCoordinator()
-        // Best-effort delete: coordination/removal errors are intentionally
-        // ignored (the file is usually already gone), matching LibraryStore.deleteFiles.
-        var err: NSError?
-        coordinator.coordinate(writingItemAt: target, options: .forDeleting, error: &err) { u in
-            try? FileManager.default.removeItem(at: u)
-        }
+        store.removeAux(name: Self.fileName(for: id))
     }
 }

@@ -7,6 +7,18 @@ struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    /// Observes the shared vault singleton (not owned here → `@ObservedObject`,
+    /// matching the SettingsView pattern). Its coarse `libraryGate` decides
+    /// whether the Library is browsable; when it isn't, the grid is never built
+    /// and the content loaders below are short-circuited, so a locked /
+    /// migrating / loading / setup-incomplete Library issues zero container
+    /// reads, zero reconcile, and zero image requests.
+    @ObservedObject private var vaultProvider = LibraryVaultProvider.shared
+
+    /// True only when the vault gate permits browsing (encryption off, or
+    /// fully-migrated + unlocked). Every content load / reload guards on this.
+    private var isBrowsable: Bool { vaultProvider.libraryGate == .browsable }
+
     /// Which slice of the library this instance renders. `.all` is the top-level
     /// Library (and shows the Photos/Albums switcher — added in Task 11); the
     /// other cases are pushed detail screens scoped to an album or the
@@ -20,6 +32,13 @@ struct LibraryView: View {
     /// and the rename alert's seed text reflect the new name immediately instead
     /// of the value captured when the view was pushed.
     @State private var currentScopeTitle: String? = nil
+
+    /// Which direction the `.setupIncomplete` block should describe — a partial
+    /// enable ("finish encrypting") vs a partial disable ("finish turning off").
+    /// Resolved off `provider.incompleteMigrationDirection()` whenever the gate
+    /// becomes `.setupIncomplete`; defaults to `.enable` for the brief window
+    /// before that async resolves.
+    @State private var setupIncompleteDirection: LibraryMigrationDirection = .enable
 
     @State private var sortService: LibrarySortService?
     @State private var backfillService: LibraryDateBackfillService?
@@ -64,6 +83,14 @@ struct LibraryView: View {
     /// Files handed to `QuickLookHost` when Space previews the focused item.
     @State private var quickLookURLs: [URL] = []
     @State private var quickLookPresented = false
+    /// A decrypt-to-temp file WE materialized (via `LibraryTempMedia`) for
+    /// whichever item `quickLookURLs` currently points at — nil when
+    /// previewing a plaintext file directly (nothing ephemeral to clean up)
+    /// or when nothing has been previewed yet. This view is the sole owner:
+    /// reclaimed whenever superseded by a new preview and on panel close, so
+    /// a decrypted temp file never outlives being displayed. Mirrors
+    /// `LibraryMediaLoader.decryptedTempURL`'s discipline.
+    @State private var quickLookTempURL: URL?
 
     struct FocusedItem: Identifiable, Hashable { let id: Int }
     #endif
@@ -134,8 +161,30 @@ struct LibraryView: View {
         }
     }
 
+    /// The visible content, gated by the vault. Only `.browsable` builds the
+    /// real grid (`rootContent`); every other gate shows an inert block/
+    /// placeholder that touches neither the store nor any image request. The
+    /// existing modifier chain still hangs off this Group — but its content
+    /// `.task` and reload triggers are all guarded on `.browsable` below, so
+    /// nothing loads while gated.
+    @ViewBuilder
+    private var gatedContent: some View {
+        switch vaultProvider.libraryGate {
+        case .loading:
+            LibraryGatePlaceholderView()
+        case .locked:
+            LibraryUnlockView(provider: vaultProvider)
+        case .migrating:
+            LibraryMigrationBlockView(phase: vaultProvider.migrationPhase)
+        case .setupIncomplete:
+            LibrarySetupIncompleteView(direction: setupIncompleteDirection)
+        case .browsable:
+            rootContent
+        }
+    }
+
     var body: some View {
-        rootContent
+        gatedContent
             .navigationTitle(isSelecting ? selectionTitle : (resolvedScopeTitle ?? "Library"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -234,21 +283,38 @@ struct LibraryView: View {
                 SettingsView()
             }
             #endif
-            .task {
+            // Keyed on the gate so the content load runs ONLY when the Library
+            // is browsable, and RE-runs when the gate transitions into
+            // `.browsable` (after unlock, after a migration finishes, after a
+            // resumed setup completes). While non-browsable this body seeds the
+            // (cheap) scope title and returns before any store read — no
+            // reconcile, no image request.
+            .task(id: vaultProvider.libraryGate) {
                 if currentScopeTitle == nil { currentScopeTitle = scopeTitle }
+                // Resolve which way the setup-incomplete block should read before
+                // the browsable guard below (it returns early precisely when the
+                // gate is non-browsable). Falls back to `.enable` if the direction
+                // can't be resolved.
+                if vaultProvider.libraryGate == .setupIncomplete {
+                    setupIncompleteDirection = await vaultProvider.incompleteMigrationDirection() ?? .enable
+                }
+                guard isBrowsable else { return }
                 store.start()
                 initializeServices()
                 reloadContent()
                 await maybeStartBackfill()
             }
             .onChange(of: selectedSort) {
+                guard isBrowsable else { return }
                 scheduleReload()
                 Task { await maybeStartBackfill() }
             }
             .onChange(of: store.itemCount) {
+                guard isBrowsable else { return }
                 scheduleReload()
             }
             .onChange(of: store.albumsVersion) {
+                guard isBrowsable else { return }
                 scheduleReload()
             }
     }
@@ -257,7 +323,12 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
-        if isSelecting {
+        // `isSelecting` is only reachable via the browsable grid's Select
+        // button, but a mid-selection auto-lock could leave it stale-true — so
+        // require `isBrowsable` here too, guaranteeing the store-backed
+        // selection toolbar (Select All / trash / Manage Albums) is never shown
+        // over a non-browsable Library.
+        if isSelecting && isBrowsable {
             ToolbarItem(placement: .navigation) {
                 Button(allSelected ? "Deselect All" : "Select All") {
                     if allSelected {
@@ -307,7 +378,9 @@ struct LibraryView: View {
                 }
             }
         } else {
-            if filter == .all {
+            // The Mode picker is store-backed browsing UI (Albums mode reads the
+            // album browser), so it's present only when browsable.
+            if isBrowsable && filter == .all {
                 ToolbarItem(placement: .principal) {
                     Picker("Mode", selection: $mode) {
                         Text("Photos").tag(Mode.photos)
@@ -319,7 +392,10 @@ struct LibraryView: View {
             }
             #if os(iOS)
             // iOS reaches Settings from each feed's toolbar gear; the Library
-            // tab needs its own (macOS uses the app menu ▸ Settings).
+            // tab needs its own (macOS uses the app menu ▸ Settings). This is
+            // the ONE affordance reachable in every gate — it's the path to
+            // enable encryption and to resume a `.setupIncomplete` migration, so
+            // it stays OUTSIDE the `isBrowsable` guard below.
             if filter == .all {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -330,31 +406,39 @@ struct LibraryView: View {
                 }
             }
             #endif
-            // Sort and Select act on the photo grid. In Albums mode that grid is
-            // hidden behind the album browser, so offering them there would sort
-            // or select content the user can't see (Select All + delete could
-            // then bulk-remove invisible items). Hide both in Albums mode.
-            if !isAlbumsMode {
-                ToolbarItem(placement: .primaryAction) {
-                    LibrarySortMenu(selectedSort: $selectedSort)
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Select") { isSelecting = true }
-                        .disabled(content.isEmpty)
-                }
-            }
-            if filter == .all && mode == .albums {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingSortAssistant = true
-                    } label: {
-                        Label("Sort Assistant", systemImage: "sparkles")
+            // Everything below acts on the photo grid / album browser and is
+            // store-backed (Sort/Select read+mutate content; Sort Assistant
+            // presents a `store`-backed sheet; the album ellipsis renames/
+            // deletes albums). None may be present while the Library is
+            // non-browsable (locked / migrating / loading / setup-incomplete),
+            // or a toolbar action could present a store-backed sheet or trigger
+            // a read over a gated Library.
+            if isBrowsable {
+                // Sort and Select act on the photo grid. In Albums mode that grid
+                // is hidden behind the album browser, so offering them there would
+                // sort or select content the user can't see (Select All + delete
+                // could then bulk-remove invisible items). Hide both in Albums mode.
+                if !isAlbumsMode {
+                    ToolbarItem(placement: .primaryAction) {
+                        LibrarySortMenu(selectedSort: $selectedSort)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Select") { isSelecting = true }
+                            .disabled(content.isEmpty)
                     }
                 }
-            }
-            if case .album = filter {
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
+                if filter == .all && mode == .albums {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingSortAssistant = true
+                        } label: {
+                            Label("Sort Assistant", systemImage: "sparkles")
+                        }
+                    }
+                }
+                if case .album = filter {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
                         Button {
                             if case .album(let albumID) = filter {
                                 beginRenameAlbum(id: albumID, name: resolvedScopeTitle ?? "")
@@ -371,6 +455,7 @@ struct LibraryView: View {
                             }
                         } label: { Label("Delete Album", systemImage: "trash") }
                     } label: { Image(systemName: "ellipsis.circle") }
+                    }
                 }
             }
         }
@@ -457,6 +542,13 @@ struct LibraryView: View {
                 .background {
                     QuickLookHost(urls: quickLookURLs, isPresented: $quickLookPresented) {
                         quickLookPresented = false
+                        // Panel closed: nothing needs the decrypted temp file
+                        // (if any) any more — reclaim it now rather than
+                        // waiting on the next launch's sweep().
+                        if let tempURL = quickLookTempURL {
+                            LibraryTempMedia.remove(tempURL)
+                            quickLookTempURL = nil
+                        }
                     }
                 }
                 #endif
@@ -697,10 +789,43 @@ struct LibraryView: View {
     private func quickLookFocusedItem(_ index: Int) {
         guard orderedItems.indices.contains(index) else { return }
         let item = orderedItems[index]
+        let itemID = item.itemID
+        let ext = (item.mediaFileName as NSString).pathExtension
         Task {
-            guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-            quickLookURLs = [dir.appendingPathComponent(item.mediaFileName)]
+            let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+            // Defensive: T17 gates the whole Library while locked, so this
+            // shouldn't normally fire locked. If it does, treat the preview
+            // as unavailable rather than falling through to `fileStore`'s
+            // passthrough behavior (a locked snapshot's store is a plaintext
+            // passthrough by design) — never hand QuickLook a legacy
+            // plaintext name over an actually-encrypted container.
+            guard state != .locked else { return }
+
+            let resolvedURL: URL
+            let ownedTempURL: URL?
+            if fileStore.isEncrypted {
+                guard let tempURL = await LibraryTempMedia.materialize(
+                    store: fileStore, itemID: itemID, plaintextExtension: ext
+                ) else { return }
+                resolvedURL = tempURL
+                ownedTempURL = tempURL
+            } else {
+                resolvedURL = fileStore.mediaURL(itemID: itemID, plaintextExtension: ext)
+                ownedTempURL = nil
+            }
+
+            // Read `quickLookTempURL` right here — not captured before the
+            // decrypt above — so two overlapping Quick Look requests (fast
+            // repeated Space presses) can't leak a temp file: whichever
+            // request finishes last always sees, and reclaims, the true
+            // prior owner instead of a stale snapshot from its own start.
+            let staleTempURL = quickLookTempURL
+            quickLookTempURL = ownedTempURL
+            quickLookURLs = [resolvedURL]
             quickLookPresented = true
+            if let staleTempURL, staleTempURL != ownedTempURL {
+                LibraryTempMedia.remove(staleTempURL)
+            }
         }
     }
 
@@ -802,6 +927,7 @@ struct LibraryView: View {
     /// Defer a reload to the next runloop tick, collapsing multiple triggers
     /// fired within the same update into a single `reloadContent()`.
     private func scheduleReload() {
+        guard isBrowsable else { return }
         guard !reloadScheduled else { return }
         reloadScheduled = true
         Task { @MainActor in
@@ -811,6 +937,10 @@ struct LibraryView: View {
     }
 
     private func reloadContent() {
+        // Never scan the store while the Library is gated (locked / migrating /
+        // loading / setup-incomplete). Defense-in-depth on top of the `.task`
+        // and `.onChange` guards.
+        guard isBrowsable else { return }
         guard let sortService else { return }
         // One fetch for content + album summaries + the not-in-any-album count,
         // instead of three separate full-table fetches on the main thread.
@@ -846,6 +976,7 @@ struct LibraryView: View {
     /// survives `LibraryView` rebuilds (every navigation into the Library tab
     /// would otherwise restart the backfill and re-show the spinner banner).
     private func maybeStartBackfill() async {
+        guard isBrowsable else { return }
         guard !store.didRunDateBackfillThisSession,
               let sortService else { return }
         guard sortService.countItemsNeedingDateBackfill() > 0 else { return }
@@ -900,5 +1031,105 @@ struct LibraryView: View {
         var hasher = Hasher()
         hasher.combine(username)
         return abs(hasher.finalize() & 0x7FFF_FFFF)
+    }
+}
+
+// MARK: - Vault gate views
+
+/// Shown while `libraryGate == .loading` — the pre-bootstrap window before the
+/// provider has resolved the real vault state. Deliberately inert: it issues NO
+/// content load, so the true gate (possibly `.locked`) is known before any
+/// reconcile or image request could fire. Closes the launch race where the view
+/// would otherwise briefly see `.notConfigured` and kick off a reconcile.
+private struct LibraryGatePlaceholderView: View {
+    var body: some View {
+        ProgressView()
+            .controlSize(.large)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
+    }
+}
+
+/// Blocks the Library while a forward/reverse migration runs (`libraryGate ==
+/// .migrating`). Reads the fine `phase` (done/total) so the numbers update in
+/// place without churning `libraryGate` — the content `.task` keyed on the
+/// gate therefore does not re-run on every progress tick.
+private struct LibraryMigrationBlockView: View {
+    let phase: LibraryEncryptionCoordinator.Phase
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text(label)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            Text("Keep Diffusely open until this finishes.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    private var label: String {
+        switch phase {
+        case .encrypting(let done, let total):
+            "Encrypting your Library… \(done)/\(total)"
+        case .decrypting(let done, let total):
+            "Decrypting your Library… \(done)/\(total)"
+        case .idle, .failed:
+            // Unreachable: `LibraryVaultProvider.computedGate()` maps ONLY
+            // `.encrypting`/`.decrypting` to the `.migrating` gate this view
+            // renders under; `.idle` and `.failed` fall through to the
+            // vault-state gate (`.browsable`/`.setupIncomplete`/`.locked`),
+            // so this view is never shown for them. A `.failed` enable, in
+            // particular, surfaces as `.setupIncomplete` → LibrarySetupIncompleteView
+            // ("open Settings to resume"), not here. Neutral fallback only.
+            "Finishing up…"
+        }
+    }
+}
+
+/// Shown when the vault is configured + unlocked but plaintext files still
+/// await encryption (`libraryGate == .setupIncomplete`) — a partial or failed
+/// enable. The grid stays blocked so reconcile can't prune the index against
+/// the half-encrypted store; the user is pointed to Settings to resume.
+private struct LibrarySetupIncompleteView: View {
+    /// Whether the half-migrated state is an interrupted enable or an
+    /// interrupted disable — both block the grid, but the copy must point the
+    /// right way (and Settings' Resume runs the matching direction).
+    let direction: LibraryMigrationDirection
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "lock.trianglebadge.exclamationmark")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    private var title: String {
+        switch direction {
+        case .enable: "Encryption Setup Didn't Finish"
+        case .disable: "Still Turning Off Encryption"
+        }
+    }
+
+    private var message: String {
+        switch direction {
+        case .enable: "Open Settings to finish encrypting your Library."
+        case .disable: "Open Settings to finish turning off encryption."
+        }
     }
 }

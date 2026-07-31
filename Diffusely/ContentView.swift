@@ -47,6 +47,27 @@ struct ContentView: View {
     @State private var selectedTab = 0
     #endif
 
+    /// One-time launch wiring, shared by both platform layouts so they can't
+    /// drift. Order matters:
+    /// 1. Reclaim any decrypted plaintext temp files left by a previous run
+    ///    (`LibraryTempMedia.sweepAsync()`), which runs the blocking FileManager
+    ///    I/O on a dedicated queue — never the main actor and never the Swift
+    ///    concurrency cooperative pool (grey-spinner / cooperative-pool
+    ///    discipline; `Task.detached` would have used the pool).
+    /// 2. Resolve the vault singleton and settle its published state/gate
+    ///    (`bootstrap()` + `refreshState()`) BEFORE the subsystem starts, so a
+    ///    configured vault is known-locked and the subsequent reconcile's
+    ///    locked-skip engages instead of scanning a locked/encrypted container.
+    /// 3. Start the library subsystem (idempotent; LibraryView's own gated
+    ///    `.task` is a no-op when this already ran).
+    @MainActor
+    private func startLibrarySubsystem() async {
+        await LibraryTempMedia.sweepAsync()
+        await LibraryVaultProvider.shared.bootstrap()
+        await LibraryVaultProvider.shared.refreshState()
+        libraryStore.start()
+    }
+
     var body: some View {
         #if os(macOS)
         NavigationSplitView {
@@ -80,8 +101,9 @@ struct ContentView: View {
         .focusedSceneValue(\.sidebarSelection, $selectedSection)
         // Start the library subsystem at launch so its iCloud/totals state is
         // accurate no matter which section opens first (not only the Library
-        // tab). start() is idempotent, so LibraryView's own call is a no-op.
-        .task { libraryStore.start() }
+        // tab), after sweeping stale plaintext temp files and resolving the
+        // vault. start() is idempotent, so LibraryView's own call is a no-op.
+        .task { await startLibrarySubsystem() }
         #else
         // Every tab is a routed NavigationStack: drill-ins (user, post, tag,
         // image) push with a system back button and edge swipe-back, instead
@@ -132,7 +154,7 @@ struct ContentView: View {
                 }
                 .tag(4)
         }
-        .task { libraryStore.start() }
+        .task { await startLibrarySubsystem() }
         #endif
     }
 }

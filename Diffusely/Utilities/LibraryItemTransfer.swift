@@ -22,10 +22,32 @@ struct LibraryItemTransfer: Codable, Transferable {
     let itemID: Int
     let mediaFileName: String
 
+    /// Thrown when the drop can't produce a file: the vault is locked (T17
+    /// gates the whole Library while locked, so this shouldn't normally
+    /// happen), or the encrypted media couldn't be read/decrypted.
+    private enum TransferError: Error { case unavailable }
+
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .item) { transfer in
-            let dir = try await LibraryContainer.shared.itemsDirectory()
-            return SentTransferredFile(dir.appendingPathComponent(transfer.mediaFileName))
+            let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+            // Defensive: never fall through to `fileStore`'s passthrough
+            // behavior while locked (a locked snapshot's store is a
+            // plaintext passthrough by design) — that would build a legacy
+            // plaintext name over what's actually an encrypted container.
+            guard state != .locked else { throw TransferError.unavailable }
+
+            let ext = (transfer.mediaFileName as NSString).pathExtension
+            if fileStore.isEncrypted {
+                // Drag-out hands the URL to the system, which copies the file
+                // itself with no completion signal back to us — so unlike
+                // Quick Look, this temp file is deliberately NOT removed
+                // here. It's reclaimed by `LibraryTempMedia.sweep()` instead.
+                guard let tempURL = await LibraryTempMedia.materialize(
+                    store: fileStore, itemID: transfer.itemID, plaintextExtension: ext
+                ) else { throw TransferError.unavailable }
+                return SentTransferredFile(tempURL)
+            }
+            return SentTransferredFile(fileStore.mediaURL(itemID: transfer.itemID, plaintextExtension: ext))
         }
         CodableRepresentation(contentType: .diffuselyLibraryItem)
     }

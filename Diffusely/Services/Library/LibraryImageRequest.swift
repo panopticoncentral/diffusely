@@ -79,6 +79,13 @@ enum LibraryImageRequest {
 
     /// The tier cascade. Runs only on a true Nuke cache miss.
     private static func loadBytes(itemID: Int, mediaFileName: String, isVideo: Bool, maxDimension: CGFloat) async throws -> Data {
+        let store = await LibraryVaultProvider.shared.fileStore()
+
+        if store.isEncrypted {
+            return try await loadEncryptedBytes(itemID: itemID, isVideo: isVideo, maxDimension: maxDimension, store: store)
+        }
+
+        // --- existing plaintext cascade, unchanged ---
         let dir = try await LibraryContainer.shared.itemsDirectory()
         let originalURL = dir.appendingPathComponent(mediaFileName)
 
@@ -98,6 +105,47 @@ enum LibraryImageRequest {
             throw LoadError.unavailable
         }
         return data
+    }
+
+    /// Encrypted-vault byte cascade: no CDN shortcut (that would network-leak
+    /// which images are saved to a third party). Materializes the opaque
+    /// media file from iCloud if needed, decrypts it in memory, then builds
+    /// the thumbnail from the decrypted bytes — for video, via a decrypt-to-temp
+    /// poster frame that is removed on every exit path.
+    private static func loadEncryptedBytes(itemID: Int, isVideo: Bool, maxDimension: CGFloat, store: LibraryFileStore) async throws -> Data {
+        let mediaURL = store.mediaURL(itemID: itemID, plaintextExtension: "")
+        if await LibraryFileMaterializer.isReady(url: mediaURL) == false {
+            try await LibraryFileMaterializer.download(url: mediaURL)
+        }
+
+        guard let media = await runIO({ decryptedMediaData(itemID: itemID, store: store) }) else {
+            throw LoadError.unavailable
+        }
+
+        if isVideo {
+            let tempURL = try LibraryTempMedia.writePlaintext(media, itemID: itemID, ext: "mp4")
+            defer { LibraryTempMedia.remove(tempURL) }
+            guard let image = await extractPosterFrame(url: tempURL, maxDimension: maxDimension),
+                  let data = image.jpegData(compressionQuality: 0.8) else {
+                throw LoadError.unavailable
+            }
+            return data
+        }
+
+        guard let image = await runIO({ ImageDownsampler.downsample(data: media, maxDimension: maxDimension) }),
+              let data = image.jpegData(compressionQuality: 0.8) else {
+            throw LoadError.unavailable
+        }
+        return data
+    }
+
+    /// Decrypts the item's media blob via the store — the passed extension is
+    /// ignored under encryption (the media role token is extension-independent),
+    /// so `"jpeg"` here is a placeholder, not a claim about the underlying media
+    /// type. Blocking file I/O: callers must run this on `runIO`, never inline
+    /// on the cooperative pool.
+    static func decryptedMediaData(itemID: Int, store: LibraryFileStore) -> Data? {
+        store.readMedia(itemID: itemID, plaintextExtension: "jpeg")
     }
 
     /// Fetches the derived static-thumbnail URL from the CDN. Returns the raw

@@ -250,4 +250,50 @@ final class StubClassifier: PromptClassifying, @unchecked Sendable {
         let albums = try ModelContext(container).fetch(FetchDescriptor<PersistedAlbum>())
         #expect(albums.count == 1)
     }
+
+    /// Task 11c: `accept` must skip the sort-assistant-state save while the
+    /// vault is locked — never writing plaintext rejection memory into an
+    /// encrypted-but-locked container. Membership writes (owned by
+    /// `LibraryAlbumService`, with its own independent vault context) are
+    /// unaffected, isolating this test to the state-file guard specifically.
+    /// Uses the injectable `resolveVaultContext` seam rather than driving the
+    /// process-wide `LibraryVaultProvider.shared` singleton into `.locked`,
+    /// which would leak into every other test in the process.
+    @MainActor
+    @Test func acceptSkipsStateFileSaveWhenVaultLocked() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        let albumService = LibraryAlbumService(index: index, itemsDirectory: { dir })
+        let albumID = await albumService.createAlbum(name: "Cyberpunk")
+        try commitItem(1, prompt: "p1", in: dir)
+        try commitItem(2, prompt: "p2", in: dir)
+        await index.reconcile(itemsDirectory: dir)
+
+        let svc = SortAssistantService(
+            albumService: albumService,
+            classifier: StubClassifier { _, _ in "" },
+            itemsDirectory: dir,
+            resolveVaultContext: { (.locked, nil) })
+        let group = SortAssistant.ReviewGroup(
+            id: "album:\(albumID.uuidString)",
+            kind: .album(id: albumID, name: "Cyberpunk"),
+            entries: [.init(itemID: 1, confidence: 0.9), .init(itemID: 2, confidence: 0.8)])
+        svc.setGroupsForTesting([group])
+
+        await svc.accept(group: group, selectedIDs: [1])
+
+        // Membership still wrote — it goes through `albumService`'s own
+        // (unaffected, default) vault context, not the sort-assistant one.
+        let writer = LibraryFileWriter(itemsDirectory: dir)
+        #expect(writer.readMetadata(itemID: 1)?.albumIDs == [albumID.uuidString])
+
+        // But the state file was never created — the locked guard skipped it.
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(SortAssistantStateStore.fileName).path))
+        #expect(SortAssistantStateStore(itemsDirectory: dir).read() == .empty)
+
+        // The group is still cleared from the pending review list — it's
+        // in-memory UI state, not persisted.
+        #expect(svc.groups.isEmpty)
+    }
 }

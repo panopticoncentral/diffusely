@@ -123,7 +123,46 @@ final class LibraryStore: ObservableObject {
     private var reconcileInFlight = false
     private var reconcileNeedsRerun = false
 
+    /// Pure decision extracted from `reconcileNow` so it's directly
+    /// unit-testable without touching the `LibraryVaultProvider.shared`
+    /// singleton — mirrors `LibraryIndexService.shouldReconcile`. Only
+    /// `.browsable` permits a reconcile/rebuild through `LibraryStore`.
+    ///
+    /// `reconcileNow` is the sole choke point for the two autonomous
+    /// entry points that can fire on their own, unreachable by Task 17's
+    /// `LibraryView` gate: the `NSMetadataQuery` change handler
+    /// (`handleQueryUpdate` → `reconcileScheduler` → this method) and the
+    /// launch-time `start()` reconcile (`ContentView.startLibrarySubsystem`
+    /// calls `libraryStore.start()` unconditionally, before any unlock).
+    /// `rebuildIndex()` reuses the same decision for the MANUAL Settings →
+    /// "Rebuild Index" button, which is reachable any time Settings is —
+    /// i.e. also before/during an unlock. `.migrating` and `.setupIncomplete`
+    /// are UNLOCKED vault states, so `LibraryIndexService.shouldReconcile`'s
+    /// Task 11b `.locked`-only check lets them through on its own — but the
+    /// on-disk container is still half plaintext/half encrypted then, and a
+    /// reconcile/rebuild would enumerate only the already-migrated files and
+    /// prune the rest from the index.
+    ///
+    /// This must NOT gate `LibraryIndexService.reconcile`/`rebuild`
+    /// themselves: the migration coordinator's own EXPLICIT end-of-migration
+    /// rebuild (`LibraryEncryptionCoordinator.defaultRebuildIndex` →
+    /// `LibrarySaveService.shared.indexService?.rebuild`) calls straight
+    /// into `LibraryIndexService`, never through `LibraryStore`, and MUST
+    /// still run while the gate is `.migrating` — that's what actually syncs
+    /// the index after a migration. Gating only `LibraryStore`'s own
+    /// `reconcileNow`/`rebuildIndex` call sites leaves that path untouched.
+    nonisolated static func shouldAutonomousReconcile(
+        givenLibraryGate gate: LibraryVaultProvider.LibraryGate
+    ) -> Bool {
+        gate == .browsable
+    }
+
     private func reconcileNow() async {
+        let gate = LibraryVaultProvider.shared.libraryGate
+        guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else {
+            print("[LibraryStore] autonomous reconcile skipped; libraryGate=\(gate)")
+            return
+        }
         guard !reconcileInFlight else {
             reconcileNeedsRerun = true
             return
@@ -145,7 +184,24 @@ final class LibraryStore: ObservableObject {
         } while reconcileNeedsRerun
     }
 
+    /// Manual counterpart of `reconcileNow`'s gate: Settings → "Rebuild Index"
+    /// is reachable any time the Library tab is (it's always in Settings,
+    /// unlocked or not), so without this check a tap while `.migrating` or
+    /// `.setupIncomplete` would prune the index against a half-migrated store
+    /// exactly like the autonomous entry points BE-f closed. Reuses
+    /// `shouldAutonomousReconcile` — the decision is identical: only
+    /// `.browsable` may reconcile/rebuild through `LibraryStore`. Does NOT
+    /// touch `LibraryIndexService.rebuild`/`reconcile` themselves, so the
+    /// migration coordinator's own explicit end-of-migration rebuild
+    /// (`LibraryEncryptionCoordinator.defaultRebuildIndex` →
+    /// `LibrarySaveService.shared.indexService?.rebuild`, which never calls
+    /// this method) is untouched and still runs while `.migrating`.
     func rebuildIndex() async {
+        let gate = LibraryVaultProvider.shared.libraryGate
+        guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else {
+            print("[LibraryStore] manual rebuild skipped; libraryGate=\(gate)")
+            return
+        }
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
         let albumStateChanged = await indexService.rebuild(itemsDirectory: dir)
         await refreshTotals()
@@ -190,27 +246,48 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// Coordinates deletion of the on-disk files (`{id}.json` / `.jpeg` / `.mp4`)
-    /// for the given ids. Static and directory-injected so it is unit-testable
-    /// against a temp directory without the iCloud container. Missing files are
-    /// skipped. Shared by `remove(itemID:)` and `remove(itemIDs:)`.
-    nonisolated static func deleteItemFiles(itemIDs: [Int], in dir: URL) {
-        let urls = itemIDs.flatMap { itemID in
-            ["\(itemID).json", "\(itemID).jpeg", "\(itemID).mp4"]
-                .map { dir.appendingPathComponent($0) }
+    /// Coordinates deletion of both files for each item id via the store:
+    /// `store.removeItem(itemID:plaintextExtension:)` deletes that item's
+    /// metadata + media, whatever their on-disk names actually are (plaintext
+    /// `{id}.json`/`.jpeg`/`.mp4`, or the opaque encrypted `*.m`/`*.b` tokens).
+    /// Trying both "jpeg" and "mp4" per item mirrors today's brute-force
+    /// extension list — the caller doesn't know an item's actual media type,
+    /// and `removeItem` silently skips files that don't exist (and ignores
+    /// the extension entirely once encrypted, since the opaque media name
+    /// doesn't depend on it), so the second call is a harmless no-op either
+    /// way. Missing files are skipped. Shared by `remove(itemID:)` and
+    /// `remove(itemIDs:)`.
+    nonisolated static func deleteItemFiles(itemIDs: [Int], store: LibraryFileStore) {
+        for itemID in itemIDs {
+            store.removeItem(itemID: itemID, plaintextExtension: "jpeg")
+            store.removeItem(itemID: itemID, plaintextExtension: "mp4")
         }
-        deleteFiles(at: urls)
+    }
+
+    /// Directory-based convenience for callers/tests without a store handy —
+    /// builds a passthrough one (`crypto: nil`) and deletes through it. Byte
+    /// -identical to deleting `{id}.json`/`.jpeg`/`.mp4` directly, which is all
+    /// a passthrough store's `removeItem` does. Encrypted vaults must go
+    /// through `deleteItemFiles(itemIDs:store:)` instead, with the real store.
+    nonisolated static func deleteItemFiles(itemIDs: [Int], in dir: URL) {
+        deleteItemFiles(itemIDs: itemIDs, store: LibraryFileStore(itemsDirectory: dir, crypto: nil))
     }
 
     /// Runs `deleteItemFiles` on `deleteQueue` and suspends the caller until it
     /// finishes — without occupying a cooperative thread or the main actor.
-    nonisolated static func runDeleteItemFiles(itemIDs: [Int], in dir: URL) async {
+    nonisolated static func runDeleteItemFiles(itemIDs: [Int], store: LibraryFileStore) async {
         await withCheckedContinuation { continuation in
             deleteQueue.async {
-                deleteItemFiles(itemIDs: itemIDs, in: dir)
+                deleteItemFiles(itemIDs: itemIDs, store: store)
                 continuation.resume()
             }
         }
+    }
+
+    /// Directory-based convenience mirroring `deleteItemFiles(itemIDs:in:)` —
+    /// plaintext-only, kept for direct callers/tests.
+    nonisolated static func runDeleteItemFiles(itemIDs: [Int], in dir: URL) async {
+        await runDeleteItemFiles(itemIDs: itemIDs, store: LibraryFileStore(itemsDirectory: dir, crypto: nil))
     }
 
     /// Enumerates and deletes every file in `dir` on `deleteQueue` (the
@@ -228,8 +305,12 @@ final class LibraryStore: ObservableObject {
     }
 
     func remove(itemID: Int) async {
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        await Self.runDeleteItemFiles(itemIDs: [itemID], in: dir)
+        // Resolve up front so a failure (iCloud unavailable, disk full, etc.)
+        // fails fast instead of silently deleting into `fileStore()`'s temp
+        // scratch fallback — same reasoning as `LibrarySaveService.performSave`.
+        guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
+        let store = await LibraryVaultProvider.shared.fileStore()
+        await Self.runDeleteItemFiles(itemIDs: [itemID], store: store)
         await indexService.remove(itemID: itemID)
         await refreshTotals()
     }
@@ -241,8 +322,9 @@ final class LibraryStore: ObservableObject {
     /// actor so a large multi-select can't hitch the UI.
     func remove(itemIDs: [Int]) async {
         guard !itemIDs.isEmpty else { return }
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        await Self.runDeleteItemFiles(itemIDs: itemIDs, in: dir)
+        guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
+        let store = await LibraryVaultProvider.shared.fileStore()
+        await Self.runDeleteItemFiles(itemIDs: itemIDs, store: store)
         await indexService.remove(itemIDs: itemIDs)
         await refreshTotals()
     }
@@ -263,7 +345,15 @@ final class LibraryStore: ObservableObject {
 
     private func configureMetadataQuery() {
         metadataQuery.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
-        metadataQuery.predicate = NSPredicate(format: "%K LIKE '*.json'", NSMetadataItemFSNameKey)
+        // Plaintext item/album sidecars (`*.json`), encrypted item sidecars
+        // (`*.m`), and encrypted aux files — album files and, later,
+        // sort-assistant state (`*.x`) — all need to trigger a reconcile when
+        // they change on another device. Encrypted media (`*.b`) deliberately
+        // does not: the index is built from sidecars, not media.
+        metadataQuery.predicate = NSPredicate(
+            format: "%K LIKE '*.json' OR %K LIKE '*.m' OR %K LIKE '*.x'",
+            NSMetadataItemFSNameKey, NSMetadataItemFSNameKey, NSMetadataItemFSNameKey
+        )
         // Run gathering/merge off the main thread (see `metadataQueue`).
         metadataQuery.operationQueue = metadataQueue
 

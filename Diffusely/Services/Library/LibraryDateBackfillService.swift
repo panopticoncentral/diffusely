@@ -25,6 +25,14 @@ protocol LibraryBackfillSidecarStore: Sendable {
     func rewriteMetadata(_ metadata: LibraryItemMetadata) async throws
 }
 
+/// Thrown by `FileLibraryBackfillSidecarStore.rewriteMetadata` when the vault
+/// is locked — a configured-but-locked container has no DEK, so writing would
+/// otherwise fall back to a plaintext passthrough over what is really an
+/// encrypted container. Callers already wrap `rewriteMetadata` in `do/catch`
+/// and treat any failure as "skip this item, retry next time", so no call
+/// site needs to change to handle this.
+enum LibraryBackfillSidecarStoreError: Error, Equatable { case vaultLocked }
+
 /// Default file-backed implementation. Both methods hop to a detached task so
 /// the directory walk + JSON decode (pending enumeration) and the
 /// `NSFileCoordinator`-bound atomic write (rewrite) never run on the caller's
@@ -33,16 +41,38 @@ protocol LibraryBackfillSidecarStore: Sendable {
 /// is what fixes the per-item Library hitch.
 struct FileLibraryBackfillSidecarStore: LibraryBackfillSidecarStore {
     let itemsDirectory: URL
+    /// Resolves the vault's current lock state and (when unlocked) its crypto
+    /// for `rewriteMetadata`. Defaults to the process-wide
+    /// `LibraryVaultProvider.shared` singleton (same source
+    /// `LibraryIndexService.reconcile` and `LibraryAlbumService` read), so
+    /// production call sites need no change. Overridable so tests can drive
+    /// `.locked` without touching the shared singleton — mirrors the seam on
+    /// `LibraryAlbumService`.
+    var resolveVaultContext: @Sendable () async -> (state: LibraryVault.State, crypto: LibraryFileCrypto?) = {
+        let ctx = await LibraryVaultProvider.shared.reconcileContext()
+        return (ctx.state, ctx.store.crypto)
+    }
 
+    /// Routes the bulk enumeration through the vault-aware store — encrypted
+    /// when unlocked, plaintext when never configured — mirroring
+    /// `rewriteMetadata`'s resolution. A configured-but-locked vault has no
+    /// DEK, so it returns empty rather than scanning: a passthrough store
+    /// built for a container that is actually encrypted would find zero
+    /// `*.json` sidecars among the opaque `*.m` files and wrongly report
+    /// nothing pending, same hazard `LibraryIndexService.reconcile` guards
+    /// against for its own scan.
     func pendingItems() async throws -> [LibraryItemMetadata] {
         let directory = itemsDirectory
+        let vault = await resolveVaultContext()
+        guard vault.state != .locked else { return [] }
+        let crypto = vault.crypto
         return await Task.detached(priority: .utility) {
-            let fm = FileManager.default
-            let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            let store = LibraryFileStore(itemsDirectory: directory, crypto: crypto)
             var pending: [LibraryItemMetadata] = []
-            for url in urls where url.pathExtension == "json" {
+            for url in store.enumerateMetadataFiles() {
                 guard
-                    let data = try? Data(contentsOf: url),
+                    let id = store.itemID(forMetadataFile: url),
+                    let data = store.readMetadata(itemID: id),
                     let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data),
                     metadata.publishedAt == nil,
                     // v4: items previously attempted (API confirmed null) are
@@ -56,10 +86,18 @@ struct FileLibraryBackfillSidecarStore: LibraryBackfillSidecarStore {
         }.value
     }
 
+    /// Rewrites the sidecar through the vault-aware store — encrypted when
+    /// unlocked, plaintext when never configured. A locked vault throws
+    /// `.vaultLocked` before any I/O, so a configured-but-locked container is
+    /// never mistaken for plaintext and written to as such.
     func rewriteMetadata(_ metadata: LibraryItemMetadata) async throws {
         let directory = itemsDirectory
+        let vault = await resolveVaultContext()
+        guard vault.state != .locked else { throw LibraryBackfillSidecarStoreError.vaultLocked }
+        let crypto = vault.crypto
         try await Task.detached(priority: .utility) {
-            let writer = LibraryFileWriter(itemsDirectory: directory)
+            let store = LibraryFileStore(itemsDirectory: directory, crypto: crypto)
+            let writer = LibraryFileWriter(store: store)
             try writer.rewriteMetadata(metadata)
         }.value
     }

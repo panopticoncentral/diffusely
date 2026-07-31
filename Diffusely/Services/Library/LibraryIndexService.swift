@@ -222,6 +222,36 @@ actor LibraryIndexService {
     /// reconcile reports the change instead.
     @discardableResult
     func reconcile(itemsDirectory: URL) async -> Bool {
+        // Load-bearing guard: a configured-but-LOCKED vault has no DEK, so a
+        // store built with `crypto == nil` is a plain passthrough —
+        // indistinguishable from `.notConfigured` — that would scan for
+        // `*.json` sidecars, find none of the real `*.m`/`*.x` files, and
+        // prune the entire index as "every sidecar vanished". `.notConfigured`
+        // (plaintext) and `.unlocked` both proceed normally; only `.locked`
+        // must no-op here, before any scan or mutation.
+        //
+        // The state check and the crypto used to build the scan store MUST
+        // come from one atomic read. Reading `LibraryVaultProvider.shared.state`
+        // and then separately calling `.fileStore()` (as this used to) is a
+        // TOCTOU race: the vault can lock() between those two independent
+        // awaits, so this could see `.unlocked` from the first read but get
+        // `crypto == nil` from the second — a passthrough store built for a
+        // container that is actually encrypted. `reconcileContext()` derives
+        // both from one `LibraryVault.snapshot()` call with no suspension
+        // point in between, so they can never disagree.
+        let ctx = await LibraryVaultProvider.shared.reconcileContext()
+        guard Self.shouldReconcile(givenVaultState: ctx.state) else {
+            print("[LibraryIndex] vault is locked; skipping reconcile to preserve the index")
+            return false
+        }
+        // `ctx.store` is bound to the provider's own resolved directory (same
+        // path as `itemsDirectory` in production, both from
+        // `LibraryContainer.shared.itemsDirectory()`); tests pass their own
+        // `itemsDirectory` here and must scan THAT directory, so only the
+        // atomically-derived crypto is taken from `ctx.store` — the caller-
+        // supplied directory is otherwise unchanged from before this fix.
+        let store = LibraryFileStore(itemsDirectory: itemsDirectory, crypto: ctx.store.crypto)
+
         // The scan is a point-in-time snapshot of the container, read off the
         // actor. Direct mutations (add-to-album, saves, deletes) can land while
         // it is in flight; applying the snapshot then would overwrite the newer
@@ -233,7 +263,7 @@ actor LibraryIndexService {
         // giving up here never strands the index.
         for _ in 0..<3 {
             let epoch = currentMutationEpoch()
-            let scan = await Self.runScan(itemsDirectory: itemsDirectory)
+            let scan = await Self.runScan(store: store)
 
             // A nil scan means the directory read *threw* (transient iCloud/filesystem
             // error). Treating that as "empty" would prune the whole index, so we
@@ -253,6 +283,14 @@ actor LibraryIndexService {
         }
         print("[LibraryIndex] reconcile skipped: direct writes kept landing during scans")
         return false
+    }
+
+    /// Pure decision extracted from `reconcile` so it's directly unit-testable
+    /// without touching the `LibraryVaultProvider.shared` singleton: only a
+    /// configured-but-locked vault blocks a reconcile/rebuild. `.notConfigured`
+    /// (plaintext, today's only shipped mode) and `.unlocked` both proceed.
+    nonisolated static func shouldReconcile(givenVaultState state: LibraryVault.State) -> Bool {
+        state != .locked
     }
 
     /// Applies a completed scan to the index — unless a direct mutation landed
@@ -401,10 +439,10 @@ actor LibraryIndexService {
 
     /// Runs `scanContainer` on `scanQueue` and suspends the caller until it
     /// finishes — without occupying a cooperative thread.
-    nonisolated static func runScan(itemsDirectory: URL) async -> ScanResult? {
+    nonisolated static func runScan(store: LibraryFileStore) async -> ScanResult? {
         await withCheckedContinuation { continuation in
             scanQueue.async {
-                continuation.resume(returning: scanContainer(itemsDirectory: itemsDirectory))
+                continuation.resume(returning: scanContainer(store: store))
             }
         }
     }
@@ -420,8 +458,32 @@ actor LibraryIndexService {
         .ubiquitousItemDownloadingStatusKey
     ]
 
+    /// Convenience for direct plaintext callers/tests that don't have a
+    /// `LibraryFileStore` handy: builds a passthrough one (`crypto: nil`) over
+    /// `itemsDirectory` and scans through it. Byte-identical to scanning that
+    /// directory directly — plaintext mode never touches `crypto`.
     nonisolated static func scanContainer(itemsDirectory: URL) -> ScanResult? {
+        scanContainer(store: LibraryFileStore(itemsDirectory: itemsDirectory, crypto: nil))
+    }
+
+    /// Reads the container through `store`: every readable item sidecar
+    /// (`*.m` decrypted or `*.json` parsed, per `store.isEncrypted`) plus,
+    /// separately, every readable album file. Plaintext album files are the
+    /// existing `album-{uuid}.json` sitting alongside item sidecars, classified
+    /// by name; encrypted album files are opaque `*.x` aux files with no name
+    /// to classify by, so each is decrypted and an attempt is made to decode it
+    /// as a `LibraryAlbumFile` — content that doesn't decode that way (e.g. a
+    /// future sort-assistant-state aux file) is silently skipped, not an error.
+    ///
+    /// Deliberately does ONE `contentsOfDirectory` call for the whole scan —
+    /// not one via this method plus another inside `store.enumerateMetadataFiles()`/
+    /// `enumerateAuxFiles()` — because a second, separately-fetched listing
+    /// wouldn't carry this call's prefetched resourceValues cache, reintroducing
+    /// the per-file XPC round-trip this scan exists to avoid. `store.isMetadataFileName`/
+    /// `isAuxFileName` classify names from the single listing captured here.
+    nonisolated static func scanContainer(store: LibraryFileStore) -> ScanResult? {
         let fileManager = FileManager.default
+        let itemsDirectory = store.itemsDirectory
         guard let contents = try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
             includingPropertiesForKeys: scanPrefetchKeys
@@ -441,62 +503,99 @@ actor LibraryIndexService {
         var urlsByName = [String: URL](minimumCapacity: contents.count)
         for url in contents { urlsByName[url.lastPathComponent] = url }
 
-        let jsonURLs = contents.filter { $0.pathExtension == "json" }
         var seenIDs = Set<Int>()
         var items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)] = []
         var albums: [LibraryAlbumFile] = []
         var seenAlbumIDs = Set<UUID>()
 
-        for jsonURL in jsonURLs {
-            let name = jsonURL.lastPathComponent
+        let sidecarURLs = contents.filter { store.isMetadataFileName($0.lastPathComponent) }
+        for sidecarURL in sidecarURLs {
+            let name = sidecarURL.lastPathComponent
 
-            // Album metadata file: decode separately, never as an item sidecar.
+            // Plaintext album metadata file: decode separately, never as an
+            // item sidecar. An encrypted `*.m` name can never match this
+            // prefix/suffix check (hex tokens can't start with "album-" and
+            // don't end in ".json"), so this branch is a no-op in encrypted
+            // mode; encrypted album rows come from the aux pass below instead.
             if let albumID = LibraryAlbumStore.albumID(fromFileName: name) {
                 // The file's presence means the album exists — mark it seen up
                 // front so a present-but-unreadable file (placeholder, transient
                 // read error, or corrupt JSON) never prunes the row. Mirrors how
                 // a not-yet-materialized item is kept via seenIDs.
                 seenAlbumIDs.insert(albumID)
-                if isDatalessPlaceholder(jsonURL) {
-                    try? fileManager.startDownloadingUbiquitousItem(at: jsonURL)
+                if isDatalessPlaceholder(sidecarURL) {
+                    try? fileManager.startDownloadingUbiquitousItem(at: sidecarURL)
                     continue
                 }
                 // Decode best-effort: only a readable file refreshes name/createdAt.
-                if let data = try? Data(contentsOf: jsonURL),
+                if let data = try? Data(contentsOf: sidecarURL),
                    let file = try? LibraryAlbumFile.decoder().decode(LibraryAlbumFile.self, from: data) {
                     albums.append(file)
                 }
                 continue
             }
 
-            // Item sidecar (existing behavior).
+            // Item sidecar.
             // A sidecar whose bytes aren't materialized locally is an iCloud
-            // placeholder; calling `Data(contentsOf:)` on it would force a
-            // synchronous FileProvider download that can block for a long time.
-            // Request a non-blocking download and preserve the item instead:
-            // mark its ID seen so reconcile doesn't prune the row as "vanished",
-            // and skip reading this round. A later reconcile (the metadata query
-            // fires when the file materializes) ingests its fields.
-            if isDatalessPlaceholder(jsonURL) {
-                try? fileManager.startDownloadingUbiquitousItem(at: jsonURL)
-                if let id = sidecarItemID(from: jsonURL) { seenIDs.insert(id) }
+            // placeholder; reading it (plaintext `Data(contentsOf:)`, or an
+            // encrypted read via the store) would force a synchronous
+            // FileProvider download that can block for a long time. Request a
+            // non-blocking download instead and, in plaintext mode, preserve
+            // the item by recovering its id from the filename stem (no I/O) so
+            // reconcile doesn't prune the row as "vanished" — a later reconcile
+            // (the metadata query fires when the file materializes) ingests its
+            // fields. An encrypted filename is an opaque token with no id
+            // recoverable without decrypting, which is exactly the blocking
+            // read this check exists to avoid, so an encrypted placeholder
+            // sidecar cannot be preserved this round (see task report).
+            if isDatalessPlaceholder(sidecarURL) {
+                try? fileManager.startDownloadingUbiquitousItem(at: sidecarURL)
+                if !store.isEncrypted, let id = sidecarItemID(from: sidecarURL) {
+                    seenIDs.insert(id)
+                }
                 continue
             }
 
             guard
-                let data = try? Data(contentsOf: jsonURL),
+                let id = store.itemID(forMetadataFile: sidecarURL),
+                let data = store.readMetadata(itemID: id),
                 let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
             else { continue }
 
             seenIDs.insert(metadata.itemID)
+            // The store's deterministic media URL for this item — identical to
+            // `itemsDirectory.appendingPathComponent(metadata.mediaFileName)` in
+            // plaintext mode (that's exactly how `mediaFileName` was built at
+            // save time), and the correct opaque `*.b` path when encrypted.
             // Missing from the listing (no local placeholder at all) falls back
-            // to a built URL, which `downloadStatus` resolves to `.evicted` via
-            // its fileExists check — same result as before, no XPC needed.
-            let mediaURL = urlsByName[metadata.mediaFileName]
-                ?? itemsDirectory.appendingPathComponent(metadata.mediaFileName)
-            let status = downloadStatus(for: mediaURL, fileManager: fileManager)
+            // to the built URL, which `downloadStatus` resolves to `.evicted`
+            // via its fileExists check — same result as before, no XPC needed.
+            let mediaURL = store.mediaURL(itemID: metadata.itemID, plaintextExtension: metadata.mediaType.fileExtension)
+            let lookupURL = urlsByName[mediaURL.lastPathComponent] ?? mediaURL
+            let status = downloadStatus(for: lookupURL, fileManager: fileManager)
             items.append((metadata: metadata, status: status))
         }
+
+        // Encrypted album rows: album files (and, once routed through the
+        // store, sort-assistant state) share the opaque `.x` namespace with no
+        // filename hint, so classify by attempting to decode each as a
+        // `LibraryAlbumFile` — content that doesn't decode that way is skipped.
+        if store.isEncrypted {
+            let auxURLs = contents.filter { store.isAuxFileName($0.lastPathComponent) }
+            for auxURL in auxURLs {
+                if isDatalessPlaceholder(auxURL) {
+                    try? fileManager.startDownloadingUbiquitousItem(at: auxURL)
+                    continue
+                }
+                guard
+                    let data = store.readAux(at: auxURL),
+                    let file = try? LibraryAlbumFile.decoder().decode(LibraryAlbumFile.self, from: data)
+                else { continue }
+                albums.append(file)
+                seenAlbumIDs.insert(file.id)
+            }
+        }
+
         return (items: items, seenIDs: seenIDs, albums: albums, seenAlbumIDs: seenAlbumIDs)
     }
 

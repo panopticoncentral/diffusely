@@ -17,72 +17,53 @@ enum LibrarySaveError: LocalizedError {
 }
 
 /// Performs the atomic on-disk write of a library item: media file first, sidecar
-/// JSON last (JSON presence is the "fully saved" commit marker). Pure file I/O so
-/// it can be unit-tested against a temporary directory without iCloud.
+/// JSON last (JSON presence is the "fully saved" commit marker). Delegates all
+/// actual I/O to a `LibraryFileStore`, which is a pure passthrough to today's
+/// `<id>.json` / `<id>.<ext>` layout when unencrypted, so this remains
+/// unit-testable against a temporary directory without iCloud.
 struct LibraryFileWriter {
-    let itemsDirectory: URL
+    let store: LibraryFileStore
+
+    init(store: LibraryFileStore) {
+        self.store = store
+    }
+
+    /// Convenience for the (still-plaintext) call sites that haven't been
+    /// migrated to the vault-backed store yet: builds a passthrough store
+    /// over `itemsDirectory`, preserving today's behavior exactly.
+    init(itemsDirectory: URL) {
+        self.init(store: LibraryFileStore(itemsDirectory: itemsDirectory, crypto: nil))
+    }
+
+    var itemsDirectory: URL { store.itemsDirectory }
 
     func mediaURL(for metadata: LibraryItemMetadata) -> URL {
-        itemsDirectory.appendingPathComponent(metadata.mediaFileName, isDirectory: false)
+        store.mediaURL(itemID: metadata.itemID, plaintextExtension: metadata.mediaType.fileExtension)
     }
 
     func metadataURL(forItemID id: Int) -> URL {
-        itemsDirectory.appendingPathComponent("\(id).json", isDirectory: false)
+        store.metadataURL(itemID: id)
     }
 
     func itemExists(itemID: Int) -> Bool {
-        FileManager.default.fileExists(atPath: metadataURL(forItemID: itemID).path)
+        store.readMetadata(itemID: itemID) != nil
     }
 
-    /// Moves the downloaded media into place, then writes the JSON. If anything
-    /// fails the JSON is never written, so a partial item is never visible.
+    /// Writes the media into place, then writes the JSON. If anything fails
+    /// the JSON is never written, so a partial item is never visible.
     func commit(metadata: LibraryItemMetadata, mediaTempURL: URL) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
+        let mediaBytes = try Data(contentsOf: mediaTempURL)
+        try store.writeMedia(mediaBytes, itemID: metadata.itemID,
+                              plaintextExtension: metadata.mediaType.fileExtension)
+        try? FileManager.default.removeItem(at: mediaTempURL)
 
-        let coordinator = NSFileCoordinator()
-        let finalMediaURL = mediaURL(for: metadata)
-        let finalMetadataURL = metadataURL(forItemID: metadata.itemID)
-
-        var coordinationError: NSError?
-        var thrown: Error?
-
-        coordinator.coordinate(
-            writingItemAt: finalMediaURL,
-            options: .forReplacing,
-            error: &coordinationError
-        ) { destination in
-            do {
-                if fileManager.fileExists(atPath: destination.path) {
-                    try fileManager.removeItem(at: destination)
-                }
-                try fileManager.moveItem(at: mediaTempURL, to: destination)
-            } catch {
-                thrown = error
-            }
-        }
-        if let coordinationError { throw coordinationError }
-        if let thrown { throw thrown }
-
-        let json = try LibraryItemMetadata.encoder().encode(metadata)
-        coordinator.coordinate(
-            writingItemAt: finalMetadataURL,
-            options: .forReplacing,
-            error: &coordinationError
-        ) { destination in
-            do {
-                try json.write(to: destination, options: .atomic)
-            } catch {
-                thrown = error
-            }
-        }
-        if let coordinationError { throw coordinationError }
-        if let thrown { throw thrown }
+        let json = try LibraryItemMetadata.encoder().encode(metadata)   // JSON last = commit marker
+        try store.writeMetadata(json, itemID: metadata.itemID)
     }
 
     /// Reads and decodes the sidecar for an already-committed item, if present.
     func readMetadata(itemID id: Int) -> LibraryItemMetadata? {
-        guard let data = try? Data(contentsOf: metadataURL(forItemID: id)) else { return nil }
+        guard let data = store.readMetadata(itemID: id) else { return nil }
         return try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
     }
 
@@ -91,24 +72,7 @@ struct LibraryFileWriter {
     /// onto old sidecars without touching the media file.
     func rewriteMetadata(_ metadata: LibraryItemMetadata) throws {
         let json = try LibraryItemMetadata.encoder().encode(metadata)
-        let coordinator = NSFileCoordinator()
-        var coordinationError: NSError?
-        var thrown: Error?
-        let target = metadataURL(forItemID: metadata.itemID)
-
-        coordinator.coordinate(
-            writingItemAt: target,
-            options: .forReplacing,
-            error: &coordinationError
-        ) { destination in
-            do {
-                try json.write(to: destination, options: .atomic)
-            } catch {
-                thrown = error
-            }
-        }
-        if let coordinationError { throw coordinationError }
-        if let thrown { throw thrown }
+        try store.writeMetadata(json, itemID: metadata.itemID)
     }
 }
 
@@ -128,7 +92,24 @@ final class LibrarySaveService: ObservableObject {
     private var tasks: [Int: Task<Void, Never>] = [:]
     private let civitaiService = CivitaiService()
 
-    init() {}
+    /// Resolves the vault's current lock state + a store bound to it, in one
+    /// atomic snapshot (state and store both come from the same underlying
+    /// `LibraryVault.snapshot()`, so they can never disagree — see
+    /// `LibraryVaultProvider.reconcileContext()`'s doc comment for the TOCTOU
+    /// this closes). Defaults to the process-wide `LibraryVaultProvider.shared`
+    /// singleton so production call sites need no change; overridable so tests
+    /// can drive `.locked` without touching the shared singleton, which would
+    /// leak into every other test in the process (mirrors the seam on
+    /// `LibraryAlbumService` / `FileLibraryBackfillSidecarStore`).
+    private let resolveVaultContext: () async -> (state: LibraryVault.State, store: LibraryFileStore)
+
+    init(
+        resolveVaultContext: @escaping () async -> (state: LibraryVault.State, store: LibraryFileStore) = {
+            await LibraryVaultProvider.shared.reconcileContext()
+        }
+    ) {
+        self.resolveVaultContext = resolveVaultContext
+    }
 
     func isSaving(itemID: Int) -> Bool { inFlight.contains(itemID) }
 
@@ -194,7 +175,10 @@ final class LibrarySaveService: ObservableObject {
         tasks[itemID] = task
     }
 
-    private func performSave(
+    /// Internal (not `private`) so tests can drive it directly with an
+    /// injected `resolveVaultContext`, without going through the fire-and-forget
+    /// `save()` wrapper or a real network download.
+    func performSave(
         itemID: Int,
         image: CivitaiImage,
         originalCDNURL: String,
@@ -206,8 +190,27 @@ final class LibrarySaveService: ObservableObject {
         mediaType: LibraryMediaType,
         author: LibraryAuthor
     ) async throws {
-        let itemsDirectory = try await LibraryContainer.shared.itemsDirectory()
-        let writer = LibraryFileWriter(itemsDirectory: itemsDirectory)
+        // Resolve up front so a failure (iCloud unavailable, disk full, etc.)
+        // fails this save immediately. `LibraryVaultProvider.fileStore()`
+        // deliberately swallows that same failure and falls back to a temp
+        // scratch store (see its doc comment) so the vault gate never
+        // crashes; this save path wants the original fail-fast behavior
+        // instead of silently writing into that scratch directory.
+        _ = try await LibraryContainer.shared.itemsDirectory()
+
+        // Atomic (state, store) snapshot — NOT a separate `fileStore()` call —
+        // so the locked-or-not decision and the store used to write can never
+        // disagree (the TOCTOU `reconcileContext()` closes; see its doc
+        // comment). A configured-but-locked vault has no DEK, so writing would
+        // otherwise silently fall back to a plaintext passthrough store over
+        // what is really an encrypted container (spec §4 forbids this).
+        // `.notConfigured`/`.unlocked` are unaffected: they proceed exactly as
+        // before this guard existed.
+        let vaultContext = await resolveVaultContext()
+        guard vaultContext.state != .locked else {
+            throw LibraryBackfillSidecarStoreError.vaultLocked
+        }
+        let writer = LibraryFileWriter(store: vaultContext.store)
 
         if writer.itemExists(itemID: itemID) {
             throw LibrarySaveError.alreadySaved
@@ -274,7 +277,10 @@ final class LibrarySaveService: ObservableObject {
         // Prime Nuke's cache now, while the original is local — free, no extra
         // download. The first grid appearance then hits the cache instead of the
         // CDN-first tier. Off the main actor (ImageIO / AVAssetImageGenerator).
-        let finalMediaURL = itemsDirectory.appendingPathComponent(metadata.mediaFileName)
+        // Resolved via the writer/store (not a bare itemsDirectory + filename
+        // join) so this still finds the file when the store is encrypted and
+        // the on-disk name is an opaque token rather than "<id>.<ext>".
+        let finalMediaURL = writer.mediaURL(for: metadata)
         let isVideo = metadata.mediaType == .video
         if let thumb = await LibraryImageRequest.thumbnailImage(
             localURL: finalMediaURL, isVideo: isVideo, maxDimension: LibraryImageRequest.gridDimension) {

@@ -196,11 +196,14 @@ struct LibraryDetailView: View {
     /// displaying it. Silently no-ops if the read fails.
     private func copyCurrentImage() {
         guard let metadata, metadata.mediaType == .image else { return }
+        let itemID = metadata.itemID
+        let ext = (metadata.mediaFileName as NSString).pathExtension
         Task {
-            guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-            let fileURL = dir.appendingPathComponent(metadata.mediaFileName)
-            let nsImage = await Task.detached(priority: .userInitiated) {
-                NSImage(contentsOf: fileURL)
+            let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+            guard state != .locked else { return }
+            let nsImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+                guard let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext) else { return nil }
+                return NSImage(data: data)
             }.value
             guard let nsImage else { return }
             let pasteboard = NSPasteboard.general
@@ -217,17 +220,17 @@ struct LibraryDetailView: View {
     /// actually fires.
     private func imageItemProviders() -> [NSItemProvider] {
         guard let metadata, metadata.mediaType == .image else { return [] }
-        let mediaFileName = metadata.mediaFileName
-        let ext = (mediaFileName as NSString).pathExtension
+        let itemID = metadata.itemID
+        let ext = (metadata.mediaFileName as NSString).pathExtension
         let typeID = UTType(filenameExtension: ext)?.identifier ?? UTType.image.identifier
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: typeID, visibility: .all) { completion in
             Task.detached(priority: .userInitiated) {
-                guard let dir = try? await LibraryContainer.shared.itemsDirectory() else {
+                let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+                guard state != .locked else {
                     completion(nil, CocoaError(.fileNoSuchFile)); return
                 }
-                let fileURL = dir.appendingPathComponent(mediaFileName)
-                let data = try? Data(contentsOf: fileURL)
+                let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext)
                 completion(data, data == nil ? CocoaError(.fileReadCorruptFile) : nil)
             }
             return nil
@@ -237,20 +240,20 @@ struct LibraryDetailView: View {
     #endif
 
     private func loadMetadata() async {
-        guard
-            let dir = try? await LibraryContainer.shared.itemsDirectory()
-        else {
+        let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+        // Defensive: T17 gates the whole Library while locked, so this
+        // shouldn't normally be reached with a locked vault. If it is,
+        // treat the read as unavailable rather than falling through to
+        // `fileStore`'s passthrough behavior (a locked snapshot's store is
+        // a plaintext passthrough by design — see `reconcileContext()` —
+        // which must never be used to read legacy plaintext names over an
+        // actually-encrypted container).
+        guard state != .locked else {
             loadFailed = true
             return
         }
-        let jsonURL = dir.appendingPathComponent("\(itemID).json")
-        var data: Data?
-        var coordError: NSError?
-        NSFileCoordinator().coordinate(readingItemAt: jsonURL, options: [], error: &coordError) { url in
-            data = try? Data(contentsOf: url)
-        }
         guard
-            let data,
+            let data = await fileStore.readMetadataAsync(itemID: itemID),
             let decoded = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
         else {
             loadFailed = true
@@ -271,16 +274,22 @@ struct LibraryDetailView: View {
         }
     }
 
-    /// Reads embedded generation metadata from the local original file off the main
-    /// actor (blocking file I/O must not run on the cooperative pool). Silently does
-    /// nothing for videos or when the file isn't materialized locally.
+    /// Reads embedded generation metadata from the item's decrypted media bytes,
+    /// off the main actor. Goes through `LibraryFileStore.readMediaAsync` (the
+    /// coordinated read + AES-GCM decrypt run on its dedicated queue, never the
+    /// cooperative pool) + the `Data`-based `EmbeddedMetadataReader.read(data:)`
+    /// — no temp file, since ImageIO can read metadata straight out of `Data` —
+    /// so this works whether or not the Library is encrypted. Silently does
+    /// nothing for videos, a locked vault, or when the media can't be read.
     private func loadEmbeddedMetadata(for metadata: LibraryItemMetadata) async {
-        guard metadata.mediaType == .image,
-              let dir = try? await LibraryContainer.shared.itemsDirectory()
-        else { return }
-        let fileURL = dir.appendingPathComponent(metadata.mediaFileName)
-        let result = await Task.detached(priority: .utility) {
-            EmbeddedMetadataReader.read(fileURL: fileURL)
+        guard metadata.mediaType == .image else { return }
+        let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+        guard state != .locked else { return }
+        let itemID = metadata.itemID
+        let ext = (metadata.mediaFileName as NSString).pathExtension
+        let result = await Task.detached(priority: .utility) { () -> EmbeddedMetadata? in
+            guard let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext) else { return nil }
+            return EmbeddedMetadataReader.read(data: data)
         }.value
         embedded = result
     }
