@@ -111,4 +111,102 @@ import CryptoKit
             Issue.record("unexpected error: \(error)")
         }
     }
+
+    // MARK: - LibrarySaveError helpers
+
+    @Test func libraryLockedErrorExposesHelpers() {
+        let locked = LibrarySaveError.libraryLocked
+        #expect(locked.isLibraryLocked)
+        #expect(locked.alertTitle == "Library Locked")
+        #expect(locked.errorDescription == "Your Library is locked. Unlock it to save.")
+    }
+
+    @Test func nonLockedErrorsAreNotLockedAndHaveTitles() {
+        #expect(!LibrarySaveError.alreadySaved.isLibraryLocked)
+        #expect(LibrarySaveError.alreadySaved.alertTitle == "Already Saved")
+        #expect(LibrarySaveError.downloadFailed.alertTitle == "Download Failed")
+        #expect(LibrarySaveError.writeFailed(LibrarySaveError.downloadFailed).alertTitle == "Couldn't Save")
+    }
+
+    // MARK: - Failure recording + pending-retry queue
+
+    @Test func recordFailureQueuesPendingAndSetsLockedError() {
+        let svc = LibrarySaveService()
+        let image = makeImage(id: 301)
+
+        svc.recordFailure(LibraryBackfillSidecarStoreError.vaultLocked,
+                          image: image, knownPostTitle: "My Post", knownPublishedAt: nil)
+
+        #expect(svc.lastError?.isLibraryLocked == true)
+        #expect(svc.pendingLockedSaves.count == 1)
+        #expect(svc.pendingLockedSaves.first?.image.id == 301)
+        #expect(svc.pendingLockedSaves.first?.knownPostTitle == "My Post")
+    }
+
+    @Test func recordFailureDoesNotDuplicatePendingForSameItem() {
+        let svc = LibrarySaveService()
+        let image = makeImage(id: 302)
+
+        svc.recordFailure(LibraryBackfillSidecarStoreError.vaultLocked,
+                          image: image, knownPostTitle: nil, knownPublishedAt: nil)
+        svc.recordFailure(LibraryBackfillSidecarStoreError.vaultLocked,
+                          image: image, knownPostTitle: nil, knownPublishedAt: nil)
+
+        #expect(svc.pendingLockedSaves.count == 1)
+    }
+
+    @Test func recordFailureMapsNonLockedErrorsWithoutQueuing() {
+        let svc = LibrarySaveService()
+        let image = makeImage(id: 303)
+
+        svc.recordFailure(LibrarySaveError.downloadFailed,
+                          image: image, knownPostTitle: nil, knownPublishedAt: nil)
+        #expect(svc.lastError?.alertTitle == "Download Failed")
+        #expect(svc.pendingLockedSaves.isEmpty)
+
+        let generic = NSError(domain: "test", code: 1)
+        svc.recordFailure(generic, image: image, knownPostTitle: nil, knownPublishedAt: nil)
+        #expect(svc.lastError?.alertTitle == "Couldn't Save")
+        #expect(svc.pendingLockedSaves.isEmpty)
+    }
+
+    @Test func discardAndClearBehaveIndependently() {
+        let svc = LibrarySaveService()
+        let image = makeImage(id: 304)
+        svc.recordFailure(LibraryBackfillSidecarStoreError.vaultLocked,
+                          image: image, knownPostTitle: nil, knownPublishedAt: nil)
+
+        svc.clearError()
+        #expect(svc.lastError == nil)
+        #expect(svc.pendingLockedSaves.count == 1, "clearError leaves the retry queue intact")
+
+        svc.discardPendingLockedSaves()
+        #expect(svc.pendingLockedSaves.isEmpty)
+    }
+
+    @Test func retryPendingLockedSavesDrainsQueueAndRefires() {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        // Inject `.locked` so the re-fired save's performSave refuses BEFORE any
+        // network download (the locked guard precedes the download). Assertions run
+        // synchronously, before the fire-and-forget task body executes.
+        //
+        // NOTE: the re-fired save() spawns an unstructured Task (performSave) that
+        // awaits LibraryContainer.shared.itemsDirectory() before hitting the locked
+        // guard. That task cannot run until this @MainActor method suspends, so the
+        // synchronous assertions below are unaffected; the straggler no-ops via the
+        // locked guard (and [weak self] once `svc` deallocates).
+        let svc = LibrarySaveService(resolveVaultContext: {
+            (.locked, LibraryFileStore(itemsDirectory: dir, crypto: nil))
+        })
+        let image = makeImage(id: 305)
+        svc.recordFailure(LibraryBackfillSidecarStoreError.vaultLocked,
+                          image: image, knownPostTitle: nil, knownPublishedAt: nil)
+        #expect(svc.pendingLockedSaves.count == 1)
+
+        svc.retryPendingLockedSaves()
+
+        #expect(svc.pendingLockedSaves.isEmpty, "retry drains the queue synchronously")
+        #expect(svc.lastError == nil, "retry clears the previous error")
+        #expect(svc.isSaving(itemID: 305), "retry re-initiates the save (inFlight synchronously)")
+    }
 }

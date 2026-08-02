@@ -6,12 +6,31 @@ enum LibrarySaveError: LocalizedError {
     case alreadySaved
     case downloadFailed
     case writeFailed(Error)
+    case libraryLocked
 
     var errorDescription: String? {
         switch self {
         case .alreadySaved: return "Already in your library."
         case .downloadFailed: return "Couldn't download the original media. Check your connection and try again."
         case .writeFailed(let error): return "Couldn't save to your library: \(error.localizedDescription)"
+        case .libraryLocked: return "Your Library is locked. Unlock it to save."
+        }
+    }
+
+    /// True only for the locked-vault case, so the alert can offer to unlock
+    /// without needing `Equatable` (the `.writeFailed(Error)` payload blocks it).
+    var isLibraryLocked: Bool {
+        if case .libraryLocked = self { return true }
+        return false
+    }
+
+    /// Per-case alert title shown by `SaveFeedbackModifier`.
+    var alertTitle: String {
+        switch self {
+        case .libraryLocked: return "Library Locked"
+        case .alreadySaved: return "Already Saved"
+        case .downloadFailed: return "Download Failed"
+        case .writeFailed: return "Couldn't Save"
         }
     }
 }
@@ -89,6 +108,19 @@ final class LibrarySaveService: ObservableObject {
 
     weak var indexService: LibraryIndexService?
 
+    /// One queued retry of a save that was refused because the vault was
+    /// locked. Held separately from `lastError` so dismissing the alert can
+    /// clear the error without dropping a queued retry (see
+    /// `SaveFeedbackModifier`). Replayed by `retryPendingLockedSaves()` after a
+    /// successful unlock.
+    struct PendingLockedSave {
+        let image: CivitaiImage
+        let knownPostTitle: String?
+        let knownPublishedAt: Date?
+    }
+
+    @Published private(set) var pendingLockedSaves: [PendingLockedSave] = []
+
     private var tasks: [Int: Task<Void, Never>] = [:]
     private let civitaiService = CivitaiService()
 
@@ -164,10 +196,9 @@ final class LibrarySaveService: ObservableObject {
                     mediaType: mediaType,
                     author: author
                 )
-            } catch let error as LibrarySaveError {
-                self.lastError = error
             } catch {
-                self.lastError = .writeFailed(error)
+                self.recordFailure(error, image: image,
+                                   knownPostTitle: knownPostTitle, knownPublishedAt: knownPublishedAt)
             }
             self.inFlight.remove(itemID)
             self.tasks[itemID] = nil
@@ -290,6 +321,51 @@ final class LibrarySaveService: ObservableObject {
             ImagePipeline.shared.cache.storeCachedImage(
                 ImageContainer(image: thumb), for: request, caches: .all)
         }
+    }
+
+    // MARK: - Failure feedback + locked-vault retry queue
+
+    /// Maps a thrown save error onto `lastError` for the app-level alert, and —
+    /// for the locked-vault case only — queues the save for replay after unlock.
+    /// Internal (not private) so unit tests can drive it without the
+    /// fire-and-forget `save()` wrapper or a network download.
+    func recordFailure(_ error: Error, image: CivitaiImage,
+                       knownPostTitle: String?, knownPublishedAt: Date?) {
+        if let storeError = error as? LibraryBackfillSidecarStoreError, storeError == .vaultLocked {
+            if !pendingLockedSaves.contains(where: { $0.image.id == image.id }) {
+                pendingLockedSaves.append(PendingLockedSave(
+                    image: image, knownPostTitle: knownPostTitle, knownPublishedAt: knownPublishedAt))
+            }
+            lastError = .libraryLocked
+        } else if let saveError = error as? LibrarySaveError {
+            lastError = saveError
+        } else {
+            lastError = .writeFailed(error)
+        }
+    }
+
+    /// Replay every queued locked save (called after a successful unlock). Drains
+    /// the queue and clears the error synchronously, then re-fires each save;
+    /// `save()`'s own `inFlight` guard dedupes any still-running duplicate.
+    func retryPendingLockedSaves() {
+        let pending = pendingLockedSaves
+        pendingLockedSaves.removeAll()
+        lastError = nil
+        for item in pending {
+            save(item.image, knownPostTitle: item.knownPostTitle, knownPublishedAt: item.knownPublishedAt)
+        }
+    }
+
+    /// Drop all queued locked saves without replaying them (alert "Not Now",
+    /// unlock-sheet cancel, or sheet dismissal).
+    func discardPendingLockedSaves() {
+        pendingLockedSaves.removeAll()
+    }
+
+    /// Clear the surfaced error only, leaving the retry queue intact (the alert's
+    /// `isPresented` binding calls this on dismissal so the Unlock path survives).
+    func clearError() {
+        lastError = nil
     }
 
     // MARK: - Helpers

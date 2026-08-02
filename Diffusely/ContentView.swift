@@ -104,6 +104,7 @@ struct ContentView: View {
         // tab), after sweeping stale plaintext temp files and resolving the
         // vault. start() is idempotent, so LibraryView's own call is a no-op.
         .task { await startLibrarySubsystem() }
+        .saveFeedback()
         #else
         // Every tab is a routed NavigationStack: drill-ins (user, post, tag,
         // image) push with a system back button and edge swipe-back, instead
@@ -155,6 +156,7 @@ struct ContentView: View {
                 .tag(4)
         }
         .task { await startLibrarySubsystem() }
+        .saveFeedback()
         #endif
     }
 }
