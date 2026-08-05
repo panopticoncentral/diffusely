@@ -59,14 +59,6 @@ struct ImageFeedView: View {
         horizontalSizeClass == .regular
     }
 
-    private var columns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 2),
-            GridItem(.flexible(), spacing: 2),
-            GridItem(.flexible(), spacing: 2)
-        ]
-    }
-
     var body: some View {
         #if os(macOS)
         feedScroll
@@ -158,31 +150,45 @@ struct ImageFeedView: View {
         }
     }
 
-    @ViewBuilder
-    private var feedContent: some View {
+    /// One feed cell. macOS adds right-click verbs and the keyboard-focus ring;
+    /// everything else about the cell is identical across platforms.
+    private func feedCell(_ image: CivitaiImage) -> some View {
         #if os(macOS)
+        ImageFeedItemView(
+            image: image,
+            isGridMode: true,
+            preserveAspectRatio: true,
+            showsContextMenu: true,   // macOS: native right-click verbs on feed cells
+            keyboardFocused: image.id == focusedFeedImageID
+        )
+        #else
+        ImageFeedItemView(
+            image: image,
+            isGridMode: true,
+            preserveAspectRatio: true
+        )
+        #endif
+    }
+
+    /// Shared by macOS and regular-width iOS (iPad) so both get the same
+    /// staggered wall of natural-aspect-ratio cells.
+    private var masonryFeed: some View {
         MasonryGrid(
             items: civitaiService.images,
             aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
         ) { image in
-            ImageFeedItemView(
-                image: image,
-                isGridMode: true,
-                preserveAspectRatio: true,
-                showsContextMenu: true,   // macOS: native right-click verbs on feed cells
-                keyboardFocused: image.id == focusedFeedImageID
-            )
+            feedCell(image)
                 .onAppear { maybeLoadMore(for: image) }
         }
+    }
+
+    @ViewBuilder
+    private var feedContent: some View {
+        #if os(macOS)
+        masonryFeed
         #else
         if isGridLayout {
-            LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(civitaiService.images, id: \.id) { image in
-                    ImageFeedItemView(image: image, isGridMode: true)
-                        .onAppear { maybeLoadMore(for: image) }
-                }
-            }
-            .padding(.horizontal, 2)
+            masonryFeed
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images, id: \.id) { image in

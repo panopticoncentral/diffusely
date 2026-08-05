@@ -21,14 +21,6 @@ struct TagFeedView: View {
         horizontalSizeClass == .regular
     }
 
-    private var columns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 2),
-            GridItem(.flexible(), spacing: 2),
-            GridItem(.flexible(), spacing: 2)
-        ]
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -72,9 +64,9 @@ struct TagFeedView: View {
         }
     }
 
-    @ViewBuilder
-    private var feedContent: some View {
-        #if os(macOS)
+    /// Shared by macOS and regular-width iOS (iPad) so both get the same
+    /// staggered wall of natural-aspect-ratio cells.
+    private var masonryFeed: some View {
         MasonryGrid(
             items: civitaiService.images,
             aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
@@ -90,19 +82,15 @@ struct TagFeedView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var feedContent: some View {
+        #if os(macOS)
+        masonryFeed
         #else
         if isGridLayout {
-            LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: true)
-                        .onAppear {
-                            if image.id == civitaiService.images.last?.id {
-                                Task { await loadMore() }
-                            }
-                        }
-                }
-            }
-            .padding(.horizontal, 2)
+            masonryFeed
         } else {
             LazyVStack(spacing: 0) {
                 ForEach(civitaiService.images) { image in
