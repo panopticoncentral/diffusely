@@ -33,6 +33,49 @@ import Testing
     }
 }
 
+/// The companion to the gate above: once the gate STOPS blocking, something
+/// has to actually run the reconcile it blocked.
+///
+/// `LibraryStore.start()` is called twice in the encrypted-vault flow — at
+/// launch by `ContentView.startLibrarySubsystem` (deliberately before any
+/// unlock, so the locked-skip engages) and again by `LibraryView`'s
+/// `.task(id: libraryGate)` once the gate reaches `.browsable`. The launch call
+/// used to set `isReady` even though its reconcile had been skipped, so
+/// `start()`'s `guard !isReady` swallowed the second call and no catch-up
+/// reconcile ever ran after an unlock. That left the `NSMetadataQuery` change
+/// handler as the only live trigger, and it only fires on a container change
+/// landing while this device is open AND unlocked — which a device the user
+/// saves from produces constantly, but a read-only device (the iPhone here)
+/// never does. Its index stayed frozen for days while the iPad and Mac synced
+/// normally; Settings → "Rebuild Index" was no help because it is disabled
+/// while non-`.browsable` too.
+///
+/// Proven against the pure decision, mirroring the suites either side of it.
+@Suite struct LibraryStoreStartReconcileTests {
+    /// Cold launch: nothing has run yet, so `start()` reconciles.
+    @Test func coldStartReconciles() {
+        #expect(LibraryStore.shouldStartReconcile(
+            isReady: false, didReconcileSinceLaunch: false) == true)
+    }
+
+    /// THE REGRESSION: the launch `start()` completed (`isReady`) but its
+    /// reconcile was skipped by the `.locked` gate, so the post-unlock
+    /// `start()` MUST still reconcile. `isReady` alone reports "already
+    /// started" here and wrongly suppressed it.
+    @Test func startAfterUnlockReconcilesWhenLaunchReconcileWasSkipped() {
+        #expect(LibraryStore.shouldStartReconcile(
+            isReady: true, didReconcileSinceLaunch: false) == true)
+    }
+
+    /// A reconcile has actually run, so repeat `start()` calls (every later
+    /// `libraryGate` transition re-fires `LibraryView`'s `.task`) stay the
+    /// cheap no-op they were designed to be.
+    @Test func repeatStartIsANoOpOnceAReconcileHasRun() {
+        #expect(LibraryStore.shouldStartReconcile(
+            isReady: true, didReconcileSinceLaunch: true) == false)
+    }
+}
+
 /// Closes the last door in the "no reconcile/prune against a half-migrated
 /// store" guarantee: the MANUAL Settings → "Rebuild Index" button
 /// (`LibraryStore.rebuildIndex()`) is reachable any time Settings is —

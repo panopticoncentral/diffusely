@@ -79,15 +79,61 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// Whether a `start()` call must attempt its reconcile. `isReady` alone
+    /// cannot answer this, and using it as the sole latch stranded the index on
+    /// any device that only READS the library.
+    ///
+    /// `start()` is called twice in the encrypted-vault flow: once at launch by
+    /// `ContentView.startLibrarySubsystem` — deliberately BEFORE any unlock, so
+    /// `reconcileNow`'s locked-skip engages instead of scanning a locked
+    /// container — and again by `LibraryView`'s `.task(id: libraryGate)` when
+    /// the gate reaches `.browsable` after the unlock. The launch call sets
+    /// `isReady` regardless of whether its reconcile actually ran, so `guard
+    /// !isReady` swallowed that second call: no catch-up reconcile ever ran
+    /// after an unlock. The only trigger left was an `NSMetadataQuery` update,
+    /// which needs a container change to land while this device is open AND
+    /// unlocked — something a device where the user saves items produces
+    /// constantly, but a read-only device never does. Those devices' indexes
+    /// stayed frozen indefinitely.
+    ///
+    /// So the latch must be "a reconcile has actually run", not "start() has
+    /// been called": whichever call is the first to run while the gate permits
+    /// a reconcile has to do it.
+    nonisolated static func shouldStartReconcile(
+        isReady: Bool,
+        didReconcileSinceLaunch: Bool
+    ) -> Bool {
+        !isReady || !didReconcileSinceLaunch
+    }
+
+    /// Set once a reconcile has actually reached the index service — see
+    /// `shouldStartReconcile` for why `isReady` can't serve as this latch.
+    private var didReconcileSinceLaunch = false
+
+    /// Separate one-shot latch for the metadata query. `isReady` used to serve
+    /// double duty here, but it only flips once the first reconcile completes,
+    /// so it can't guard a synchronous exactly-once setup against two `start()`
+    /// calls in quick succession.
+    private var didConfigureMetadataQuery = false
+
     func start() {
-        guard !isReady else { return }
+        if !didConfigureMetadataQuery {
+            didConfigureMetadataQuery = true
+            configureMetadataQuery()
+        }
+        guard Self.shouldStartReconcile(
+            isReady: isReady,
+            didReconcileSinceLaunch: didReconcileSinceLaunch
+        ) else { return }
         Task {
             await reconcileNow()
             await refreshTotals()
+            let isFirstReady = !isReady
             isReady = true
-            await enforceCacheLimit()
+            // Cache enforcement belongs to the launch pass only; a post-unlock
+            // catch-up reconcile shouldn't also start evicting media.
+            if isFirstReady { await enforceCacheLimit() }
         }
-        configureMetadataQuery()
     }
 
     /// Flips `didRunDateBackfillThisSession` so subsequent `LibraryView` mounts
@@ -175,6 +221,12 @@ final class LibraryStore: ObservableObject {
             guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
             iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
             let albumStateChanged = await indexService.reconcile(itemsDirectory: dir)
+            // A reconcile has now actually reached the index service, so a
+            // later `start()` (the post-unlock one) no longer needs to run a
+            // catch-up pass. Set only here — past the gate guard above and past
+            // the directory resolve — so a launch reconcile that was SKIPPED
+            // never satisfies this latch.
+            didReconcileSinceLaunch = true
             await refreshTotals()
             // Album rows / membership synced in from another device don't move
             // `itemCount`, so an open LibraryView would never reload without
