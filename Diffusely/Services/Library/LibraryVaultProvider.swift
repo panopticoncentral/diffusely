@@ -96,16 +96,45 @@ final class LibraryVaultProvider: ObservableObject {
         }
     }
 
+    /// True when this process is hosting a test bundle. Checked three ways
+    /// because the environment variables are set by the XCTest harness while the
+    /// class lookup catches any path that loads XCTest without them.
+    nonisolated static let isRunningInTestHost: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }()
+
     /// Resolves the real `LibraryVault` + items directory (the async,
     /// actor-isolated work). Idempotent: only the first call does the
     /// resolution, later calls await that same result; a no-op on the
     /// injectable init path (`vault` already set).
+    ///
+    /// Deliberately resolves NOTHING in a test host, leaving `vault == nil` so
+    /// `state` reads `.notConfigured` and `reconcileContext()` returns
+    /// `(.notConfigured, crypto: nil)`. Every service that defaults its
+    /// vault-context seam to this singleton — `LibraryIndexService.reconcile`,
+    /// `LibraryAlbumService`, `FileLibraryBackfillSidecarStore`,
+    /// `SortAssistantScanner`/`Service`, `LibrarySaveService` — documents that
+    /// default as safe because "the test process never configures the shared
+    /// vault". That assumption silently became FALSE once encryption was enabled
+    /// on the real Library: the unit test host is the app, so this resolved the
+    /// real iCloud container, found its `vault.json`, and reported `.locked`.
+    /// Every reconcile in the suite then no-opped through its locked guard and
+    /// ingested nothing, failing ~99 tests (one of which trapped on an empty
+    /// array and crashed the whole test worker, reporting unrelated suites as
+    /// failures too). Making the assumption true by construction fixes the whole
+    /// family at once and can't be forgotten by a future test — and it stops the
+    /// suite reading the real Library container at all. Tests that need a real
+    /// vault use the injectable initializer, which never reaches this method.
     private func resolveIfNeeded() async {
         if let bootstrapTask {
             await bootstrapTask.value
             return
         }
         guard vault == nil else { return }
+        guard !Self.isRunningInTestHost else { return }
 
         let task = Task {
             do {
