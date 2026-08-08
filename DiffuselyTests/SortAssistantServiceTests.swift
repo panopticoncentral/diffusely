@@ -58,6 +58,14 @@ final class StubClassifier: PromptClassifying, @unchecked Sendable {
 
         #expect(svc.phase == .review)
         #expect(svc.groups.map(\.id) == ["album:\(albumID.uuidString)", "promptless"])
+        // Gate the subscripts on the count. An out-of-range subscript TRAPS,
+        // and a trap takes down the whole test worker process — xcodebuild then
+        // reports every other test scheduled on that worker as failed, so one
+        // genuine failure here masquerades as ~98 unrelated ones across
+        // HoverIntentTests, AuthorCacheTests, CivitaiService*, etc. `#expect` is
+        // non-fatal, so the count expectation above does NOT stop execution;
+        // only `try #require` does.
+        try #require(svc.groups.count == 2)
         #expect(svc.groups[0].entries.map(\.itemID) == [2])
         #expect(svc.groups[1].entries.map(\.itemID) == [3])
     }
