@@ -207,8 +207,8 @@ struct SettingsView: View {
             // Explains the disabled state above rather than letting the tap
             // silently no-op against `LibraryStore.rebuildIndex()`'s own gate
             // (mirrors BE-f's "no silent caps" convention).
-            if !canRebuildIndex {
-                Text("Rebuild Index is unavailable while Library Encryption is finishing setup.")
+            if let reason = rebuildIndexUnavailableReason {
+                Text(reason)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -262,12 +262,43 @@ struct SettingsView: View {
         }
     }
 
-    /// Mirrors `LibraryStore.rebuildIndex()`'s own gate (`libraryGate ==
-    /// .browsable`) so the button is disabled — not just a silent no-op tap —
-    /// whenever the store would skip the rebuild anyway: `.migrating` or
-    /// `.setupIncomplete` (both unlocked, and Settings is reachable in both).
+    /// Mirrors `LibraryStore.rebuildIndex()`'s own gate so the button is
+    /// disabled — not just a silent no-op tap — whenever the store would skip
+    /// the rebuild anyway. Derived from `rebuildIndexUnavailableReason` (which
+    /// calls the store's own predicate) so the button state and the caption
+    /// below it can never disagree: disabled ⇔ a caption explains why.
     private var canRebuildIndex: Bool {
-        vaultProvider.libraryGate == .browsable
+        rebuildIndexUnavailableReason == nil
+    }
+
+    /// Why "Rebuild Index" is currently unavailable, or `nil` when it's
+    /// allowed. The *decision* is delegated to the very predicate
+    /// `LibraryStore.rebuildIndex()` guards on, so this can never claim the
+    /// button works when the store would skip the rebuild (or vice versa);
+    /// the switch below only explains the answer.
+    ///
+    /// State-specific by design: Settings is reachable in every gate state, and
+    /// the vault auto-locks (idle timeout, and on every relaunch), so `.locked`
+    /// is the case a user actually hits — telling them Library Encryption is
+    /// "finishing setup" then sent one debugging session chasing a migration
+    /// that wasn't running. Exhaustive with no `default`, so a new
+    /// `LibraryVaultProvider.LibraryGate` case is a compile error here rather
+    /// than silently inheriting someone else's explanation.
+    private var rebuildIndexUnavailableReason: String? {
+        let gate = vaultProvider.libraryGate
+        guard !LibraryStore.shouldAutonomousReconcile(givenLibraryGate: gate) else { return nil }
+        switch gate {
+        case .browsable:
+            // Unreachable while the predicate is `gate == .browsable`; kept so
+            // this stays correct if it ever widens.
+            return nil
+        case .loading:
+            return "Rebuild Index is unavailable while your Library is still loading."
+        case .locked:
+            return "Unlock your Library to rebuild the index."
+        case .migrating, .setupIncomplete:
+            return "Rebuild Index is unavailable while Library Encryption is finishing setup."
+        }
     }
 
     private var libraryEncryptionStatusText: String {
