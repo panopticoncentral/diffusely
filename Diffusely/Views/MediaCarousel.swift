@@ -17,9 +17,10 @@ import SwiftUI
 struct MediaCarousel<CellMenu: View>: View {
     let images: [CivitaiImage]
     @Binding var currentIndex: Int
-    /// Height available to the carousel (the enclosing window/screen height);
-    /// on macOS the carousel claims exactly this so media fits without
-    /// scrolling, on iOS it renders at a fixed ideal height in the scroll flow.
+    /// Height available to the carousel (the enclosing window/screen height).
+    /// The carousel claims it so a post's media fits without scrolling — in
+    /// full on macOS, less the page-dot row on iOS, where the dots sit below
+    /// the media rather than floating over it.
     let maxHeight: CGFloat
     /// Context-menu items attached to each media cell (right-click /
     /// long-press). Only the visible cell can be targeted, so callers can use
@@ -27,6 +28,16 @@ struct MediaCarousel<CellMenu: View>: View {
     @ViewBuilder var cellMenu: () -> CellMenu
 
     @FocusState private var focused: Bool
+
+    /// Geometry of the iOS page-dot row that sits below the media: a hit target
+    /// plus padding above and below. The media band subtracts this so the dots
+    /// can't push the bottom of the image off screen. It's zero for a
+    /// single-image post, where the indicator renders nothing at all.
+    private static var indicatorDotTarget: CGFloat { 14 }
+    private static var indicatorPadding: CGFloat { 12 }
+    private var indicatorRowHeight: CGFloat {
+        images.count > 1 ? Self.indicatorDotTarget + Self.indicatorPadding * 2 : 0
+    }
 
     #if os(macOS)
     /// The page to open on (the tapped cell). The paged `ScrollView` starts
@@ -152,15 +163,18 @@ struct MediaCarousel<CellMenu: View>: View {
             #if os(macOS)
             .frame(height: maxHeight)
             #else
-            .frame(minHeight: 400, idealHeight: 500)
+            .frame(height: DetailMediaFrame.carouselHeight(
+                available: maxHeight,
+                indicatorHeight: indicatorRowHeight
+            ))
             #endif
 
-            // iOS: dots sit below the carousel (the carousel has a fixed
-            // idealHeight so there's room). On macOS the carousel claims the
-            // full window height, so the dots float as an overlay above.
+            // iOS: dots sit below the carousel (which leaves `indicatorRowHeight`
+            // free for them). On macOS the carousel claims the full window
+            // height, so the dots float as an overlay above.
             #if os(iOS)
             pageIndicator { index in withAnimation { currentIndex = index } }
-                .padding(.vertical, 12)
+                .padding(.vertical, Self.indicatorPadding)
             #endif
         }
         .task {
@@ -184,7 +198,8 @@ struct MediaCarousel<CellMenu: View>: View {
                         Circle()
                             .fill(currentIndex == index ? Color.primary : Color.primary.opacity(0.3))
                             .frame(width: 6, height: 6)
-                            .frame(width: 14, height: 14)   // comfortable hit target
+                            // comfortable hit target
+                            .frame(width: Self.indicatorDotTarget, height: Self.indicatorDotTarget)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
