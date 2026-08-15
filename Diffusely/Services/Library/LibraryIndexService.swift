@@ -651,6 +651,33 @@ actor LibraryIndexService {
         (try? modelContext.fetchCount(FetchDescriptor<PersistedLibraryItem>())) ?? 0
     }
 
+    /// Everything `LibraryStore.refreshTotals()` needs after a reconcile, read
+    /// in ONE full-table pass instead of the two separate fetches
+    /// (`itemCount()` + `totalDownloadedBytes()`) it used to make. The saved-ID
+    /// set — which backs the feed's "already in your library" badge — therefore
+    /// costs no additional query: it's derived from rows this pass already
+    /// materialized. `itemCount()` / `totalDownloadedBytes()` remain for callers
+    /// that want just one number.
+    struct IndexSummary {
+        let itemCount: Int
+        let downloadedBytes: Int
+        /// Every indexed item's Civitai image id — the same value a feed item
+        /// carries as `CivitaiImage.id`, so membership is an exact match, not a
+        /// heuristic.
+        let savedItemIDs: Set<Int>
+    }
+
+    func summary() -> IndexSummary {
+        let items = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        var downloadedBytes = 0
+        var ids = Set<Int>(minimumCapacity: items.count)
+        for item in items {
+            ids.insert(item.itemID)
+            if item.downloadStatus == .downloaded { downloadedBytes += item.fileByteSize }
+        }
+        return IndexSummary(itemCount: items.count, downloadedBytes: downloadedBytes, savedItemIDs: ids)
+    }
+
     // MARK: - LRU eviction
 
     func totalDownloadedBytes() -> Int {

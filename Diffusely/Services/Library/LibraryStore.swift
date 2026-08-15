@@ -56,6 +56,13 @@ final class LibraryStore: ObservableObject {
     /// arrival is still picked up quickly.
     private var reconcileScheduler: ReconcileScheduler?
 
+    /// Keeps `LibrarySaveService.isLibraryBrowsable` — the visibility gate on
+    /// the feeds' "already in your library" badge — following the vault gate.
+    /// Held here because this is where the save service's other cross-service
+    /// wiring already lives (`indexService`, just below), and because the
+    /// store outlives every view that renders a badge.
+    private var gateObserver: AnyCancellable?
+
     init(modelContainer: ModelContainer) {
         self.indexService = LibraryIndexService(modelContainer: modelContainer)
         self.albumService = LibraryAlbumService(
@@ -63,6 +70,20 @@ final class LibraryStore: ObservableObject {
             itemsDirectory: { try? await LibraryContainer.shared.itemsDirectory() }
         )
         LibrarySaveService.shared.indexService = indexService
+
+        let vaultProvider = LibraryVaultProvider.shared
+        let applyGate: (LibraryVaultProvider.LibraryGate) -> Void = { gate in
+            LibrarySaveService.shared.setLibraryBrowsable(
+                LibrarySaveService.showsSavedBadges(givenLibraryGate: gate)
+            )
+        }
+        applyGate(vaultProvider.libraryGate)
+        // `libraryGate` is published from the @MainActor provider, so this
+        // delivers on the main thread — same `assumeIsolated` pattern as the
+        // metadata-query observers below.
+        gateObserver = vaultProvider.$libraryGate.sink { gate in
+            MainActor.assumeIsolated { applyGate(gate) }
+        }
         self.reconcileScheduler = ReconcileScheduler(debounce: .milliseconds(750)) { [weak self] in
             await self?.reconcileNow()
         }
@@ -389,8 +410,12 @@ final class LibraryStore: ObservableObject {
     }
 
     private func refreshTotals() async {
-        downloadedBytes = await indexService.totalDownloadedBytes()
-        itemCount = await indexService.itemCount()
+        let summary = await indexService.summary()
+        downloadedBytes = summary.downloadedBytes
+        itemCount = summary.itemCount
+        // Feeds badge items that are already in the library from this set; it
+        // rides along on the pass above rather than costing its own query.
+        LibrarySaveService.shared.setSavedItemIDs(summary.savedItemIDs)
     }
 
     // MARK: - NSMetadataQuery

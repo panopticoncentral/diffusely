@@ -108,6 +108,60 @@ final class LibrarySaveService: ObservableObject {
 
     weak var indexService: LibraryIndexService?
 
+    // MARK: - "Already in your library" badge
+
+    /// Every item id currently in the library index, pushed in by
+    /// `LibraryStore.refreshTotals()` after each reconcile. Lives here because
+    /// every feed cell already observes this service (for `inFlight`), so the
+    /// badge needs no new observation and no per-cell query: a feed cell's
+    /// check is one `Set<Int>` lookup during body evaluation. Never read
+    /// directly by views — go through `isSaved(itemID:)`, which applies the
+    /// lock gate below.
+    @Published private(set) var savedItemIDs: Set<Int> = []
+
+    /// Whether saved-badges may be drawn at all. False until the library gate
+    /// says otherwise, so a locked vault (or a pre-bootstrap launch) shows
+    /// nothing. See `showsSavedBadges(givenLibraryGate:)`.
+    @Published private(set) var isLibraryBrowsable = false
+
+    /// Pure gate decision, mirroring `LibraryStore.shouldAutonomousReconcile`.
+    /// Only `.browsable` may badge: with an encrypted vault locked, a badge
+    /// would disclose which feed items are in the library to anyone holding
+    /// the device — the library's contents are exactly what the lock protects.
+    /// `.loading` (pre-bootstrap, real state unknown), `.migrating` and
+    /// `.setupIncomplete` badge nothing either; they're transient, and the
+    /// index isn't trustworthy against a half-migrated container anyway.
+    nonisolated static func showsSavedBadges(
+        givenLibraryGate gate: LibraryVaultProvider.LibraryGate
+    ) -> Bool {
+        gate == .browsable
+    }
+
+    /// Replaces the saved set from a fresh index read. Assigns only on an
+    /// actual change so the quiet reconciles that iCloud churn produces don't
+    /// republish and invalidate every visible feed cell.
+    func setSavedItemIDs(_ ids: Set<Int>) {
+        guard ids != savedItemIDs else { return }
+        savedItemIDs = ids
+    }
+
+    func setLibraryBrowsable(_ browsable: Bool) {
+        guard browsable != isLibraryBrowsable else { return }
+        isLibraryBrowsable = browsable
+    }
+
+    /// Badges a single item straight away, without waiting for the reconcile
+    /// that will re-derive the whole set. Called when a save commits.
+    func markSaved(itemID: Int) {
+        savedItemIDs.insert(itemID)
+    }
+
+    /// The per-cell check. Gated on `isLibraryBrowsable`, so a locked library
+    /// reveals nothing about its contents.
+    func isSaved(itemID: Int) -> Bool {
+        isLibraryBrowsable && savedItemIDs.contains(itemID)
+    }
+
     /// One queued retry of a save that was refused because the vault was
     /// locked. Held separately from `lastError` so dismissing the alert can
     /// clear the error without dropping a queued retry (see
@@ -304,6 +358,9 @@ final class LibrarySaveService: ObservableObject {
         if let indexService {
             await indexService.ingest(metadata: metadata, downloadStatus: .downloaded)
         }
+        // Badge the feed cell now rather than waiting for the reconcile that
+        // will re-derive the whole set from the container.
+        markSaved(itemID: itemID)
 
         // Prime Nuke's cache now, while the original is local — free, no extra
         // download. The first grid appearance then hits the cache instead of the

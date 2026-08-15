@@ -153,6 +153,25 @@ struct ImageFeedItemView: View {
         #endif
     }
 
+    /// "Already in your library" marker. One `Set<Int>` lookup per body
+    /// evaluation — `LibrarySaveService` keeps the set, which every cell here
+    /// already observes for `inFlight`. Draws nothing while the library isn't
+    /// browsable (a locked vault must not disclose its contents), which
+    /// `isSaved(itemID:)` decides.
+    @ViewBuilder
+    private var savedBadge: some View {
+        if librarySaveService.isSaved(itemID: image.id) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(.white)
+                .padding(6)
+                .background(Color.black.opacity(0.5))
+                .clipShape(Circle())
+                .allowsHitTesting(false)
+                .accessibilityLabel("Saved to library")
+        }
+    }
+
     @ViewBuilder
     private var ellipsisMenu: some View {
         if hasMenuItems {
@@ -215,8 +234,11 @@ struct ImageFeedItemView: View {
                     }
                     .padding(8)
                     Spacer()
-                    if showsUsername, let user = image.user, let username = user.username {
-                        HStack {
+                    // Bottom row: username at the leading edge (when shown),
+                    // saved marker at the trailing edge — clear of the video
+                    // badge and ellipsis above.
+                    HStack {
+                        if showsUsername, let user = image.user, let username = user.username {
                             Button(action: { openUserContent() }) {
                                 Text(username)
                                     .font(.caption2)
@@ -225,11 +247,12 @@ struct ImageFeedItemView: View {
                                     .lineLimit(1)
                             }
                             .buttonStyle(.plain)
-                            Spacer()
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.bottom, 4)
+                        Spacer()
+                        savedBadge
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 4)
                 }
             }
         }
@@ -294,9 +317,12 @@ struct ImageFeedItemView: View {
                     }
             }
 
-            // Ellipsis menu overlay
-            ellipsisMenu
-                .padding(8)
+            // Ellipsis menu overlay, with the saved marker alongside it.
+            HStack(spacing: 4) {
+                savedBadge
+                ellipsisMenu
+            }
+            .padding(8)
         }
         // Origin of the iOS zoom push into the image detail view (list mode).
         .zoomTransitionSource(id: "image-\(image.id)", in: zoomNamespace)
