@@ -281,15 +281,22 @@ final class LibraryStore: ObservableObject {
         if albumStateChanged { notifyAlbumsChanged() }
     }
 
+    // Both eviction entry points resolve the container first (fail fast, same
+    // reasoning as `remove(itemID:)`) and then evict through the vault-aware
+    // store, so an encrypted container's opaque `{token}.b` media is the file
+    // actually targeted — the plaintext `mediaFileName` names nothing there.
     func freeUpSpaceNow() async {
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        await indexService.evictAllDownloaded(itemsDirectory: dir)
+        guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
+        await indexService.evictAllDownloaded(store: LibraryVaultProvider.shared.fileStore())
         await refreshTotals()
     }
 
     func enforceCacheLimit() async {
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        await indexService.enforceCacheLimit(maxBytes: cacheLimitBytes, itemsDirectory: dir)
+        guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
+        await indexService.enforceCacheLimit(
+            maxBytes: cacheLimitBytes,
+            store: LibraryVaultProvider.shared.fileStore()
+        )
         await refreshTotals()
     }
 

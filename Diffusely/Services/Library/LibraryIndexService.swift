@@ -263,7 +263,17 @@ actor LibraryIndexService {
         // giving up here never strands the index.
         for _ in 0..<3 {
             let epoch = currentMutationEpoch()
-            let scan = await Self.runScan(store: store)
+            // Read on the model actor, before the scan suspends: these are what
+            // let the scan recognize an evicted encrypted file as belonging to a
+            // row that still exists (see `scanContainer`'s placeholder branch).
+            // Encrypted only — plaintext recovers the id from the `{id}.json`
+            // stem and needs no help, so it shouldn't pay for the fetch.
+            let known = store.isEncrypted ? indexedIDs() : (items: Set<Int>(), albums: Set<UUID>())
+            let scan = await Self.runScan(
+                store: store,
+                indexedItemIDs: known.items,
+                indexedAlbumIDs: known.albums
+            )
 
             // A nil scan means the directory read *threw* (transient iCloud/filesystem
             // error). Treating that as "empty" would prune the whole index, so we
@@ -439,10 +449,18 @@ actor LibraryIndexService {
 
     /// Runs `scanContainer` on `scanQueue` and suspends the caller until it
     /// finishes — without occupying a cooperative thread.
-    nonisolated static func runScan(store: LibraryFileStore) async -> ScanResult? {
+    nonisolated static func runScan(
+        store: LibraryFileStore,
+        indexedItemIDs: Set<Int> = [],
+        indexedAlbumIDs: Set<UUID> = []
+    ) async -> ScanResult? {
         await withCheckedContinuation { continuation in
             scanQueue.async {
-                continuation.resume(returning: scanContainer(store: store))
+                continuation.resume(returning: scanContainer(
+                    store: store,
+                    indexedItemIDs: indexedItemIDs,
+                    indexedAlbumIDs: indexedAlbumIDs
+                ))
             }
         }
     }
@@ -466,6 +484,12 @@ actor LibraryIndexService {
         scanContainer(store: LibraryFileStore(itemsDirectory: itemsDirectory, crypto: nil))
     }
 
+    /// Injectable placeholder predicate. Production passes
+    /// `isDatalessPlaceholder`, which reads live iCloud resource values off the
+    /// real FileProvider; tests substitute a stub so the not-yet-materialized
+    /// paths through the scan are reachable over a plain temp directory.
+    typealias PlaceholderCheck = (URL) -> Bool
+
     /// Reads the container through `store`: every readable item sidecar
     /// (`*.m` decrypted or `*.json` parsed, per `store.isEncrypted`) plus,
     /// separately, every readable album file. Plaintext album files are the
@@ -481,7 +505,12 @@ actor LibraryIndexService {
     /// wouldn't carry this call's prefetched resourceValues cache, reintroducing
     /// the per-file XPC round-trip this scan exists to avoid. `store.isMetadataFileName`/
     /// `isAuxFileName` classify names from the single listing captured here.
-    nonisolated static func scanContainer(store: LibraryFileStore) -> ScanResult? {
+    nonisolated static func scanContainer(
+        store: LibraryFileStore,
+        indexedItemIDs: Set<Int> = [],
+        indexedAlbumIDs: Set<UUID> = [],
+        isPlaceholder: PlaceholderCheck = { isDatalessPlaceholder($0) }
+    ) -> ScanResult? {
         let fileManager = FileManager.default
         let itemsDirectory = store.itemsDirectory
         guard let contents = try? fileManager.contentsOfDirectory(
@@ -508,6 +537,24 @@ actor LibraryIndexService {
         var albums: [LibraryAlbumFile] = []
         var seenAlbumIDs = Set<UUID>()
 
+        // Reverse token maps are built at most once per scan, and only if an
+        // evicted file is actually met — the common all-materialized scan pays
+        // nothing, and a sweep-evicted container pays one HMAC per indexed id.
+        var itemIDsByFileName: [String: Int]?
+        func preservedItemID(_ url: URL) -> Int? {
+            guard let crypto = store.crypto else { return sidecarItemID(from: url) }
+            let map = itemIDsByFileName ?? metadataFileNames(forItemIDs: indexedItemIDs, crypto: crypto)
+            itemIDsByFileName = map
+            return map[url.lastPathComponent]
+        }
+        var albumIDsByFileName: [String: UUID]?
+        func preservedAlbumID(_ url: URL) -> UUID? {
+            guard let crypto = store.crypto else { return nil }
+            let map = albumIDsByFileName ?? auxFileNames(forAlbumIDs: indexedAlbumIDs, crypto: crypto)
+            albumIDsByFileName = map
+            return map[url.lastPathComponent]
+        }
+
         let sidecarURLs = contents.filter { store.isMetadataFileName($0.lastPathComponent) }
         for sidecarURL in sidecarURLs {
             let name = sidecarURL.lastPathComponent
@@ -523,7 +570,7 @@ actor LibraryIndexService {
                 // read error, or corrupt JSON) never prunes the row. Mirrors how
                 // a not-yet-materialized item is kept via seenIDs.
                 seenAlbumIDs.insert(albumID)
-                if isDatalessPlaceholder(sidecarURL) {
+                if isPlaceholder(sidecarURL) {
                     try? fileManager.startDownloadingUbiquitousItem(at: sidecarURL)
                     continue
                 }
@@ -540,27 +587,40 @@ actor LibraryIndexService {
             // placeholder; reading it (plaintext `Data(contentsOf:)`, or an
             // encrypted read via the store) would force a synchronous
             // FileProvider download that can block for a long time. Request a
-            // non-blocking download instead and, in plaintext mode, preserve
-            // the item by recovering its id from the filename stem (no I/O) so
-            // reconcile doesn't prune the row as "vanished" — a later reconcile
-            // (the metadata query fires when the file materializes) ingests its
-            // fields. An encrypted filename is an opaque token with no id
-            // recoverable without decrypting, which is exactly the blocking
-            // read this check exists to avoid, so an encrypted placeholder
-            // sidecar cannot be preserved this round (see task report).
-            if isDatalessPlaceholder(sidecarURL) {
+            // non-blocking download instead and preserve the item by recovering
+            // its id WITHOUT reading the file, so reconcile doesn't prune the row
+            // as "vanished" — a later reconcile (the metadata query fires when the
+            // file materializes) ingests its fields. Plaintext reads the id off
+            // the `{id}.json` stem; encrypted matches the opaque token against the
+            // ids the index already holds (see `metadataFileNames(forItemIDs:)`).
+            // Getting this wrong is not a cosmetic miss: macOS evicts iCloud
+            // content in sweeps, so a sweep over the container turned every
+            // sidecar into a placeholder at once and pruned the ENTIRE index,
+            // which then rebuilt file-by-file as the sidecars re-downloaded.
+            if isPlaceholder(sidecarURL) {
                 try? fileManager.startDownloadingUbiquitousItem(at: sidecarURL)
-                if !store.isEncrypted, let id = sidecarItemID(from: sidecarURL) {
+                if let id = preservedItemID(sidecarURL) {
                     seenIDs.insert(id)
                 }
                 continue
             }
 
+            // A file that is present but can't be read or decoded THIS round —
+            // a torn write, a failed coordination, corrupt bytes — has not
+            // vanished, so it must not prune its row either. Same rule the
+            // album branch above already applies, and the same no-I/O id
+            // recovery the placeholder branch uses. A later reconcile ingests
+            // its fields once the file reads cleanly again.
             guard
                 let id = store.itemID(forMetadataFile: sidecarURL),
                 let data = store.readMetadata(itemID: id),
                 let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
-            else { continue }
+            else {
+                if let id = preservedItemID(sidecarURL) {
+                    seenIDs.insert(id)
+                }
+                continue
+            }
 
             seenIDs.insert(metadata.itemID)
             // The store's deterministic media URL for this item — identical to
@@ -583,14 +643,30 @@ actor LibraryIndexService {
         if store.isEncrypted {
             let auxURLs = contents.filter { store.isAuxFileName($0.lastPathComponent) }
             for auxURL in auxURLs {
-                if isDatalessPlaceholder(auxURL) {
+                if isPlaceholder(auxURL) {
                     try? fileManager.startDownloadingUbiquitousItem(at: auxURL)
+                    // Same preservation as an evicted item sidecar: an album row
+                    // whose file is merely not materialized has not vanished.
+                    if let id = preservedAlbumID(auxURL) {
+                        seenAlbumIDs.insert(id)
+                    }
                     continue
                 }
+                // Unreadable-or-undecodable splits two ways here, and only the
+                // token can tell them apart: an aux file matching a known album
+                // id is that album's file and its row is preserved; anything
+                // else is either a non-album aux blob (sort-assistant state,
+                // which decodes as nothing and owns no row) or an album this
+                // index never had — both correctly skipped.
                 guard
                     let data = store.readAux(at: auxURL),
                     let file = try? LibraryAlbumFile.decoder().decode(LibraryAlbumFile.self, from: data)
-                else { continue }
+                else {
+                    if let id = preservedAlbumID(auxURL) {
+                        seenAlbumIDs.insert(id)
+                    }
+                    continue
+                }
                 albums.append(file)
                 seenAlbumIDs.insert(file.id)
             }
@@ -621,6 +697,33 @@ actor LibraryIndexService {
     /// filename without reading the (possibly not-yet-downloaded) contents.
     nonisolated static func sidecarItemID(from jsonURL: URL) -> Int? {
         Int(jsonURL.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Encrypted counterpart of `sidecarItemID`: `{opaque metadata file name:
+    /// itemID}` for every id the index already holds.
+    ///
+    /// An encrypted filename is `HMAC(fileKey, "meta:{itemID}")` — not
+    /// invertible, which is why an evicted encrypted sidecar used to be
+    /// unidentifiable and its row pruned. But it doesn't need inverting: the
+    /// token is deterministic, so recomputing it FORWARDS for each already-known
+    /// id yields the same reverse lookup, with no file read and therefore no
+    /// blocking FileProvider download — exactly the property plaintext gets for
+    /// free from its `{itemID}.json` stem.
+    nonisolated static func metadataFileNames(forItemIDs ids: Set<Int>, crypto: LibraryFileCrypto) -> [String: Int] {
+        var map = [String: Int](minimumCapacity: ids.count)
+        for id in ids { map[crypto.fileName(itemID: id, role: .meta)] = id }
+        return map
+    }
+
+    /// Album counterpart of `metadataFileNames(forItemIDs:crypto:)`. Keyed on the
+    /// same logical name `LibraryAlbumStore` writes through (`album-{uuid}.json`),
+    /// so the token matches the one actually on disk. Aux files that are not
+    /// albums (sort-assistant state) match nothing here — correctly, since there
+    /// is no album row of theirs to preserve.
+    nonisolated static func auxFileNames(forAlbumIDs ids: Set<UUID>, crypto: LibraryFileCrypto) -> [String: UUID] {
+        var map = [String: UUID](minimumCapacity: ids.count)
+        for id in ids { map[crypto.fileName(auxName: LibraryAlbumStore.fileName(for: id))] = id }
+        return map
     }
 
     /// Rebuilds the index from the container. Despite the name this no longer
@@ -667,6 +770,22 @@ actor LibraryIndexService {
         let savedItemIDs: Set<Int>
     }
 
+    /// The ids the index currently holds. Handed to `scanContainer` so an
+    /// evicted encrypted file — whose opaque name is a one-way HMAC — can still
+    /// be matched back to the row it belongs to and preserved rather than pruned.
+    func indexedIDs() -> (items: Set<Int>, albums: Set<UUID>) {
+        // Ids only: reconcile already fetches these tables in full to diff them,
+        // and this runs first, so pulling whole rows here would roughly double
+        // the fetch cost of every reconcile on a large library.
+        var itemsDescriptor = FetchDescriptor<PersistedLibraryItem>()
+        itemsDescriptor.propertiesToFetch = [\.itemID]
+        var albumsDescriptor = FetchDescriptor<PersistedAlbum>()
+        albumsDescriptor.propertiesToFetch = [\.id]
+        let items = (try? modelContext.fetch(itemsDescriptor)) ?? []
+        let albums = (try? modelContext.fetch(albumsDescriptor)) ?? []
+        return (Set(items.map(\.itemID)), Set(albums.map(\.id)))
+    }
+
     func summary() -> IndexSummary {
         let items = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         var downloadedBytes = 0
@@ -690,7 +809,18 @@ actor LibraryIndexService {
     /// Evicts least-recently-accessed media until the downloaded total is at or
     /// below `maxBytes`. Sidecar JSON is never evicted. Cooperative, not exact -
     /// iCloud may also evict independently.
+    /// Convenience for plaintext callers/tests without a store handy — builds a
+    /// passthrough one, byte-identical to evicting `{id}.{ext}` directly. An
+    /// encrypted container MUST go through `enforceCacheLimit(maxBytes:store:)`
+    /// with the real store, or eviction aims at names that aren't on disk.
     func enforceCacheLimit(maxBytes: Int, itemsDirectory: URL) async {
+        await enforceCacheLimit(
+            maxBytes: maxBytes,
+            store: LibraryFileStore(itemsDirectory: itemsDirectory, crypto: nil)
+        )
+    }
+
+    func enforceCacheLimit(maxBytes: Int, store: LibraryFileStore) async {
         guard maxBytes > 0 else { return }
         let downloaded = ((try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? [])
             .filter { $0.downloadStatus == .downloaded }
@@ -700,11 +830,14 @@ actor LibraryIndexService {
         // Pick least-recently-accessed victims down to the limit. Pure read of
         // index state — we only need the filenames for the file I/O below.
         var victimIDs: [Int] = []
-        var victimFiles: [String] = []
+        var victims: [(itemID: Int, plaintextExtension: String)] = []
         for item in downloaded.sorted(by: { $0.lastAccessedAt < $1.lastAccessedAt }) {
             if total <= maxBytes { break }
             victimIDs.append(item.itemID)
-            victimFiles.append(item.mediaFileName)
+            victims.append((
+                itemID: item.itemID,
+                plaintextExtension: URL(fileURLWithPath: item.mediaFileName).pathExtension
+            ))
             total -= item.fileByteSize
         }
         guard !victimIDs.isEmpty else { return }
@@ -718,7 +851,7 @@ actor LibraryIndexService {
         // index reads/writes, so a slow or unresponsive daemon can't wedge it
         // and beachball the whole app (it did, at ~1k items). Only the SwiftData
         // status flip below touches the actor.
-        await Self.runEvictMediaFiles(fileNames: victimFiles, in: itemsDirectory)
+        await Self.runEvictMedia(victims: victims, store: store)
 
         // Re-fetch after the suspension (the actor is reentrant — another call
         // may have run while we awaited), then flip the evicted rows and save
@@ -733,6 +866,10 @@ actor LibraryIndexService {
 
     func evictAllDownloaded(itemsDirectory: URL) async {
         await enforceCacheLimit(maxBytes: 1, itemsDirectory: itemsDirectory)
+    }
+
+    func evictAllDownloaded(store: LibraryFileStore) async {
+        await enforceCacheLimit(maxBytes: 1, store: store)
     }
 
     /// Dedicated serial queue for the blocking coordinated evictions below. Keeps
@@ -751,10 +888,23 @@ actor LibraryIndexService {
     /// it carries no actor isolation; the synchronous file coordination must run
     /// on `evictionQueue`, never the main actor or the model actor. Missing files
     /// are tolerated (eviction is a no-op / swallowed error).
-    nonisolated static func evictMediaFiles(fileNames: [String], in dir: URL) {
+    /// The media file each victim actually occupies on disk. Resolved through
+    /// `store`, NOT from the sidecar's `mediaFileName`: that field records the
+    /// plaintext `{itemID}.{ext}` name, which in an encrypted container names no
+    /// file at all — the media lives under the opaque `{token}.b`. Evicting the
+    /// plaintext name there is a silent no-op, so the cache limit frees nothing
+    /// and the container grows past it until macOS evicts the whole thing itself,
+    /// sidecars included. Mirrors how the scan resolves media status.
+    nonisolated static func mediaURLsToEvict(
+        victims: [(itemID: Int, plaintextExtension: String)],
+        store: LibraryFileStore
+    ) -> [URL] {
+        victims.map { store.mediaURL(itemID: $0.itemID, plaintextExtension: $0.plaintextExtension) }
+    }
+
+    nonisolated static func evictMedia(victims: [(itemID: Int, plaintextExtension: String)], store: LibraryFileStore) {
         let coordinator = NSFileCoordinator()
-        for name in fileNames {
-            let mediaURL = dir.appendingPathComponent(name)
+        for mediaURL in mediaURLsToEvict(victims: victims, store: store) {
             var coordinationError: NSError?
             coordinator.coordinate(
                 writingItemAt: mediaURL,
@@ -768,10 +918,13 @@ actor LibraryIndexService {
 
     /// Runs `evictMediaFiles` on `evictionQueue` and suspends the caller until it
     /// finishes — without occupying a cooperative thread or the model actor.
-    nonisolated static func runEvictMediaFiles(fileNames: [String], in dir: URL) async {
+    nonisolated static func runEvictMedia(
+        victims: [(itemID: Int, plaintextExtension: String)],
+        store: LibraryFileStore
+    ) async {
         await withCheckedContinuation { continuation in
             evictionQueue.async {
-                evictMediaFiles(fileNames: fileNames, in: dir)
+                evictMedia(victims: victims, store: store)
                 continuation.resume()
             }
         }

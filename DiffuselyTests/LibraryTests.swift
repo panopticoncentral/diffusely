@@ -398,13 +398,16 @@ private func makeMetadata(
     // thread). `evictUbiquitousItem` is an iCloud op, so on a plain
     // non-ubiquitous temp file it does not remove the file; we assert the
     // helper completes and tolerates a mix of present and missing files.
-    @Test func runEvictMediaFilesCompletesOffMainActorAndToleratesMissing() async throws {
+    @Test func runEvictMediaCompletesOffMainActorAndToleratesMissing() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("img".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
         // "2.mp4" intentionally absent — the helper must tolerate it.
 
-        await LibraryIndexService.runEvictMediaFiles(fileNames: ["1.jpeg", "2.mp4"], in: dir)
+        await LibraryIndexService.runEvictMedia(
+            victims: [(itemID: 1, plaintextExtension: "jpeg"), (itemID: 2, plaintextExtension: "mp4")],
+            store: LibraryFileStore(itemsDirectory: dir, crypto: nil)
+        )
 
         // Reaching here proves the coordinated eviction completed off the main
         // actor. The present file remains: eviction is an iCloud op, not a
