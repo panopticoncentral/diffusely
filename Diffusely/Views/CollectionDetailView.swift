@@ -101,7 +101,12 @@ struct CollectionDetailView: View {
                 .help("Refresh collection contents")
             }
             ToolbarItem(placement: .primaryAction) {
-                CollectionSortMenu(selectedSort: $selectedSort)
+                CollectionSortMenu(
+                    selectedSort: $selectedSort,
+                    showsGroupActions: !currentGroupIDs.isEmpty,
+                    onCollapseAll: collapseAllAuthors,
+                    onExpandAll: expandAllAuthors
+                )
             }
         }
         #if os(macOS)
@@ -313,6 +318,24 @@ struct CollectionDetailView: View {
         } else {
             expandedAuthors.insert(authorId)
         }
+        persistCollapsedAuthors()
+    }
+
+    /// Author IDs the list is currently sectioned by; empty for a flat (date)
+    /// sort or an empty collection. Drives both the Collapse/Expand All actions
+    /// and whether the sort menu offers them at all.
+    private var currentGroupIDs: [Int] {
+        guard case .grouped(let groups) = content else { return [] }
+        return groups.map { $0.id }
+    }
+
+    private func collapseAllAuthors() {
+        expandedAuthors = []
+        persistCollapsedAuthors()
+    }
+
+    private func expandAllAuthors() {
+        expandedAuthors = Set(currentGroupIDs)
         persistCollapsedAuthors()
     }
 

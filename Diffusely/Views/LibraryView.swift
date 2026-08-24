@@ -420,7 +420,12 @@ struct LibraryView: View {
                 // could then bulk-remove invisible items). Hide both in Albums mode.
                 if !isAlbumsMode {
                     ToolbarItem(placement: .primaryAction) {
-                        LibrarySortMenu(selectedSort: $selectedSort)
+                        LibrarySortMenu(
+                            selectedSort: $selectedSort,
+                            showsGroupActions: !currentGroupIDs.isEmpty,
+                            onCollapseAll: collapseAllGroups,
+                            onExpandAll: expandAllGroups
+                        )
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button("Select") { isSelecting = true }
@@ -1006,6 +1011,22 @@ struct LibraryView: View {
         } else {
             expandedGroups.insert(groupID)
         }
+    }
+
+    /// Section IDs the grid is currently showing; empty for a flat (date) sort
+    /// or an empty library. Drives both the Collapse/Expand All actions and
+    /// whether the sort menu offers them at all.
+    private var currentGroupIDs: [String] {
+        guard case .grouped(let groups) = content else { return [] }
+        return groups.map { $0.id }
+    }
+
+    private func collapseAllGroups() {
+        expandedGroups = []
+    }
+
+    private func expandAllGroups() {
+        expandedGroups = Set(currentGroupIDs)
     }
 
     private var selectionTitle: String {
