@@ -40,22 +40,20 @@ struct FollowingView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .noAPIKey:
-            messageView(
+            FollowingMessageView(
                 systemImage: "person.crop.circle.badge.questionmark",
                 title: "Sign in to see who you follow",
                 message: "Add your Civitai API key to load the creators you follow.",
                 actionTitle: "Open Settings"
             ) { showingSettings = true }
         case .empty:
-            messageView(
+            FollowingMessageView(
                 systemImage: "person.2",
                 title: "You're not following anyone yet",
-                message: "Creators you follow on Civitai will appear here.",
-                actionTitle: nil,
-                action: nil
+                message: "Creators you follow on Civitai will appear here."
             )
         case .error(let description):
-            messageView(
+            FollowingMessageView(
                 systemImage: "exclamationmark.triangle",
                 title: "Couldn't load your follows",
                 message: description,
@@ -86,35 +84,6 @@ struct FollowingView: View {
         }
         .listStyle(.plain)
         .refreshable { await store.refresh() }
-    }
-
-
-    @ViewBuilder
-    private func messageView(
-        systemImage: String,
-        title: String,
-        message: String,
-        actionTitle: String?,
-        action: (() -> Void)? = nil
-    ) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.headline)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-                    .buttonStyle(.borderedProminent)
-                    .padding(.top, 4)
-            }
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

@@ -1,12 +1,23 @@
 import SwiftUI
 
 /// A feed scoped to a single tag, opened by tapping a tag chip on a detail
-/// view. Fixed to one media type (the type of the media the tag was tapped
-/// from). Modeled on `UserContentView`'s scoped-feed pattern.
+/// view or a row in the Tags list. Modeled on `UserContentView`'s scoped-feed
+/// pattern.
+///
+/// The media type is seeded by the caller — the type of the media the chip was
+/// tapped from, or images when opened from the Tags list, which has no such
+/// context — and is then switchable in the toolbar.
 struct TagFeedView: View {
     let tagId: Int
     let tagName: String
-    let videos: Bool
+
+    @State private var videos: Bool
+
+    init(tagId: Int, tagName: String, videos: Bool) {
+        self.tagId = tagId
+        self.tagName = tagName
+        _videos = State(initialValue: videos)
+    }
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var civitaiService = CivitaiService()
@@ -46,12 +57,23 @@ struct TagFeedView: View {
         #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Picker("Media", selection: $videos) {
+                    Label("Images", systemImage: "photo").tag(false)
+                    Label("Videos", systemImage: "video").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            ToolbarItem(placement: .primaryAction) {
                 FeedFilterMenu(selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
             }
         }
         .task {
             await loadContent()
             hasLoadedOnce = true
+        }
+        .onChange(of: videos) { _, _ in
+            Task { await refreshContent() }
         }
         .onChange(of: selectedPeriod) { _, _ in
             Task { await refreshContent() }

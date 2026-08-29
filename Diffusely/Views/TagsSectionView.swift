@@ -8,6 +8,8 @@ struct TagsSectionView: View {
     @Binding var showAll: Bool
     let onSelect: (CivitaiVotableTag) -> Void
 
+    @ObservedObject private var followedTags = FollowedTagsStore.shared
+
     private let collapsedCount = 6
 
     private var visibleTags: [CivitaiVotableTag] {
@@ -25,6 +27,7 @@ struct TagsSectionView: View {
 
             FlowLayout(spacing: 8) {
                 ForEach(visibleTags) { tag in
+                    let followed = followedTags.isFollowing(id: tag.id)
                     Button {
                         onSelect(tag)
                     } label: {
@@ -32,11 +35,31 @@ struct TagsSectionView: View {
                             .font(.caption)
                             .padding(.vertical, 6)
                             .padding(.horizontal, 12)
-                            .background(Color(.secondarySystemBackground))
+                            // A followed tag reads as "on" at a glance, so the
+                            // state is visible without opening the menu.
+                            .background(followed ? AnyShapeStyle(Color.accentColor.opacity(0.25))
+                                                 : AnyShapeStyle(Color(.secondarySystemBackground)))
                             .foregroundColor(.primary)
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    // Tap still opens the tag feed; following is the secondary
+                    // action (long-press on iOS, right-click on macOS).
+                    .contextMenu {
+                        if followed {
+                            Button(role: .destructive) {
+                                followedTags.unfollow(id: tag.id)
+                            } label: {
+                                Label("Unfollow Tag", systemImage: "minus.circle")
+                            }
+                        } else {
+                            Button {
+                                followedTags.follow(FollowedTag(id: tag.id, name: tag.name))
+                            } label: {
+                                Label("Follow Tag", systemImage: "plus.circle")
+                            }
+                        }
+                    }
                 }
             }
 

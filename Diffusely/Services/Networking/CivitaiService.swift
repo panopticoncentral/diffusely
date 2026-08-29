@@ -430,6 +430,70 @@ class CivitaiService: ObservableObject {
         return tRPCResponse[0].result.data.json
     }
 
+    /// Searches Civitai's tag list via `tag.getAll`, for the Add Tag sheet.
+    /// Scoped to image tags since that is what the tag feeds filter on.
+    /// Returns `[]` on any error — tag search is non-critical UI and the sheet
+    /// shows "no results" instead of an alert. Ids of 0 are dropped: a feed
+    /// cannot be filtered by them, matching `fetchVotableTags`.
+    func searchTags(query: String) async -> [CivitaiTag] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        do {
+            var components = URLComponents(string: "\(baseURL)/tag.getAll")!
+
+            let inputParams: [String: Any] = [
+                "query": trimmed,
+                "limit": 20,
+                "entityType": ["Image"],
+            ]
+
+            let tRPCInput = [
+                "0": [
+                    "json": inputParams
+                ]
+            ]
+
+            let inputData = try JSONSerialization.data(withJSONObject: tRPCInput)
+            let inputString = String(data: inputData, encoding: .utf8)!
+
+            components.queryItems = [
+                URLQueryItem(name: "batch", value: "1"),
+                URLQueryItem(name: "input", value: inputString)
+            ]
+
+            guard let url = components.url else {
+                throw URLError(.badURL)
+            }
+
+            var request = makeRequest(url: url)
+            if let apiKey = APIKeyManager.shared.apiKey {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+
+            let (data, response) = try await session.data(for: request)
+            try validateStatus(response)
+
+            struct SearchResponse: Codable {
+                let result: SearchResult
+            }
+            struct SearchResult: Codable {
+                let data: SearchData
+            }
+            struct SearchData: Codable {
+                let json: SearchPage
+            }
+            struct SearchPage: Codable {
+                let items: [CivitaiTag]
+            }
+
+            let tRPCResponse = try decodeTRPC([SearchResponse].self, from: data)
+            return tRPCResponse[0].result.data.json.items.filter { $0.id > 0 }
+        } catch {
+            return []
+        }
+    }
+
     /// Fetches the curated tag list for an image/video via `tag.getVotableTags`.
     /// The server denoises the list (suppressing auto-tags when better source
     /// tags exist). We order moderation tags first, then by descending score —
