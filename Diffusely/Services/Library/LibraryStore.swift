@@ -81,8 +81,19 @@ final class LibraryStore: ObservableObject {
         // `libraryGate` is published from the @MainActor provider, so this
         // delivers on the main thread — same `assumeIsolated` pattern as the
         // metadata-query observers below.
-        gateObserver = vaultProvider.$libraryGate.sink { gate in
-            MainActor.assumeIsolated { applyGate(gate) }
+        gateObserver = vaultProvider.$libraryGate.sink { [weak self] gate in
+            MainActor.assumeIsolated {
+                applyGate(gate)
+                // Re-arm the post-unlock catch-up reconcile whenever the gate
+                // leaves `.browsable` (the idle auto-lock does this every time
+                // the app is backgrounded past its threshold). See
+                // `reconcileLatch` for why the latch can't be launch-scoped.
+                guard let self else { return }
+                self.didReconcileSinceLaunch = Self.reconcileLatch(
+                    afterGateChangedTo: gate,
+                    currentlyLatched: self.didReconcileSinceLaunch
+                )
+            }
         }
         self.reconcileScheduler = ReconcileScheduler(debounce: .milliseconds(750)) { [weak self] in
             await self?.reconcileNow()
@@ -125,6 +136,26 @@ final class LibraryStore: ObservableObject {
         didReconcileSinceLaunch: Bool
     ) -> Bool {
         !isReady || !didReconcileSinceLaunch
+    }
+
+    /// The reconcile latch's new value after the vault gate changes.
+    ///
+    /// Scopes the latch to "a reconcile has run since the gate last became
+    /// `.browsable`" rather than "since launch". iOS keeps the app's process
+    /// alive for days, and the idle auto-lock (`DiffuselyApp`, 300s) re-locks
+    /// the vault every time the app sits in the background — so one process
+    /// sees many `.browsable` → `.locked` → `.browsable` cycles. A
+    /// launch-scoped latch made every unlock after the first a no-op, which
+    /// stranded a read-only device: `reconcileNow` drops the `NSMetadataQuery`
+    /// changes that land while non-`.browsable` (and the query never
+    /// re-delivers them), so those arrivals were lost until the process died.
+    /// Clearing the latch on the way out of `.browsable` re-arms the
+    /// post-unlock catch-up that recovers them.
+    nonisolated static func reconcileLatch(
+        afterGateChangedTo gate: LibraryVaultProvider.LibraryGate,
+        currentlyLatched: Bool
+    ) -> Bool {
+        gate == .browsable ? currentlyLatched : false
     }
 
     /// Set once a reconcile has actually reached the index service — see

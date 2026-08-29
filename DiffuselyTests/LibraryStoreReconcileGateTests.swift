@@ -104,3 +104,51 @@ import Testing
         #expect(LibraryStore.shouldAutonomousReconcile(givenLibraryGate: .browsable) == true)
     }
 }
+
+/// The bug this closes: `didReconcileSinceLaunch` latched for the lifetime of
+/// the PROCESS, but iOS keeps that process alive for days. The idle auto-lock
+/// (`DiffuselyApp`, 300s) re-locks the vault every time the app sits in the
+/// background, so the real cycle on a read-only device is
+/// `.browsable` → `.locked` → `.browsable`, over and over, inside one process.
+///
+/// Two things then compound. `reconcileNow` drops any `NSMetadataQuery` change
+/// that lands while the gate is non-`.browsable` (the locked-skip), and
+/// `NSMetadataQuery` never re-delivers it. The post-unlock `start()` that
+/// should have caught up was itself suppressed, because a reconcile HAD run
+/// earlier in the process. Net effect: every iCloud arrival landing while the
+/// Library was locked was lost until the process was killed — the iPhone sat
+/// five days behind the Mac and iPad, and only a force-quit brought it current.
+///
+/// So the latch must be scoped to "since the gate last became `.browsable`",
+/// not "since launch": leaving `.browsable` clears it, so the next unlock is
+/// guaranteed a catch-up reconcile.
+@Suite struct LibraryStoreReconcileLatchScopeTests {
+    /// Leaving `.browsable` (idle auto-lock while backgrounded) must clear the
+    /// latch — that is what re-arms the post-unlock catch-up.
+    @Test func leavingBrowsableClearsTheLatch() {
+        #expect(LibraryStore.reconcileLatch(
+            afterGateChangedTo: .locked, currentlyLatched: true) == false)
+    }
+
+    /// A transition that does NOT leave `.browsable` must not clear a latch
+    /// that is already set, or every gate republish would re-reconcile.
+    @Test func stayingBrowsablePreservesTheLatch() {
+        #expect(LibraryStore.reconcileLatch(
+            afterGateChangedTo: .browsable, currentlyLatched: true) == true)
+    }
+
+    /// THE REGRESSION, end to end: a reconcile ran, the vault auto-locked in
+    /// the background, the user unlocked again. `LibraryView`'s
+    /// `.task(id: libraryGate)` re-fires `start()`, which MUST reconcile to
+    /// pick up everything that synced in while the Library was locked.
+    @Test func startAfterRelockAndUnlockReconcilesAgain() {
+        var latched = true    // a reconcile ran earlier this process
+        latched = LibraryStore.reconcileLatch(
+            afterGateChangedTo: .locked, currentlyLatched: latched)
+        latched = LibraryStore.reconcileLatch(
+            afterGateChangedTo: .browsable, currentlyLatched: latched)
+
+        #expect(LibraryStore.shouldStartReconcile(
+            isReady: true, didReconcileSinceLaunch: latched) == true)
+    }
+}
