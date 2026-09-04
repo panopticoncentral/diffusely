@@ -15,6 +15,8 @@ struct SettingsView: View {
     /// so the row status reads the right way for a partial disable too.
     @State private var libraryEncryptionDirection: LibraryMigrationDirection?
     @State private var cacheLimitGB: Int = 2
+    @State private var checkpointReport: CheckpointReportText?
+    @State private var isRunningCheckpointReport = false
 
     private static let cacheLimitOptions = [1, 2, 5, 10, 20]
 
@@ -47,6 +49,9 @@ struct SettingsView: View {
                 NavigationStack {
                     LibraryEncryptionSettingsView(provider: vaultProvider)
                 }
+            }
+            .sheet(item: $checkpointReport) { report in
+                CheckpointReportSheet(report: report)
             }
     }
 
@@ -245,7 +250,66 @@ struct SettingsView: View {
             libraryEncryptionDirection = await vaultProvider.incompleteMigrationDirection()
         }
 
+        diagnosticsSection
+
         aboutSection
+    }
+
+    // MARK: - Diagnostics
+
+    /// Wrapper so the report can drive `.sheet(item:)` — the text itself has
+    /// no identity of its own.
+    fileprivate struct CheckpointReportText: Identifiable {
+        let id = UUID()
+        let text: String
+    }
+
+    private var diagnosticsSection: some View {
+        Section {
+            Button {
+                Task { await runCheckpointDiagnostic() }
+            } label: {
+                HStack {
+                    Text("Checkpoint Grouping Report")
+                    Spacer()
+                    if isRunningCheckpointReport {
+                        ProgressView()
+                            #if os(macOS)
+                            .controlSize(.small)
+                            #endif
+                    }
+                }
+            }
+            .disabled(isRunningCheckpointReport || vaultProvider.state == .locked)
+        } header: {
+            Text("Diagnostics")
+        } footer: {
+            Text("Reads every Library sidecar and reports why each item does or doesn't group under a checkpoint — what fills the \"Other\" and \"Videos\" buckets in Checkpoint sort. Read-only; nothing is modified.")
+                .font(.caption)
+        }
+    }
+
+    /// Scans the container off the main actor, cross-checks the index, and
+    /// shows the report. Also `print`s it, so a run on a real device can be
+    /// read over `devicectl --console` without copying from the sheet.
+    private func runCheckpointDiagnostic() async {
+        isRunningCheckpointReport = true
+        defer { isRunningCheckpointReport = false }
+        do {
+            let directory = try await LibraryContainer.shared.itemsDirectory()
+            let scan = try await LibraryCheckpointDiagnosticsScanner(itemsDirectory: directory).scan()
+            let indexNames = await libraryStore.indexService.checkpointNamesByItemID()
+            let report = LibraryCheckpointDiagnostics.report(
+                findings: scan.findings,
+                indexCheckpointNames: indexNames,
+                isEncryptedContainer: scan.isEncrypted,
+                unreadableCount: scan.unreadableCount
+            )
+            print(report.text)
+            checkpointReport = CheckpointReportText(text: report.text)
+        } catch {
+            checkpointReport = CheckpointReportText(text: "Checkpoint diagnostic failed: \(error)")
+        }
     }
 
     /// "Library Encryption" row content shared by the iOS `NavigationLink`
@@ -332,5 +396,39 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
         }
+    }
+}
+
+/// Scrollable, copyable presentation of a `LibraryCheckpointDiagnostics`
+/// report. Monospaced because the report is column-aligned text.
+private struct CheckpointReportSheet: View {
+    let report: SettingsView.CheckpointReportText
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView([.vertical, .horizontal]) {
+                Text(report.text)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle("Checkpoint Grouping")
+            #if !os(macOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Copy") { Clipboard.copy(report.text) }
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 620, minHeight: 520)
+        #endif
     }
 }
