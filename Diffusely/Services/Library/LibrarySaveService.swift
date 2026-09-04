@@ -315,7 +315,18 @@ final class LibrarySaveService: ObservableObject {
         let byteSize = (attrs?[.size] as? Int) ?? 0
         let sha = Self.sha256Hex(ofFileAt: tempURL) ?? ""
 
-        let generationData = try? await civitaiService.fetchGenerationData(imageId: itemID)
+        // Generation data is best-effort — the media is already downloaded and
+        // failing the whole save over optional metadata would be a far worse
+        // trade — but it must not be SILENTLY best-effort. This used to be a
+        // bare `try?`, so any failure persisted a sidecar with no generation
+        // data, permanently, with no record that an attempt was ever made: 81
+        // items on a real 7,830-item library were lost that way, and 16 of 25
+        // sampled still had a checkpoint on Civitai. The outcome now decides
+        // whether `LibraryCheckpointBackfillService` will retry the item.
+        let generation = await Self.fetchGenerationDataForSave {
+            try await civitaiService.fetchGenerationData(imageId: itemID)
+        }
+        let generationData = generation.data
 
         // Resolve the post title: use the one passed in (saving a whole post), or
         // best-effort fetch the post for a standalone image that belongs to one.
@@ -344,6 +355,7 @@ final class LibrarySaveService: ObservableObject {
             stats: image.stats,
             generationData: generationData,
             publishedAt: image.publishedAtDate ?? knownPublishedAt,
+            generationDataBackfillAttemptedAt: generation.attemptedAt,
             savedAt: Date(),
             savedByAppVersion: Self.appVersion
         )
@@ -446,4 +458,46 @@ final class LibrarySaveService: ObservableObject {
         }) {}
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
+
+    // MARK: - Save-time generation data
+
+    /// Runs the save-time generation-data fetch and decides what the sidecar
+    /// should record about the attempt. Pure with respect to the network — the
+    /// fetch is a closure — so the decision table is unit-testable without a
+    /// `CivitaiService`.
+    ///
+    /// The distinction that matters is final vs. transient:
+    ///
+    /// * A `DecodingError` means Civitai answered and `result.data.json` is
+    ///   null: this image has no generation data. That is final, so it is not
+    ///   retried and the returned `attemptedAt` stamps the sidecar's marker,
+    ///   which keeps `LibraryCheckpointBackfillService` from ever spending a
+    ///   request on it.
+    /// * Anything else (timeout, offline, 5xx, rate limit) is transient. It
+    ///   gets one immediate retry, and if that also fails `attemptedAt` stays
+    ///   nil so the item remains eligible for the backfill next session.
+    ///   Deliberately no backoff sleep here: saving is interactive, and the
+    ///   backfill is the proper home for patient retrying.
+    ///
+    /// Never throws: a fetch failure must not fail a save whose media has
+    /// already been downloaded.
+    static func fetchGenerationDataForSave(
+        attempts: Int = 2,
+        now: () -> Date = Date.init,
+        _ fetch: () async throws -> GenerationData
+    ) async -> (data: GenerationData?, attemptedAt: Date?) {
+        var lastError: Error?
+        for _ in 0..<max(1, attempts) {
+            do {
+                return (try await fetch(), nil)
+            } catch {
+                lastError = error
+                // A confirmed "no generation data" is an answer, not a failure
+                // to retry.
+                if error is DecodingError { break }
+            }
+        }
+        return (nil, lastError is DecodingError ? now() : nil)
+    }
+
 }
