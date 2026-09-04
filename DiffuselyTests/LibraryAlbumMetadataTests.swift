@@ -19,8 +19,8 @@ import Foundation
         )
     }
 
-    @Test func currentSchemaVersionIsFive() {
-        #expect(LibraryItemMetadata.currentSchemaVersion == 5)
+    @Test func currentSchemaVersionIsSix() {
+        #expect(LibraryItemMetadata.currentSchemaVersion == 6)
     }
 
     @Test func roundTripsAlbumIDs() throws {

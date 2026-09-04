@@ -47,6 +47,11 @@ final class PersistedLibraryItem {
     /// before the first reconcile re-derives the flag. Kept in sync by
     /// `LibraryIndexService.apply`.
     var needsDateBackfill: Bool = true
+    /// Denormalized "this item still needs a generation-data re-fetch", so the
+    /// Library can gate the backfill on a cheap index count instead of walking
+    /// (and decrypting) every sidecar in the container on each launch. Mirrors
+    /// `needsDateBackfill`.
+    var needsGenerationDataBackfill: Bool = false
     /// Denormalized album membership: the item's album UUIDs joined by U+001F
     /// (a delimiter that can't appear in a UUID string). Kept in sync with the
     /// sidecar's `albumIDs` by the convenience init and `LibraryIndexService.apply`.
@@ -72,6 +77,7 @@ final class PersistedLibraryItem {
         lastAccessedAt: Date,
         downloadStatus: LibraryDownloadStatus,
         needsDateBackfill: Bool,
+        needsGenerationDataBackfill: Bool = false,
         albumIDsJoined: String = ""
     ) {
         self.itemID = itemID
@@ -91,6 +97,7 @@ final class PersistedLibraryItem {
         self.lastAccessedAt = lastAccessedAt
         self.downloadStatusRaw = downloadStatus.rawValue
         self.needsDateBackfill = needsDateBackfill
+        self.needsGenerationDataBackfill = needsGenerationDataBackfill
         self.albumIDsJoined = albumIDsJoined
     }
 
@@ -99,6 +106,17 @@ final class PersistedLibraryItem {
     /// attempt. Mirrors the pending filter in `FileLibraryBackfillSidecarStore`.
     static func computeNeedsDateBackfill(for metadata: LibraryItemMetadata) -> Bool {
         metadata.publishedAt == nil && metadata.publishedAtBackfillAttemptedAt == nil
+    }
+
+    /// Single source of truth for "this item still needs a generation-data
+    /// re-fetch": the sidecar has none, and no attempt has been recorded.
+    /// Deliberately keyed on `generationData` being absent ENTIRELY, not on a
+    /// missing checkpoint — an item whose generation data Civitai has already
+    /// returned without a Checkpoint resource is not fixable by re-asking, and
+    /// re-fetching it every session would be pure waste. Mirrors the pending
+    /// filter in `FileLibraryBackfillSidecarStore.itemsMissingGenerationData`.
+    static func computeNeedsGenerationDataBackfill(for metadata: LibraryItemMetadata) -> Bool {
+        metadata.generationData == nil && metadata.generationDataBackfillAttemptedAt == nil
     }
 
     convenience init(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
@@ -124,6 +142,7 @@ final class PersistedLibraryItem {
             lastAccessedAt: metadata.savedAt,
             downloadStatus: downloadStatus,
             needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata),
+            needsGenerationDataBackfill: Self.computeNeedsGenerationDataBackfill(for: metadata),
             albumIDsJoined: Self.join(metadata.albumIDs)
         )
     }

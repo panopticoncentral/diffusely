@@ -23,7 +23,7 @@ struct LibraryAuthor: Codable, Hashable {
 /// cache rebuilt entirely from these files (including ones synced from other
 /// devices), so every field needed to render and re-link an item lives here.
 struct LibraryItemMetadata: Codable, Equatable {
-    static let currentSchemaVersion = 5   // v3 publishedAt; v4 publishedAtBackfillAttemptedAt; v5 albumIDs
+    static let currentSchemaVersion = 6   // v3 publishedAt; v4 publishedAtBackfillAttemptedAt; v5 albumIDs; v6 generationDataBackfillAttemptedAt
 
     var schemaVersion: Int
     /// Civitai image id. Also the filename stem for both the media and this JSON.
@@ -60,6 +60,13 @@ struct LibraryItemMetadata: Codable, Equatable {
     /// every Library visit forever. Only the user-initiated catchup path
     /// (opening the detail view, or an explicit refresh) retries.
     let publishedAtBackfillAttemptedAt: Date?
+    /// Set by `LibraryCheckpointBackfillService` when a re-fetch confirms
+    /// Civitai has no generation data for this image (deleted, unpublished, or
+    /// never had any). Background backfill skips items carrying this stamp so
+    /// it doesn't re-ask every session forever — the exact role
+    /// `publishedAtBackfillAttemptedAt` plays for dates. A transient network
+    /// failure deliberately does NOT set it, so those retry next session.
+    let generationDataBackfillAttemptedAt: Date?
     /// Album membership: UUID strings for every album this item belongs to.
     /// Many-to-many — an item can be in several albums. Absent in v4-and-earlier
     /// sidecars (decodes to []). The source of truth for membership; the index's
@@ -107,6 +114,7 @@ struct LibraryItemMetadata: Codable, Equatable {
         generationData: GenerationData?,
         publishedAt: Date?,
         publishedAtBackfillAttemptedAt: Date? = nil,
+        generationDataBackfillAttemptedAt: Date? = nil,
         albumIDs: [String] = [],
         savedAt: Date,
         savedByAppVersion: String
@@ -131,6 +139,7 @@ struct LibraryItemMetadata: Codable, Equatable {
         self.generationData = generationData
         self.publishedAt = publishedAt
         self.publishedAtBackfillAttemptedAt = publishedAtBackfillAttemptedAt
+        self.generationDataBackfillAttemptedAt = generationDataBackfillAttemptedAt
         self.albumIDs = albumIDs
         self.savedAt = savedAt
         self.savedByAppVersion = savedByAppVersion
@@ -178,6 +187,7 @@ extension LibraryItemMetadata {
             generationData: try c.decodeIfPresent(GenerationData.self, forKey: .generationData),
             publishedAt: try c.decodeIfPresent(Date.self, forKey: .publishedAt),
             publishedAtBackfillAttemptedAt: try c.decodeIfPresent(Date.self, forKey: .publishedAtBackfillAttemptedAt),
+            generationDataBackfillAttemptedAt: try c.decodeIfPresent(Date.self, forKey: .generationDataBackfillAttemptedAt),
             albumIDs: try c.decodeIfPresent([String].self, forKey: .albumIDs) ?? [],
             savedAt: try c.decode(Date.self, forKey: .savedAt),
             savedByAppVersion: try c.decode(String.self, forKey: .savedByAppVersion)
@@ -188,7 +198,8 @@ extension LibraryItemMetadata {
         case schemaVersion, itemID, sourcePostID, sourcePostTitle, canonicalPostURL
         case canonicalPageURL, sourceDomain, originalCDNURL, mediaType, mediaFileName
         case fileByteSize, contentSHA256, width, height, nsfwLevel, author, stats
-        case generationData, publishedAt, publishedAtBackfillAttemptedAt, albumIDs
+        case generationData, publishedAt, publishedAtBackfillAttemptedAt
+        case generationDataBackfillAttemptedAt, albumIDs
         case savedAt, savedByAppVersion
     }
 }

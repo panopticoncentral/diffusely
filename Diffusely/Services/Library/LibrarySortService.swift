@@ -102,6 +102,17 @@ final class LibrarySortService {
         return (try? modelContext.fetchCount(descriptor)) ?? 0
     }
 
+    /// Cheap index-side gate for the checkpoint backfill, mirroring
+    /// `countItemsNeedingDateBackfill`. Reading the denormalized column costs
+    /// one count query; the alternative — asking the sidecar store — walks and
+    /// decrypts every file in the container on each launch.
+    func countItemsNeedingCheckpointBackfill() -> Int {
+        let descriptor = FetchDescriptor<PersistedLibraryItem>(
+            predicate: #Predicate { $0.needsGenerationDataBackfill }
+        )
+        return (try? modelContext.fetchCount(descriptor)) ?? 0
+    }
+
     // MARK: - Internals
 
     private func fetchAll(filter: AlbumFilter = .all) -> [PersistedLibraryItem] {

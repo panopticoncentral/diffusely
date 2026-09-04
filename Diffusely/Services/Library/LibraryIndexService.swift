@@ -75,6 +75,7 @@ actor LibraryIndexService {
         row.savedAt = metadata.savedAt
         row.publishedAt = metadata.publishedAt
         row.needsDateBackfill = PersistedLibraryItem.computeNeedsDateBackfill(for: metadata)
+        row.needsGenerationDataBackfill = PersistedLibraryItem.computeNeedsGenerationDataBackfill(for: metadata)
         row.checkpointName = metadata.generationData?
             .resources?
             .first(where: { $0.modelType == "Checkpoint" })?

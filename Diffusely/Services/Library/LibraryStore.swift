@@ -20,6 +20,7 @@ final class LibraryStore: ObservableObject {
     /// reappear on every visit even though the work was already complete or
     /// in progress.
     @Published private(set) var didRunDateBackfillThisSession: Bool = false
+    @Published private(set) var didRunCheckpointBackfillThisSession: Bool = false
     /// Bumped whenever an album is created/renamed/deleted or membership changes
     /// — by local edits (views call `notifyAlbumsChanged()`) and by reconciles
     /// that ingest album/membership changes synced in from another device.
@@ -192,6 +193,14 @@ final class LibraryStore: ObservableObject {
     /// during the same session skip re-running the backfill.
     func markDateBackfillRanThisSession() {
         didRunDateBackfillThisSession = true
+    }
+
+    /// Same one-shot-per-session gate for the checkpoint (generation-data)
+    /// backfill. Lives here rather than in the view so it survives
+    /// `LibraryView` rebuilds — every navigation into the Library tab would
+    /// otherwise restart it.
+    func markCheckpointBackfillRanThisSession() {
+        didRunCheckpointBackfillThisSession = true
     }
 
     /// Called by album operations (create/rename/delete/membership) to signal

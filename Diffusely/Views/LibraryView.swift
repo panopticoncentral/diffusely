@@ -44,6 +44,9 @@ struct LibraryView: View {
     @State private var backfillService: LibraryDateBackfillService?
     @State private var backfillRemaining: Int = 0
     @State private var backfillCancellable: AnyCancellable?
+    @State private var checkpointBackfillService: LibraryCheckpointBackfillService?
+    @State private var checkpointBackfillRemaining: Int = 0
+    @State private var checkpointBackfillCancellable: AnyCancellable?
     @State private var content: LibrarySortService.LibrarySortedContent = .flat([])
     @State private var selectedSort: LibrarySort = .dateNewest
     @State private var expandedGroups: Set<String> = []
@@ -303,6 +306,7 @@ struct LibraryView: View {
                 initializeServices()
                 reloadContent()
                 await maybeStartBackfill()
+                await maybeStartCheckpointBackfill()
             }
             .onChange(of: selectedSort) {
                 guard isBrowsable else { return }
@@ -501,6 +505,9 @@ struct LibraryView: View {
                     if backfillRemaining > 0 {
                         backfillBanner(remaining: backfillRemaining)
                     }
+                    if checkpointBackfillRemaining > 0 {
+                        checkpointBackfillBanner(remaining: checkpointBackfillRemaining)
+                    }
                     switch content {
                     case .flat(let items):
                         LazyVGrid(columns: gridColumns, spacing: gridSpacing) {
@@ -677,6 +684,19 @@ struct LibraryView: View {
         HStack(spacing: 8) {
             ProgressView().scaleEffect(0.7)
             Text("Backfilling publish dates… \(remaining) remaining")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(8)
+        .background(Color.gray.opacity(0.08))
+    }
+
+    @ViewBuilder
+    private func checkpointBackfillBanner(remaining: Int) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().scaleEffect(0.7)
+            Text("Recovering checkpoint info… \(remaining) remaining")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -1000,6 +1020,36 @@ struct LibraryView: View {
         backfillService = service
         backfillCancellable = service.$remaining.sink { value in
             backfillRemaining = value
+        }
+        await service.runOnce()
+        reloadContent()
+    }
+
+    /// Kick off the generation-data backfill at most once per app session,
+    /// only when the index says something is pending — the same shape as
+    /// `maybeStartBackfill`, including resolving the container BEFORE claiming
+    /// the gate so a cold-launch race can still retry on a later mount.
+    ///
+    /// Runs after the date backfill rather than alongside it: both walk the
+    /// container and hit Civitai, and overlapping them would double the
+    /// request rate for no gain.
+    private func maybeStartCheckpointBackfill() async {
+        guard isBrowsable else { return }
+        guard !store.didRunCheckpointBackfillThisSession,
+              let sortService else { return }
+        guard sortService.countItemsNeedingCheckpointBackfill() > 0 else { return }
+
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        guard !store.didRunCheckpointBackfillThisSession else { return }
+        store.markCheckpointBackfillRanThisSession()
+        let service = LibraryCheckpointBackfillService(
+            indexService: store.indexService,
+            itemsDirectory: dir,
+            fetcher: CivitaiServiceGenerationDataAdapter()
+        )
+        checkpointBackfillService = service
+        checkpointBackfillCancellable = service.$remaining.sink { value in
+            checkpointBackfillRemaining = value
         }
         await service.runOnce()
         reloadContent()
