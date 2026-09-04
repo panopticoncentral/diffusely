@@ -316,6 +316,16 @@ struct LibraryView: View {
             .onChange(of: store.itemCount) {
                 guard isBrowsable else { return }
                 scheduleReload()
+                // Also the retry hook for the checkpoint backfill. The `.task`
+                // above can run BEFORE the index has been populated — most
+                // sharply on the launch after a schema change, when the
+                // "rebuild, don't migrate" path recreates the store empty and
+                // it refills from the container asynchronously. The pending
+                // count is 0 at that moment, so the backfill would otherwise
+                // never fire for the whole session. Safe to call repeatedly:
+                // the count check precedes the one-shot session gate, so an
+                // early no-op doesn't burn it.
+                Task { await maybeStartCheckpointBackfill() }
             }
             .onChange(of: store.albumsVersion) {
                 guard isBrowsable else { return }
