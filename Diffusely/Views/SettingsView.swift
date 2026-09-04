@@ -298,10 +298,11 @@ struct SettingsView: View {
         do {
             let directory = try await LibraryContainer.shared.itemsDirectory()
             let scan = try await LibraryCheckpointDiagnosticsScanner(itemsDirectory: directory).scan()
-            let indexNames = await libraryStore.indexService.checkpointNamesByItemID()
+            let index = await libraryStore.indexService.checkpointIndexSnapshot()
             let report = LibraryCheckpointDiagnostics.report(
                 findings: scan.findings,
-                indexCheckpointNames: indexNames,
+                indexCheckpointNames: index.names,
+                indexedItemIDs: index.ids,
                 isEncryptedContainer: scan.isEncrypted,
                 unreadableCount: scan.unreadableCount
             )

@@ -134,33 +134,82 @@ private func day(_ iso: String) -> Date {
 
 @Suite struct LibraryCheckpointIndexCrossCheckTests {
 
-    @Test func flagsSidecarWithCheckpointWhoseIndexRowHasNone() {
-        // The bug signature that says "re-derive from disk", not "re-fetch
-        // from the network".
+    private func ckptFinding(_ id: Int) -> LibraryCheckpointDiagnostics.Finding {
         let gen = GenerationData(type: "image", meta: nil, resources: [resource("Checkpoint", "Hassaku")])
+        return LibraryCheckpointDiagnostics.classify(makeMeta(itemID: id, generationData: gen))
+    }
+
+    @Test func rowPresentButMissingTheNameIsRealDrift() {
+        // The index HAS this row and still holds no name — the only shape that
+        // a rebuild would actually fix.
         let report = LibraryCheckpointDiagnostics.report(
-            findings: [LibraryCheckpointDiagnostics.classify(makeMeta(itemID: 9, generationData: gen))],
-            indexCheckpointNames: [:]
+            findings: [ckptFinding(9)],
+            indexCheckpointNames: [:],
+            indexedItemIDs: [9]
         )
         #expect(report.indexDisagreements.map(\.itemID) == [9])
+        #expect(report.indexDisagreements.first?.kind == .nameMissing)
+        #expect(report.notYetIndexed.isEmpty)
+    }
+
+    @Test func rowAbsentFromTheIndexIsNotDrift() {
+        // The regression this fix exists for: a sidecar iCloud delivered
+        // mid-scan has no row YET. Reporting that as drift cried wolf on 15
+        // healthy items during a real run — reconcile ingests them moments
+        // later. It is reported separately, never as disagreement.
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: [ckptFinding(9)],
+            indexCheckpointNames: [:],
+            indexedItemIDs: []
+        )
+        #expect(report.indexDisagreements.isEmpty)
+        #expect(report.notYetIndexed == [9])
     }
 
     @Test func agreeingIndexRowIsNotFlagged() {
-        let gen = GenerationData(type: "image", meta: nil, resources: [resource("Checkpoint", "Hassaku")])
         let report = LibraryCheckpointDiagnostics.report(
-            findings: [LibraryCheckpointDiagnostics.classify(makeMeta(itemID: 10, generationData: gen))],
-            indexCheckpointNames: [10: "Hassaku"]
+            findings: [ckptFinding(10)],
+            indexCheckpointNames: [10: "Hassaku"],
+            indexedItemIDs: [10]
         )
         #expect(report.indexDisagreements.isEmpty)
+        #expect(report.notYetIndexed.isEmpty)
     }
 
-    @Test func indexRowHoldingANameTheSidecarLacksIsAlsoFlagged() {
-        // The reverse drift: a stale row the container no longer backs.
+    @Test func indexRowHoldingANameTheSidecarLacksIsDrift() {
+        // Reverse drift: a stale row the container no longer backs.
         let report = LibraryCheckpointDiagnostics.report(
             findings: [LibraryCheckpointDiagnostics.classify(makeMeta(itemID: 11, generationData: nil))],
-            indexCheckpointNames: [11: "Ghost"]
+            indexCheckpointNames: [11: "Ghost"],
+            indexedItemIDs: [11]
         )
         #expect(report.indexDisagreements.map(\.itemID) == [11])
+        #expect(report.indexDisagreements.first?.kind == .nameDiffers)
+    }
+
+    @Test func rowHoldingADifferentNameIsDrift() {
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: [ckptFinding(12)],
+            indexCheckpointNames: [12: "Something Else"],
+            indexedItemIDs: [12]
+        )
+        #expect(report.indexDisagreements.first?.kind == .nameDiffers)
+        #expect(report.indexDisagreements.first?.sidecar == "Hassaku")
+        #expect(report.indexDisagreements.first?.index == "Something Else")
+    }
+
+    @Test func textDistinguishesDriftFromNotYetIndexed() {
+        // The two must never be summed into one scary number again.
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: [ckptFinding(9), ckptFinding(13)],
+            indexCheckpointNames: [:],
+            indexedItemIDs: [9]
+        )
+        let text = report.text
+        #expect(text.contains("Rows disagreeing with their sidecar"))
+        #expect(text.contains("Sidecars not yet in the index"))
+        #expect(report.indexDisagreements.count == 1)
+        #expect(report.notYetIndexed == [13])
     }
 }
 
@@ -182,7 +231,8 @@ private func day(_ iso: String) -> Date {
     }
 
     @Test func countsEachCase() {
-        let report = LibraryCheckpointDiagnostics.report(findings: findings(), indexCheckpointNames: [:])
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: findings(), indexCheckpointNames: [:], indexedItemIDs: [])
         #expect(report.total == 5)
         #expect(report.count(of: .hasCheckpoint) == 1)
         #expect(report.count(of: .noCheckpointResource) == 2)
@@ -194,13 +244,15 @@ private func day(_ iso: String) -> Date {
     @Test func groupsUngroupedItemsTheWayTheLibraryDoes() {
         // Everything without a checkpoint lands in "Videos" (video) or
         // "Other" (image) — the two buckets in `groupByCheckpoint`.
-        let report = LibraryCheckpointDiagnostics.report(findings: findings(), indexCheckpointNames: [:])
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: findings(), indexCheckpointNames: [:], indexedItemIDs: [])
         #expect(report.otherBucketCount == 3)   // items 2, 3, 5
         #expect(report.videosBucketCount == 1)  // item 4
     }
 
     @Test func histogramsResourceTypesSeenOnUngroupedItems() {
-        let report = LibraryCheckpointDiagnostics.report(findings: findings(), indexCheckpointNames: [:])
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: findings(), indexCheckpointNames: [:], indexedItemIDs: [])
         #expect(report.resourceTypeHistogram == ["LORA": 2])
     }
 
@@ -208,13 +260,15 @@ private func day(_ iso: String) -> Date {
         // A day that is entirely ungrouped points at a save-time fetch
         // failure window; a low background rate points at content that has
         // no checkpoint on Civitai at all.
-        let report = LibraryCheckpointDiagnostics.report(findings: findings(), indexCheckpointNames: [:])
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: findings(), indexCheckpointNames: [:], indexedItemIDs: [])
         #expect(report.saveDayHistogram["2026-08-12"] == .init(total: 3, ungrouped: 2))
         #expect(report.saveDayHistogram["2026-08-13"] == .init(total: 2, ungrouped: 2))
     }
 
     @Test func textReportNamesEveryCaseAndIsCopyable() {
-        let text = LibraryCheckpointDiagnostics.report(findings: findings(), indexCheckpointNames: [:]).text
+        let text = LibraryCheckpointDiagnostics.report(
+            findings: findings(), indexCheckpointNames: [:], indexedItemIDs: []).text
         #expect(text.contains("5 sidecars"))
         for kind in LibraryCheckpointDiagnostics.Kind.allCases {
             #expect(text.contains(kind.label))
@@ -223,7 +277,8 @@ private func day(_ iso: String) -> Date {
     }
 
     @Test func emptyLibraryProducesAReportRatherThanCrashing() {
-        let report = LibraryCheckpointDiagnostics.report(findings: [], indexCheckpointNames: [:])
+        let report = LibraryCheckpointDiagnostics.report(
+            findings: [], indexCheckpointNames: [:], indexedItemIDs: [])
         #expect(report.total == 0)
         #expect(report.text.contains("0 sidecars"))
     }

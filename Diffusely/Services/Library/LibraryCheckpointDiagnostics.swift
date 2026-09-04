@@ -112,18 +112,32 @@ enum LibraryCheckpointDiagnostics {
         let ungrouped: Int
     }
 
-    /// An index row whose `checkpointName` doesn't match what its sidecar
-    /// derives to. Any of these means the index — not the container — is the
-    /// problem, and a rebuild fixes them without touching the network.
+    /// An index row that exists but disagrees with its sidecar. Deliberately
+    /// excludes sidecars with no row at all: the container is scanned before
+    /// the index is read, so anything iCloud delivers mid-scan legitimately
+    /// has no row yet, and folding that in reported 15 perfectly healthy
+    /// items as drift on a real run. Those go to `notYetIndexed` instead.
     struct Disagreement: Sendable {
+        enum Kind: Sendable, Equatable {
+            /// Row present, holds no name, sidecar derives one. A rebuild fixes it.
+            case nameMissing
+            /// Row present and holds a different name than the sidecar derives
+            /// (including a stale name over a sidecar that now derives none).
+            case nameDiffers
+        }
         let itemID: Int
+        let kind: Kind
         let sidecar: String?
         let index: String?
     }
 
     struct Report: Sendable {
         let findings: [Finding]
+        /// Real drift only — every entry has a row in the index.
         let indexDisagreements: [Disagreement]
+        /// Sidecars the index has no row for. Normally transient: the scan
+        /// races container inflow, and reconcile ingests these moments later.
+        let notYetIndexed: [Int]
         /// UTC day (`yyyy-MM-dd`) → totals, over every scanned sidecar.
         let saveDayHistogram: [String: DayCount]
         /// `modelType` → number of ungrouped items carrying it.
@@ -156,21 +170,36 @@ enum LibraryCheckpointDiagnostics {
         var text: String { renderReport(self) }
     }
 
+    /// - Parameters:
+    ///   - indexCheckpointNames: `itemID` → name, for rows that have one.
+    ///   - indexedItemIDs: EVERY id the index holds a row for. Required, and
+    ///     separate from the names, because "row absent" and "row present with
+    ///     no name" are different diagnoses that the names map alone cannot
+    ///     tell apart — only the second is drift.
     static func report(
         findings: [Finding],
         indexCheckpointNames: [Int: String],
+        indexedItemIDs: Set<Int>,
         isEncryptedContainer: Bool? = nil,
         unreadableCount: Int = 0
     ) -> Report {
         var disagreements: [Disagreement] = []
+        var notYetIndexed: [Int] = []
         var days: [String: (total: Int, ungrouped: Int)] = [:]
         var types: [String: Int] = [:]
 
         for finding in findings {
             let sidecar = normalized(finding.checkpointName)
             let index = normalized(indexCheckpointNames[finding.itemID])
-            if sidecar != index {
-                disagreements.append(Disagreement(itemID: finding.itemID, sidecar: sidecar, index: index))
+            if !indexedItemIDs.contains(finding.itemID) {
+                notYetIndexed.append(finding.itemID)
+            } else if sidecar != index {
+                disagreements.append(Disagreement(
+                    itemID: finding.itemID,
+                    kind: index == nil ? .nameMissing : .nameDiffers,
+                    sidecar: sidecar,
+                    index: index
+                ))
             }
 
             let day = utcDayFormatter.string(from: finding.savedAt)
@@ -187,6 +216,7 @@ enum LibraryCheckpointDiagnostics {
         return Report(
             findings: findings,
             indexDisagreements: disagreements,
+            notYetIndexed: notYetIndexed,
             saveDayHistogram: days.mapValues { DayCount(total: $0.total, ungrouped: $0.ungrouped) },
             resourceTypeHistogram: types,
             isEncryptedContainer: isEncryptedContainer,
@@ -239,10 +269,19 @@ enum LibraryCheckpointDiagnostics {
         lines.append("Index vs container")
         row("Rows disagreeing with their sidecar", report.indexDisagreements.count)
         for disagreement in report.indexDisagreements.prefix(25) {
-            lines.append("    \(disagreement.itemID): sidecar=\(disagreement.sidecar ?? "—") index=\(disagreement.index ?? "—")")
+            let kind = disagreement.kind == .nameMissing ? "no name" : "differs"
+            lines.append("    \(disagreement.itemID) [\(kind)]: sidecar=\(disagreement.sidecar ?? "—") index=\(disagreement.index ?? "—")")
         }
         if report.indexDisagreements.count > 25 {
             lines.append("    …and \(report.indexDisagreements.count - 25) more")
+        }
+        row("Sidecars not yet in the index", report.notYetIndexed.count)
+        if !report.notYetIndexed.isEmpty {
+            lines.append("    \(report.notYetIndexed.prefix(25).map(String.init).joined(separator: ", "))")
+            lines.append("    Normally transient — the container is scanned before the index is")
+            lines.append("    read, so items arriving over iCloud mid-scan land here and are")
+            lines.append("    ingested by the next reconcile. Only a count that persists across")
+            lines.append("    runs is a problem.")
         }
         lines.append("")
 

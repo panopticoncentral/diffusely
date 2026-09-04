@@ -786,21 +786,26 @@ actor LibraryIndexService {
         return (Set(items.map(\.itemID)), Set(albums.map(\.id)))
     }
 
-    /// `itemID` → `checkpointName` for every row that has one. Read-only, and
-    /// ids/names only for the same reason `indexedIDs` fetches ids only: this
-    /// runs over the whole table. Used by `LibraryCheckpointDiagnostics` to
-    /// tell an index that drifted from its sidecars apart from sidecars that
-    /// genuinely carry no checkpoint.
-    func checkpointNamesByItemID() -> [Int: String] {
+    /// Every indexed id, plus `itemID` → `checkpointName` for the rows that
+    /// have one. Read-only, ids/names only for the same reason `indexedIDs`
+    /// fetches ids only: this runs over the whole table.
+    ///
+    /// Both come from ONE fetch, and the id set is returned alongside the
+    /// names rather than left implicit, because `LibraryCheckpointDiagnostics`
+    /// must tell "no row yet" apart from "row present, no name" — the names
+    /// map alone conflates them, and only the second is index drift.
+    func checkpointIndexSnapshot() -> (ids: Set<Int>, names: [Int: String]) {
         var descriptor = FetchDescriptor<PersistedLibraryItem>()
         descriptor.propertiesToFetch = [\.itemID, \.checkpointName]
         let rows = (try? modelContext.fetch(descriptor)) ?? []
+        var ids = Set<Int>(minimumCapacity: rows.count)
         var names: [Int: String] = [:]
         for row in rows {
+            ids.insert(row.itemID)
             guard let name = row.checkpointName, !name.isEmpty else { continue }
             names[row.itemID] = name
         }
-        return names
+        return (ids, names)
     }
 
     func summary() -> IndexSummary {
