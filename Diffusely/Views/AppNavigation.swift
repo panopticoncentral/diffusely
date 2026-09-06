@@ -22,13 +22,20 @@ import SwiftUI
 /// path can be pushed to by the router — appending to the path while a
 /// destination-based link's view is on top rebuilds the stack from the path
 /// and drops that view. Use `NavigationLink(value: Route…)` there instead.
-/// (The Library stack keeps plain links because nothing in it routes.)
+/// (The Library stack routes too, since its detail view pushes the ComfyUI
+/// node inspector — so every Library push is a `Route` as well.)
 enum Route: Hashable {
     case image(CivitaiImage)
     case post(CivitaiPost)
     case user(CivitaiUser)
     case tag(id: Int, name: String, videos: Bool)
     case collection(CivitaiCollection)
+    /// Every node of a ComfyUI graph, grouped by the recipe pass that used it.
+    case comfyNodes(ComfyInspectorPayload)
+    /// One saved Library item's detail screen.
+    case libraryItem(Int)
+    /// The Library scoped to one album (or the not-in-any-album complement).
+    case libraryScope(filter: AlbumFilter, title: String)
 }
 
 /// The programmatic push surface for the enclosing `NavigationStack`.
@@ -114,6 +121,12 @@ struct RouteDestinationView: View {
             TagFeedView(tagId: id, tagName: name, videos: videos)
         case .collection(let collection):
             CollectionDetailView(collection: collection)
+        case .comfyNodes(let payload):
+            ComfyNodeInspectorView(payload: payload)
+        case .libraryItem(let id):
+            LibraryDetailView(itemID: id)
+        case .libraryScope(let filter, let title):
+            LibraryView(filter: filter, scopeTitle: title)
         }
     }
 }

@@ -15,6 +15,9 @@ struct LibraryDetailView: View {
     @State private var loadFailed = false
     @State private var showingRemoveConfirm = false
     @State private var embedded: EmbeddedMetadata?
+    /// Sniffed from the decrypted bytes when embedded metadata loads, so ⌘C and
+    /// export can advertise the real container instead of the cosmetic `.jpeg`.
+    @State private var container: MediaContainer?
 
     var body: some View {
         GeometryReader { proxy in
@@ -77,7 +80,11 @@ struct LibraryDetailView: View {
 
                         if let embedded {
                             Divider()
-                            EmbeddedMetadataView(metadata: embedded)
+                            let ext = (metadata.mediaFileName as NSString).pathExtension
+                            let id = metadata.itemID
+                            EmbeddedMetadataView(metadata: embedded, itemID: id) {
+                                await Self.readOriginalBytes(itemID: id, ext: ext)
+                            }
                         }
                     }
                     .padding()
@@ -222,7 +229,11 @@ struct LibraryDetailView: View {
         guard let metadata, metadata.mediaType == .image else { return [] }
         let itemID = metadata.itemID
         let ext = (metadata.mediaFileName as NSString).pathExtension
-        let typeID = UTType(filenameExtension: ext)?.identifier ?? UTType.image.identifier
+        // Library files are named `.jpeg` regardless of content; advertise what
+        // the bytes actually are once they've been sniffed.
+        let typeID = container?.utType.identifier
+            ?? UTType(filenameExtension: ext)?.identifier
+            ?? UTType.image.identifier
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: typeID, visibility: .all) { completion in
             Task.detached(priority: .userInitiated) {
@@ -283,14 +294,21 @@ struct LibraryDetailView: View {
     /// nothing for videos, a locked vault, or when the media can't be read.
     private func loadEmbeddedMetadata(for metadata: LibraryItemMetadata) async {
         guard metadata.mediaType == .image else { return }
-        let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
-        guard state != .locked else { return }
         let itemID = metadata.itemID
         let ext = (metadata.mediaFileName as NSString).pathExtension
-        let result = await Task.detached(priority: .utility) { () -> EmbeddedMetadata? in
-            guard let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext) else { return nil }
-            return EmbeddedMetadataReader.read(data: data)
+        let result = await Task.detached(priority: .utility) { () -> (MediaContainer, EmbeddedMetadata?)? in
+            guard let data = await Self.readOriginalBytes(itemID: itemID, ext: ext) else { return nil }
+            return (MediaContainer.detect(data), EmbeddedMetadataReader.read(data: data))
         }.value
-        embedded = result
+        container = result?.0
+        embedded = result?.1
+    }
+
+    /// Decrypted original bytes, off the main actor. The same path ⌘C and the
+    /// embedded-metadata reader use; nil for a locked vault or unreadable media.
+    private static func readOriginalBytes(itemID: Int, ext: String) async -> Data? {
+        let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+        guard state != .locked else { return nil }
+        return await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext)
     }
 }

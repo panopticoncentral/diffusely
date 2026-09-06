@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// Displays generation metadata read directly from the image file, below the Civitai
-/// "Generation Info". A1111-parsed fields render structured; the verbatim string is
-/// always available under a collapsible Raw disclosure.
+/// "Generation Info". A1111 renders as prompt/negative/fields; ComfyUI as a recipe of
+/// passes; the verbatim string is always available under a collapsible Raw disclosure.
 struct EmbeddedMetadataView: View {
     let metadata: EmbeddedMetadata
+    let itemID: Int
+    let loadOriginalBytes: () async -> Data?
 
     @State private var rawCopied = false
 
@@ -14,16 +16,25 @@ struct EmbeddedMetadataView: View {
                 .font(.headline)
                 .foregroundColor(.primary)
 
-            if let params = metadata.parameters {
-                if let prompt = params.prompt, !prompt.isEmpty {
-                    CopyablePromptView(label: "Prompt", text: prompt)
+            switch metadata.format {
+            case .automatic1111:
+                if let params = metadata.parameters {
+                    if let prompt = params.prompt, !prompt.isEmpty {
+                        CopyablePromptView(label: "Prompt", text: prompt)
+                    }
+                    if let negative = params.negativePrompt, !negative.isEmpty {
+                        CopyablePromptView(label: "Negative Prompt", text: negative)
+                    }
+                    if !params.fields.isEmpty {
+                        MetadataFieldGrid(fields: params.fields)
+                    }
                 }
-                if let negative = params.negativePrompt, !negative.isEmpty {
-                    CopyablePromptView(label: "Negative Prompt", text: negative)
+            case .comfyUI:
+                if let comfy = metadata.comfy {
+                    ComfyRecipeView(payload: comfy, itemID: itemID, loadOriginalBytes: loadOriginalBytes)
                 }
-                if !params.fields.isEmpty {
-                    fieldGrid(params.fields)
-                }
+            case .unknown:
+                EmptyView()
             }
 
             DisclosureGroup("Raw") {
@@ -52,24 +63,6 @@ struct EmbeddedMetadataView: View {
                 }
             }
             .font(.subheadline)
-        }
-    }
-
-    @ViewBuilder
-    private func fieldGrid(_ fields: [GenerationParameters.Field]) -> some View {
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 6) {
-            ForEach(Array(fields.enumerated()), id: \.offset) { _, field in
-                GridRow {
-                    Text(field.key)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .gridColumnAlignment(.leading)
-                    Text(field.value)
-                        .font(.caption)
-                        .foregroundColor(.primary)
-                        .textSelection(.enabled)
-                }
-            }
         }
     }
 }

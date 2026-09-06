@@ -14,18 +14,52 @@ struct GenerationParameters: Equatable {
     }
 }
 
-/// Metadata extracted from an image file, before/with parsing.
+/// Everything recognized in an image file's embedded metadata, plus whatever
+/// the detected format could parse out of it. View-only: nothing here is
+/// persisted to the sidecar or the index.
 struct EmbeddedMetadata: Equatable {
-    enum Source: Equatable {
-        case pngText(keyword: String)
-        case exifUserComment
+    enum Format: Equatable {
+        case automatic1111, comfyUI, unknown
     }
 
-    let source: Source
-    /// The verbatim extracted string (PNG chunk text or EXIF value).
+    /// Every recognized text field keyed by its source name. PNG: the `tEXt`
+    /// keyword. EXIF: "UserComment", and "Model" for the WebP variant.
+    let fields: [String: String]
+    let container: MediaContainer
+    let format: Format
+    /// Verbatim text for the Raw disclosure. A1111: the parameters string.
+    /// ComfyUI: the `workflow` JSON if present (the loadable one), else `prompt`.
     let raw: String
-    /// Non-nil when `raw` was recognized as an A1111 parameters string.
+    /// Non-nil iff `format == .automatic1111`.
     let parameters: GenerationParameters?
+    /// Non-nil iff `format == .comfyUI`.
+    let comfy: ComfyPayload?
+}
+
+/// The two ComfyUI chunks plus what could be built from them. `graph` and
+/// `recipe` are nil when `error` is set; the JSON strings are kept regardless
+/// so Raw and export still work.
+struct ComfyPayload: Equatable {
+    let promptJSON: String?
+    let workflowJSON: String?
+    let graph: ComfyGraph?
+    let recipe: ComfyRecipe?
+    let error: ComfyParseError?
+
+    static func make(prompt: String?, workflow: String?) -> ComfyPayload {
+        guard let prompt else {
+            return ComfyPayload(promptJSON: nil, workflowJSON: workflow, graph: nil, recipe: nil, error: .noPromptGraph)
+        }
+        do {
+            let graph = try ComfyGraphParser.parse(prompt: prompt, workflow: workflow)
+            return ComfyPayload(promptJSON: prompt, workflowJSON: workflow, graph: graph,
+                                recipe: ComfyRecipeBuilder.build(graph), error: nil)
+        } catch let error as ComfyParseError {
+            return ComfyPayload(promptJSON: prompt, workflowJSON: workflow, graph: nil, recipe: nil, error: error)
+        } catch {
+            return ComfyPayload(promptJSON: prompt, workflowJSON: workflow, graph: nil, recipe: nil, error: .malformedJSON)
+        }
+    }
 }
 
 /// Parses the Automatic1111 / SD-WebUI `parameters` string format:

@@ -1,9 +1,9 @@
 import Foundation
 import ImageIO
 
-/// Reads embedded generation metadata from a local image file. Pure extraction helpers
-/// (`pngTextChunks`) are split out for testing; `read(fileURL:)` adds the coordinated,
-/// bounded file read.
+/// Reads embedded generation metadata from a local image file. Pure extraction
+/// helpers (`pngTextChunks`, `metadata(fields:container:)`) are split out for
+/// testing; the `read` entry points add the bounded, coordinated file read.
 enum EmbeddedMetadataReader {
     private static let pngSignature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 
@@ -47,91 +47,176 @@ enum EmbeddedMetadataReader {
         return result
     }
 
-    /// Caps how many bytes we read from a PNG header looking for text chunks. The
-    /// generation `tEXt` chunk sits right after IHDR in practice, so this is ample and
-    /// avoids loading multi-MB pixel data.
-    private static let pngPrefixCap = 1 << 20 // 1 MiB
+    /// Caps how many bytes we read from a file header looking for text. The
+    /// generation `tEXt` chunk sits right after IHDR, and a JPEG's APP1 segment
+    /// is at most 64 KiB, so this is ample and avoids loading pixel data.
+    private static let headerPrefixCap = 1 << 20 // 1 MiB
 
     /// Reads embedded metadata from a local file. Coordinates the read with
     /// `NSFileCoordinator` (iCloud-backed) and returns nil for missing/evicted files,
     /// unsupported containers, or files with no recognized metadata.
     ///
     /// Call this OFF the main actor / cooperative pool (e.g. `Task.detached`): it does
-    /// blocking file I/O.
+    /// blocking file I/O and then parses any ComfyUI graph it finds.
     static func read(fileURL: URL) -> EmbeddedMetadata? {
         var coordError: NSError? // Any coordination failure leaves result nil (the desired contract).
         var result: EmbeddedMetadata?
         NSFileCoordinator().coordinate(readingItemAt: fileURL, options: [], error: &coordError) { url in
             guard let handle = try? FileHandle(forReadingFrom: url) else { return }
             defer { try? handle.close() }
-            guard let magic = try? handle.read(upToCount: 8), magic.count == 8 else { return }
-
-            if Array(magic) == pngSignature {
-                try? handle.seek(toOffset: 0)
-                let prefix = (try? handle.read(upToCount: pngPrefixCap)) ?? Data()
-                result = embeddedMetadata(fromPNG: prefix)
-            } else {
-                result = embeddedMetadata(fromEXIFFile: url)
+            guard let prefix = try? handle.read(upToCount: headerPrefixCap), prefix.count >= 8 else { return }
+            let container = MediaContainer.detect(prefix)
+            switch container {
+            case .png:
+                result = metadata(fields: pngTextChunks(in: prefix), container: .png)
+            default:
+                let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else { return }
+                var fields = exifFields(from: source)
+                if container == .jpeg { repairUserComment(in: &fields, jpegBytes: prefix) }
+                result = metadata(fields: fields, container: container)
             }
         }
         return result
     }
 
     /// Reads embedded generation metadata from already-in-memory bytes — the
-    /// decrypted-media counterpart to `read(fileURL:)` for a Library store
-    /// that can only vend `Data` (`LibraryFileStore.readMedia`), never a
-    /// plaintext on-disk URL, once encrypted. No `NSFileCoordinator` (there's
-    /// nothing left to coordinate — the bytes are already fully in memory),
-    /// but still CPU work worth keeping off the main actor, matching
-    /// `read(fileURL:)`'s call-site contract.
+    /// decrypted-media counterpart to `read(fileURL:)` for a Library store that
+    /// can only vend `Data`, never a plaintext on-disk URL, once encrypted. No
+    /// `NSFileCoordinator` (the bytes are already fully in memory), but still CPU
+    /// work worth keeping off the main actor, matching `read(fileURL:)`.
     static func read(data: Data) -> EmbeddedMetadata? {
         guard data.count >= 8 else { return nil }
-        if data.prefix(8).elementsEqual(pngSignature) {
-            return embeddedMetadata(fromPNG: Data(data.prefix(pngPrefixCap)))
+        let container = MediaContainer.detect(data)
+        switch container {
+        case .png:
+            return metadata(fields: pngTextChunks(in: Data(data.prefix(headerPrefixCap))), container: .png)
+        default:
+            let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+            guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }
+            var fields = exifFields(from: source)
+            // Only the header prefix: the scanner copies what it is handed into
+            // a [UInt8], and APP1 is at most 64 KiB and sits near the start —
+            // handing it the whole image copied every JPEG opened without a
+            // UserComment (the common case). Matches `read(fileURL:)`.
+            if container == .jpeg {
+                repairUserComment(in: &fields, jpegBytes: Data(data.prefix(headerPrefixCap)))
+            }
+            return metadata(fields: fields, container: container)
         }
-        return embeddedMetadata(fromEXIFData: data)
     }
 
-    /// Selects the highest-priority text chunk and parses it.
-    private static func embeddedMetadata(fromPNG data: Data) -> EmbeddedMetadata? {
-        let chunks = pngTextChunks(in: data)
-        // Priority: the human-readable A1111 record first, then ComfyUI graph JSON.
-        for keyword in ["parameters", "Comment", "prompt", "workflow"] {
-            if let text = chunks[keyword], !text.isEmpty {
-                return EmbeddedMetadata(source: .pngText(keyword: keyword),
-                                        raw: text,
-                                        parameters: A1111ParametersParser.parse(text))
+    /// ImageIO's string decode of UserComment can come back empty or with
+    /// replacement characters for oddly-encoded writers. For JPEGs, fall back to
+    /// the raw tag bytes and decode them ourselves.
+    private static func repairUserComment(in fields: inout [String: String], jpegBytes: Data) {
+        let current = fields["UserComment"]
+        guard current == nil || current!.contains("\u{FFFD}") else { return }
+        guard let raw = JPEGExifScanner.userCommentBytes(in: jpegBytes),
+              let decoded = ExifUserCommentDecoder.decode(raw),
+              !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        fields["UserComment"] = decoded
+    }
+
+    /// EXIF `UserComment` and TIFF `Model` via ImageIO, without decoding pixels.
+    /// (Civitai's EXIF `Software` holds a useless generation UUID; ignored.)
+    private static func exifFields(from source: CGImageSource) -> [String: String] {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return [:] }
+        var fields: [String: String] = [:]
+        if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
+           let comment = exif[kCGImagePropertyExifUserComment] as? String, !comment.isEmpty {
+            fields["UserComment"] = comment
+        }
+        if let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
+           let model = tiff[kCGImagePropertyTIFFModel] as? String, !model.isEmpty {
+            fields["Model"] = model
+        }
+        return fields
+    }
+
+    // MARK: Format detection
+
+    /// Classifies the recognized fields and parses what the format allows.
+    /// Ordered `canParse`: A1111 first, then ComfyUI, else unknown. Returns nil
+    /// when nothing non-blank was found.
+    static func metadata(fields rawFields: [String: String], container: MediaContainer) -> EmbeddedMetadata? {
+        let fields = rawFields.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !fields.isEmpty else { return nil }
+
+        for key in ["parameters", "Comment", "UserComment"] {
+            if let text = fields[key], let params = A1111ParametersParser.parse(text) {
+                return EmbeddedMetadata(fields: fields, container: container, format: .automatic1111,
+                                        raw: text, parameters: params, comfy: nil)
             }
         }
-        return nil
-    }
 
-    /// Reads the EXIF UserComment via ImageIO without decoding pixels. (Civitai's EXIF
-    /// Software field holds a useless generation UUID, so it is intentionally ignored.)
-    private static func embeddedMetadata(fromEXIFFile url: URL) -> EmbeddedMetadata? {
-        let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else { return nil }
-        return embeddedMetadata(fromEXIF: source)
-    }
-
-    /// `Data`-backed counterpart to `embeddedMetadata(fromEXIFFile:)`, for
-    /// already-decrypted bytes with no on-disk plaintext to point ImageIO at.
-    private static func embeddedMetadata(fromEXIFData data: Data) -> EmbeddedMetadata? {
-        let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
-        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }
-        return embeddedMetadata(fromEXIF: source)
-    }
-
-    private static func embeddedMetadata(fromEXIF source: CGImageSource) -> EmbeddedMetadata? {
-        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
-
-        if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
-           let comment = exif[kCGImagePropertyExifUserComment] as? String,
-           !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return EmbeddedMetadata(source: .exifUserComment,
-                                    raw: comment,
-                                    parameters: A1111ParametersParser.parse(comment))
+        let comfy = comfyJSONFields(fields)
+        if comfy.prompt != nil || comfy.workflow != nil {
+            return EmbeddedMetadata(fields: fields, container: container, format: .comfyUI,
+                                    raw: comfy.workflow ?? comfy.prompt ?? "",
+                                    parameters: nil,
+                                    comfy: ComfyPayload.make(prompt: comfy.prompt, workflow: comfy.workflow))
         }
-        return nil
+
+        let raw = fields["parameters"] ?? fields["Comment"] ?? fields["UserComment"]
+            ?? fields.sorted(by: { $0.key < $1.key })[0].value
+        return EmbeddedMetadata(fields: fields, container: container, format: .unknown,
+                                raw: raw, parameters: nil, comfy: nil)
+    }
+
+    /// Locates ComfyUI `prompt` / `workflow` JSON wherever a tool stashed it:
+    /// their own PNG chunks, EXIF `UserComment` (bare or wrapped as
+    /// `{"prompt":…, "workflow":…}`), or the TIFF `Model` tag with a `prompt:`
+    /// prefix (Civitai's WebP variant, comfy.metadata.ts:99).
+    static func comfyJSONFields(_ fields: [String: String]) -> (prompt: String?, workflow: String?) {
+        var prompt = fields["prompt"].flatMap { looksLikeComfyPrompt($0) ? $0 : nil }
+        var workflow = fields["workflow"].flatMap { looksLikeComfyWorkflow($0) ? $0 : nil }
+
+        if let comment = fields["UserComment"] {
+            if let wrapped = unwrapComfyEnvelope(comment) {
+                prompt = prompt ?? wrapped.prompt
+                workflow = workflow ?? wrapped.workflow
+            } else if prompt == nil, looksLikeComfyPrompt(comment) {
+                prompt = comment
+            } else if workflow == nil, looksLikeComfyWorkflow(comment) {
+                workflow = comment
+            }
+        }
+        if prompt == nil, let model = fields["Model"], model.hasPrefix("prompt:") {
+            let json = String(model.dropFirst("prompt:".count))
+            if looksLikeComfyPrompt(json) { prompt = json }
+        }
+        return (prompt, workflow)
+    }
+
+    /// A `{"prompt": {…}, "workflow": {…}}` envelope, re-serialized per part.
+    private static func unwrapComfyEnvelope(_ text: String) -> (prompt: String?, workflow: String?)? {
+        guard let root = ComfyGraphParser.decodeLenient(text) as? [String: Any] else { return nil }
+        let promptObj = root["prompt"] as? [String: Any]
+        let workflowObj = root["workflow"] as? [String: Any]
+        guard promptObj != nil || workflowObj != nil else { return nil }
+        func serialize(_ obj: [String: Any]?) -> String? {
+            guard let obj, let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return nil }
+            return String(decoding: data, as: UTF8.self)
+        }
+        let p = serialize(promptObj)
+        return (p.flatMap { looksLikeComfyPrompt($0) ? $0 : nil }, serialize(workflowObj))
+    }
+
+    /// A top-level object with at least one value carrying `class_type`. Falls
+    /// back to a textual sniff so a broken-but-obviously-Comfy chunk still gets
+    /// classified (and can then carry a `.malformedJSON` error).
+    static func looksLikeComfyPrompt(_ text: String) -> Bool {
+        if let root = ComfyGraphParser.decodeLenient(text) as? [String: Any] {
+            return root.values.contains { ($0 as? [String: Any])?["class_type"] is String }
+        }
+        let head = text.prefix(1)
+        return head == "{" && text.contains("\"class_type\"")
+    }
+
+    /// A litegraph document: an object with a `nodes` array.
+    static func looksLikeComfyWorkflow(_ text: String) -> Bool {
+        guard let root = ComfyGraphParser.decodeLenient(text) as? [String: Any] else { return false }
+        return root["nodes"] is [Any]
     }
 }

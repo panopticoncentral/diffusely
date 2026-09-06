@@ -4,6 +4,11 @@ import Combine
 
 struct LibraryView: View {
     @EnvironmentObject private var store: LibraryStore
+    /// Every push out of the Library goes through the enclosing stack's router
+    /// (see `AppNavigation.swift`): the detail view pushes the ComfyUI node
+    /// inspector as a `Route`, which would collapse the stack if the detail
+    /// itself were presented by a `NavigationLink(destination:)`.
+    @EnvironmentObject private var router: NavigationRouter
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
@@ -81,8 +86,6 @@ struct LibraryView: View {
     #if os(macOS)
     /// Roaming keyboard focus over the flat photo grid: index into `orderedItems`.
     @State private var focusedIndex: Int?
-    /// Set by Return to push the focused item's detail view.
-    @State private var keyboardOpenItem: FocusedItem?
     /// Files handed to `QuickLookHost` when Space previews the focused item.
     @State private var quickLookURLs: [URL] = []
     @State private var quickLookPresented = false
@@ -95,7 +98,6 @@ struct LibraryView: View {
     /// `LibraryMediaLoader.decryptedTempURL`'s discipline.
     @State private var quickLookTempURL: URL?
 
-    struct FocusedItem: Identifiable, Hashable { let id: Int }
     #endif
 
     /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
@@ -560,7 +562,6 @@ struct LibraryView: View {
                     onQuickLook: { quickLookFocusedItem($0) }
                 )
                 .onChange(of: focusedIndex) { scrollFocusedItemIntoView(using: proxy) }
-                .navigationDestination(item: $keyboardOpenItem) { LibraryDetailView(itemID: $0.id) }
                 .background {
                     QuickLookHost(urls: quickLookURLs, isPresented: $quickLookPresented) {
                         quickLookPresented = false
@@ -591,9 +592,7 @@ struct LibraryView: View {
                 .accessibilityLabel(item.isVideo ? "Video" : "Photo")
                 .accessibilityAddTraits(selectedIDs.contains(item.itemID) ? .isSelected : [])
             } else {
-                NavigationLink {
-                    LibraryDetailView(itemID: item.itemID)
-                } label: {
+                NavigationLink(value: Route.libraryItem(item.itemID)) {
                     thumbnail(for: item)
                 }
                 .buttonStyle(.plain)
@@ -816,9 +815,12 @@ struct LibraryView: View {
         return 0
     }
 
+    /// Return on the focused cell opens it — the same push a click makes, so
+    /// both go on the router's path and neither can be collapsed by a later
+    /// push from the detail view.
     private func openFocusedItem(_ index: Int) {
         guard orderedItems.indices.contains(index) else { return }
-        keyboardOpenItem = FocusedItem(id: orderedItems[index].itemID)
+        router.push(.libraryItem(orderedItems[index].itemID))
     }
 
     private func quickLookFocusedItem(_ index: Int) {

@@ -2,7 +2,9 @@ import SwiftUI
 
 /// The "Albums" mode of the top-level Library: a grid of album cover tiles plus
 /// a built-in "Not in any Album" smart tile and a "New Album" tile. Tapping an
-/// album (or the smart tile) pushes a scoped `LibraryView`.
+/// album (or the smart tile) pushes a scoped `LibraryView` — as a `Route`, so
+/// that a later push from inside it (item detail → ComfyUI node inspector)
+/// deepens the stack instead of collapsing it (see `AppNavigation.swift`).
 struct AlbumsBrowserView: View {
     let summaries: [LibrarySortService.AlbumSummary]
     let notInAnyAlbumCount: Int
@@ -28,18 +30,14 @@ struct AlbumsBrowserView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 if notInAnyAlbumCount > 0 {
-                    NavigationLink {
-                        LibraryView(filter: .notInAnyAlbum, scopeTitle: "Not in any Album")
-                    } label: {
+                    NavigationLink(value: Route.libraryScope(filter: .notInAnyAlbum, title: "Not in any Album")) {
                         smartTile(title: "Not in any Album", count: notInAnyAlbumCount, systemImage: "square.grid.2x2")
                     }
                     .buttonStyle(.plain)
                 }
 
                 ForEach(summaries) { album in
-                    NavigationLink {
-                        LibraryView(filter: .album(album.id), scopeTitle: album.name)
-                    } label: {
+                    NavigationLink(value: Route.libraryScope(filter: .album(album.id), title: album.name)) {
                         albumTile(album)
                     }
                     .buttonStyle(.plain)
