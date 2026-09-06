@@ -98,6 +98,17 @@ struct LibraryView: View {
     /// `LibraryMediaLoader.decryptedTempURL`'s discipline.
     @State private var quickLookTempURL: URL?
 
+    /// Folder chosen in the export panel; non-nil presents the sheet. Stored
+    /// as the `Identifiable` request itself (not a bare `URL`) so its `id` is
+    /// minted exactly once, at creation — mirrors `AddToAlbumRequest` below.
+    /// A computed `Binding` that re-wraps a stored `URL` into a fresh
+    /// `ExportRequest` on every read would mint a new `UUID` each time
+    /// `.sheet(item:)` evaluates the binding, which SwiftUI reads on every
+    /// body re-render — tearing down and restarting the sheet (and its
+    /// `@StateObject` service, mid-export) on every unrelated re-render of
+    /// this view.
+    @State private var exportRequest: ExportRequest?
+
     #endif
 
     /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
@@ -283,6 +294,16 @@ struct LibraryView: View {
                 AlbumDescriptionSheet(request: request)
                     .environmentObject(store)
             }
+            #if os(macOS)
+            .sheet(item: $exportRequest) { request in
+                LibraryExportSheet(destination: request.url,
+                                   indexService: store.indexService)
+            }
+            // Publish the export action ONLY while browsable, so the File menu
+            // item disables itself when the vault is locked, migrating, or the
+            // Library hasn't loaded — no separate enablement logic needed.
+            .focusedSceneValue(\.exportLibrary, isBrowsable ? { chooseExportDestination() } : nil)
+            #endif
             #if os(iOS)
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -871,6 +892,22 @@ struct LibraryView: View {
     private func scrollFocusedItemIntoView(using proxy: ScrollViewProxy) {
         guard let focusedIndex, orderedItems.indices.contains(focusedIndex) else { return }
         proxy.scrollTo(orderedItems[focusedIndex].id, anchor: .center)
+    }
+    #endif
+
+    #if os(macOS)
+    /// `.sheet(item:)` payload — a bare `URL` isn't `Identifiable`. Built once,
+    /// in `chooseExportDestination()`, at the moment the user picks a folder —
+    /// not read back out of a computed binding — so its `id` is stable across
+    /// re-renders of this view while the sheet is up. See the note on
+    /// `exportRequest` above for why that matters.
+    private struct ExportRequest: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+
+    private func chooseExportDestination() {
+        exportRequest = LibraryExportPanel.chooseDestination().map(ExportRequest.init(url:))
     }
     #endif
 

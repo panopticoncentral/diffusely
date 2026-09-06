@@ -35,6 +35,20 @@ extension FocusedValues {
         set { self[SidebarSelectionKey.self] = newValue }
     }
 }
+
+/// Lets the File ▸ Export Library… command reach the frontmost Library view.
+/// Published only while the Library is browsable, so the menu item disables
+/// itself when the vault is locked or migrating.
+struct ExportLibraryKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+extension FocusedValues {
+    var exportLibrary: (() -> Void)? {
+        get { self[ExportLibraryKey.self] }
+        set { self[ExportLibraryKey.self] = newValue }
+    }
+}
 #endif
 
 struct ContentView: View {

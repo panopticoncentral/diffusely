@@ -820,6 +820,21 @@ actor LibraryIndexService {
         return IndexSummary(itemCount: items.count, downloadedBytes: downloadedBytes, savedItemIDs: ids)
     }
 
+    /// Flat sizing rows for the macOS Library export's pre-flight plan. Reads
+    /// the whole table once, like `summary()` — the export is a rare,
+    /// user-initiated operation, so a single full fetch is cheaper and simpler
+    /// than a predicate-narrowed query.
+    func exportSizingRows() -> [LibraryExportSizingRow] {
+        let items = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
+        return items.map {
+            LibraryExportSizingRow(
+                itemID: $0.itemID,
+                mediaFileName: $0.mediaFileName,
+                fileByteSize: $0.fileByteSize,
+                isEvicted: $0.downloadStatus != .downloaded)
+        }
+    }
+
     // MARK: - LRU eviction
 
     func totalDownloadedBytes() -> Int {

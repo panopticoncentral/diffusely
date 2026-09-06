@@ -131,6 +131,19 @@ struct LibraryFileStore {
         return read(url: url, token: token)
     }
 
+    /// Reads and decrypts a metadata sidecar located by its on-disk URL (as
+    /// returned by `enumerateMetadataFiles()`), in either mode: encrypted
+    /// recovers the token from the filename stem exactly as
+    /// `itemID(forMetadataFile:)` does, plaintext reads the file directly.
+    /// This is how a caller holding only an enumerated URL gets the FULL
+    /// sidecar bytes — `itemID(forMetadataFile:)` decodes only an `{ itemID }`
+    /// stub, and `readMetadata(itemID:)` needs an id the caller doesn't have
+    /// yet. Used by the Library export, which must copy sidecar bytes verbatim.
+    func readMetadata(at url: URL) -> Data? {
+        guard isEncrypted else { return read(url: url, token: nil) }
+        return read(url: url, token: url.deletingPathExtension().lastPathComponent)
+    }
+
     /// Encrypted: every opaque `*.x` file in the directory (album files and
     /// sort-assistant state share this namespace; disambiguating between
     /// them is the caller's job — decode-and-classify by content via

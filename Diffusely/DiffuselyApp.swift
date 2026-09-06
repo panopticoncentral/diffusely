@@ -50,6 +50,23 @@ struct NavigationCommands: Commands {
         }
     }
 }
+
+/// File ▸ Export Library… — writes a decrypted copy of the personal Library to
+/// a chosen folder. Enabled only when a browsable `LibraryView` is frontmost
+/// and publishing the action.
+struct ExportCommands: Commands {
+    @FocusedValue(\.exportLibrary) private var exportLibrary
+
+    var body: some Commands {
+        CommandGroup(after: .importExport) {
+            Button("Export Library…") {
+                exportLibrary?()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(exportLibrary == nil)
+        }
+    }
+}
 #endif
 
 @main
@@ -177,6 +194,7 @@ struct DiffuselyApp: App {
             FeedCommands()
             CollectionCommands()
             NavigationCommands()
+            ExportCommands()
         }
         #endif
 
