@@ -119,3 +119,7 @@ Temporary Items
 
 # Superpowers brainstorming companion (local mockups)
 .superpowers/
+
+## Claude Code
+.claude/worktrees/
+.superpowers/
