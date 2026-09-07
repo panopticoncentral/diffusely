@@ -46,11 +46,40 @@ actor LibraryVault {
         }
     }
 
-    init(vaultURL: URL, backupURL: URL, keyStore: LibraryKeyStore, rounds: UInt32) {
+    /// Whether a vault file's *contents* are actually on local disk.
+    /// `notDownloaded` is deliberately distinct from `absent`: an evicted
+    /// iCloud placeholder still means the vault is configured.
+    enum Materialization: Equatable, Sendable { case absent, notDownloaded, materialized }
+
+    /// Seam for the materialization probe. Production uses the iCloud
+    /// downloading-status check; tests inject a stub, because a genuinely
+    /// dataless file can't be created locally.
+    typealias MaterializationProbe = @Sendable (URL) -> Materialization
+
+    private let materialization: MaterializationProbe
+
+    /// Dedicated serial queue for vault-file reads. `Data(contentsOf:)` over
+    /// the iCloud container is blocking I/O, and must not occupy a Swift
+    /// concurrency cooperative thread — same discipline as `kdfQueue` and
+    /// `LibraryEncryptionCoordinator.ioQueue`.
+    private static let ioQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.vault.io",
+        qos: .userInitiated
+    )
+
+    private static func runOnIOQueue<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
+    init(vaultURL: URL, backupURL: URL, keyStore: LibraryKeyStore, rounds: UInt32,
+         materialization: @escaping MaterializationProbe = LibraryVault.probeMaterialization) {
         self.vaultURL = vaultURL
         self.backupURL = backupURL
         self.keyStore = keyStore
         self.rounds = rounds
+        self.materialization = materialization
     }
 
     func state() -> State {
@@ -101,7 +130,7 @@ actor LibraryVault {
     }
 
     func unlock(password: String) async throws {
-        guard let file = loadFile() else { throw LibraryVaultError.malformed }
+        let file = try await requireFile()
         let key = try await Self.runOnKDFQueue {
             try LibraryVaultCrypto.unlock(file, password: password)
         }
@@ -110,7 +139,7 @@ actor LibraryVault {
     }
 
     func unlock(recoveryKey: String) async throws {
-        guard let file = loadFile() else { throw LibraryVaultError.malformed }
+        let file = try await requireFile()
         let key = try await Self.runOnKDFQueue {
             try LibraryVaultCrypto.unlock(file, recoveryKey: recoveryKey)
         }
@@ -119,7 +148,7 @@ actor LibraryVault {
     }
 
     func unlockWithBiometrics() async -> Bool {
-        guard loadFile() != nil else { return false }
+        guard case .loaded = await loadFile() else { return false }
         guard let raw = try? await keyStore.loadWithBiometrics(reason: "Unlock your Library"), !raw.isEmpty else {
             return false
         }
@@ -129,8 +158,19 @@ actor LibraryVault {
 
     func lock() { dek = nil }
 
+    /// True when the vault file is present but its contents aren't downloaded
+    /// from iCloud yet. `unlockWithBiometrics()` reports a plain `false` for
+    /// every failure by design, so the unlock UI needs this to tell "the file
+    /// isn't here yet" apart from "biometrics unavailable" — otherwise it has
+    /// nothing to show the user but a disabled button.
+    func isAwaitingDownload() async -> Bool {
+        if case .notDownloaded = await loadFile() { return true }
+        return false
+    }
+
+
     func changePassword(old: String, new: String) async throws {
-        guard let file = loadFile() else { throw LibraryVaultError.malformed }
+        let file = try await requireFile()
         let rewrapped = try await Self.runOnKDFQueue {
             let key = try LibraryVaultCrypto.unlock(file, password: old)
             return try LibraryVaultCrypto.rewrapPassword(file, dek: key, newPassword: new)
@@ -154,14 +194,75 @@ actor LibraryVault {
         FileManager.default.fileExists(atPath: vaultURL.path) || FileManager.default.fileExists(atPath: backupURL.path)
     }
 
-    private func loadFile() -> LibraryVaultFile? {
-        for url in [vaultURL, backupURL] {
-            if let data = try? Data(contentsOf: url),
-               let file = try? JSONDecoder().decode(LibraryVaultFile.self, from: data) {
-                return file
-            }
+    /// Outcome of a vault-file load. `notDownloaded` must never collapse into
+    /// `unavailable`: an evicted placeholder still means the vault exists.
+    private enum Load { case loaded(LibraryVaultFile), notDownloaded, unavailable }
+
+    private func requireFile() async throws -> LibraryVaultFile {
+        switch await loadFile() {
+        case .loaded(let file): return file
+        case .notDownloaded: throw LibraryVaultError.notDownloaded
+        case .unavailable: throw LibraryVaultError.malformed
         }
-        return nil
+    }
+
+    /// Reads the vault file, preferring the primary and falling back to the
+    /// backup — but only ever reading a file whose contents are actually on
+    /// local disk.
+    ///
+    /// Both files live in the app's iCloud ubiquity container, where macOS
+    /// evicts contents under storage pressure ("dataless"), leaving the
+    /// directory entry and its real size behind. `Data(contentsOf:)` on a
+    /// dataless file blocks inside `read(2)` until the file provider
+    /// materializes it — with no timeout and no catchable error — and when the
+    /// provider is wedged it never returns at all. Doing that on the unlock
+    /// path stranded the entire UI: `LibraryUnlockView` sets `busy = true`
+    /// around this call, so a read that never returned left both "Unlock" and
+    /// "Use Face ID" permanently disabled, with no way for the user to get out.
+    ///
+    /// So the materialization probe gates the read rather than the read
+    /// discovering the problem the hard way: it answers in milliseconds even
+    /// while the provider is wedged. A download is requested on the way past so
+    /// a later retry can succeed. The read itself runs on `ioQueue`, never a
+    /// cooperative thread.
+    private func loadFile() async -> Load {
+        let urls = [vaultURL, backupURL]
+        let probe = materialization
+        return await Self.runOnIOQueue {
+            var sawPlaceholder = false
+            for url in urls {
+                switch probe(url) {
+                case .absent:
+                    continue
+                case .notDownloaded:
+                    // Present but evicted. Ask for it back; don't read it.
+                    sawPlaceholder = true
+                    try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                case .materialized:
+                    if let data = try? Data(contentsOf: url),
+                       let file = try? JSONDecoder().decode(LibraryVaultFile.self, from: data) {
+                        return .loaded(file)
+                    }
+                }
+            }
+            // A placeholder among the candidates outranks a missing/corrupt
+            // sibling: the vault may well be intact, just not here yet.
+            return sawPlaceholder ? .notDownloaded : .unavailable
+        }
+    }
+
+    /// Production materialization probe. `fileExists` is true for a dataless
+    /// placeholder, so existence alone says nothing about readability; the
+    /// iCloud downloading status is what distinguishes them, and reading it is
+    /// a fast metadata lookup that does not trigger a download or block.
+    /// Anything that isn't a ubiquity item (the local fallback container,
+    /// tests) is readable by definition.
+    static let probeMaterialization: MaterializationProbe = { url in
+        guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
+        guard let values = try? url.resourceValues(
+            forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+            values.isUbiquitousItem == true else { return .materialized }
+        return values.ubiquitousItemDownloadingStatus == .notDownloaded ? .notDownloaded : .materialized
     }
 
     private func writeFile(_ file: LibraryVaultFile) throws {

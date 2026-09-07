@@ -1,7 +1,17 @@
 import Foundation
 import CryptoKit
 
-enum LibraryVaultError: Error, Equatable { case wrongCredential, malformed }
+/// `notDownloaded`: the vault file exists but iCloud hasn't materialized its
+/// contents locally yet. Distinct from `malformed` so the UI can say "not
+/// here yet, retry" rather than "damaged" or "wrong password".
+enum LibraryVaultError: Error, Equatable { case wrongCredential, malformed, notDownloaded }
+
+extension LibraryVaultError {
+    /// Shared user-facing copy for `.notDownloaded`, so the unlock gate and
+    /// the Settings encryption screen describe the same condition identically.
+    static let notDownloadedMessage =
+        "Your Library's encryption key file hasn't downloaded from iCloud yet. Check your connection and try again."
+}
 
 /// The on-disk `vault.json`. Contains only salts and the DEK wrapped under the
 /// password KEK and the recovery KEK. Zero plaintext. `Equatable` for tests.

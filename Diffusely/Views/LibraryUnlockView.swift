@@ -83,13 +83,26 @@ struct LibraryUnlockView: View {
     /// `unlockWithBiometrics()` itself already reports "not configured" /
     /// "biometrics unavailable or not enrolled" / "user cancelled" as a
     /// plain `false` rather than throwing, so no do/catch is needed here.
+    /// `busy` is cleared via `defer`, never on a trailing statement. It gates
+    /// BOTH buttons (`.disabled(busy …)`), so any path that leaves it `true`
+    /// greys out the entire gate with no way for the user to recover — which is
+    /// exactly what a vault read blocking forever on an evicted iCloud file
+    /// used to do here.
     private func biometrics() async {
         guard let vault = provider.vault else { return }
         busy = true
+        defer { busy = false }
         if await vault.unlockWithBiometrics() {
             await provider.refreshState()
+            return
         }
-        busy = false
+        // `unlockWithBiometrics()` reports every failure as a plain `false`, so
+        // ask why before leaving the user staring at an unexplained password
+        // field: an un-downloaded vault file makes every credential attempt
+        // fail too, and needs saying out loud.
+        if await vault.isAwaitingDownload() {
+            error = LibraryVaultError.notDownloadedMessage
+        }
     }
 
     private func unlock(recovery: Bool) async {
@@ -99,6 +112,7 @@ struct LibraryUnlockView: View {
         }
         busy = true
         error = nil
+        defer { busy = false }
         do {
             if recovery {
                 try await vault.unlock(recoveryKey: recoveryKey)
@@ -106,9 +120,12 @@ struct LibraryUnlockView: View {
                 try await vault.unlock(password: password)
             }
             await provider.refreshState()
+        } catch LibraryVaultError.notDownloaded {
+            // The credential was never even tested — saying "incorrect" here
+            // would send the user off resetting a password that is fine.
+            error = LibraryVaultError.notDownloadedMessage
         } catch {
             self.error = "Incorrect \(recovery ? "recovery key" : "password")."
         }
-        busy = false
     }
 }

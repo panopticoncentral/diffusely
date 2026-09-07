@@ -344,6 +344,8 @@ private func legibleMessage(for error: Error, action: String) -> String {
             return "That password is incorrect."
         case .malformed:
             return "The Library's encryption data appears to be damaged. Please try again."
+        case .notDownloaded:
+            return LibraryVaultError.notDownloadedMessage
         }
     }
     return "Couldn't \(action). Check your connection and available storage, then try again."

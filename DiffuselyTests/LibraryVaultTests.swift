@@ -148,4 +148,102 @@ final class LibraryVaultTests: XCTestCase {
         let after = try Data(contentsOf: vaultURL)
         XCTAssertEqual(before, after)
     }
+
+    // MARK: - Evicted iCloud vault file (dataless placeholder)
+
+    /// Builds a vault over `dir` whose files all report as un-materialized
+    /// iCloud placeholders — the state macOS leaves behind when it evicts the
+    /// ubiquity container under storage pressure. A genuinely dataless file
+    /// can't be created locally, so the materialization probe is the seam.
+    private func makeEvictedVault(over dir: URL) -> LibraryVault {
+        LibraryVault(
+            vaultURL: dir.appendingPathComponent("vault.json"),
+            backupURL: dir.appendingPathComponent("vault.backup.json"),
+            keyStore: InMemoryKeyStore(), rounds: 1000,
+            materialization: { _ in .notDownloaded }
+        )
+    }
+
+    /// An evicted vault file still MEANS "configured, locked". Reporting it as
+    /// `.notConfigured` would let `configure` mint a fresh DEK and orphan every
+    /// file encrypted under the old one.
+    func testEvictedVaultFileStillReadsAsLocked() async throws {
+        let (vault, dir) = makeVault()
+        _ = try await vault.configure(password: "pw")
+
+        let evicted = makeEvictedVault(over: dir)
+        let state = await evicted.state()
+        XCTAssertEqual(state, .locked)
+    }
+
+    /// The regression: the vault file's *contents* are perfectly valid on disk
+    /// here, so an unlock that reads it anyway would SUCCEED. Requiring
+    /// `.notDownloaded` instead proves the blocking read was never issued —
+    /// which is the whole point, because on a real dataless file that read
+    /// blocks in `read(2)` forever with no timeout and no catchable error.
+    func testUnlockOnEvictedVaultFileReportsNotDownloadedInsteadOfReading() async throws {
+        let (vault, dir) = makeVault()
+        let recovery = try await vault.configure(password: "pw")
+
+        let evicted = makeEvictedVault(over: dir)
+        do {
+            try await evicted.unlock(password: "pw")
+            XCTFail("expected notDownloaded, not a successful read of the placeholder")
+        } catch {
+            XCTAssertEqual(error as? LibraryVaultError, .notDownloaded)
+        }
+        do {
+            try await evicted.unlock(recoveryKey: recovery)
+            XCTFail("expected notDownloaded, not a successful read of the placeholder")
+        } catch {
+            XCTAssertEqual(error as? LibraryVaultError, .notDownloaded)
+        }
+
+        let unlocked = await evicted.state()
+        XCTAssertEqual(unlocked, .locked)
+    }
+
+    /// `unlockWithBiometrics()` reports a plain `false` (it never throws), so
+    /// the unlock UI needs `isAwaitingDownload()` to tell "not downloaded yet"
+    /// apart from "biometrics unavailable" — otherwise it has nothing to show
+    /// but a dead button.
+    func testBiometricUnlockOnEvictedVaultFileFailsAndIsReportedAsAwaitingDownload() async throws {
+        let (vault, dir) = makeVault()
+        _ = try await vault.configure(password: "pw")
+
+        let evicted = makeEvictedVault(over: dir)
+        let succeeded = await evicted.unlockWithBiometrics()
+        XCTAssertFalse(succeeded)
+
+        let awaiting = await evicted.isAwaitingDownload()
+        XCTAssertTrue(awaiting)
+    }
+
+    /// "Not downloaded" and "damaged" must stay distinct: a materialized but
+    /// undecodable vault file is still `.malformed`, and a materialized vault
+    /// is not awaiting anything.
+    func testMaterializedVaultIsNeverReportedAsAwaitingDownload() async throws {
+        let (vault, dir) = makeVault()
+        _ = try await vault.configure(password: "pw")
+        let awaiting = await vault.isAwaitingDownload()
+        XCTAssertFalse(awaiting)
+
+        let vaultURL = dir.appendingPathComponent("vault.json")
+        let backupURL = dir.appendingPathComponent("vault.backup.json")
+        try Data("not json".utf8).write(to: vaultURL)
+        try Data("not json".utf8).write(to: backupURL)
+
+        let corrupt = LibraryVault(
+            vaultURL: vaultURL, backupURL: backupURL,
+            keyStore: InMemoryKeyStore(), rounds: 1000
+        )
+        do {
+            try await corrupt.unlock(password: "pw")
+            XCTFail("expected malformed")
+        } catch {
+            XCTAssertEqual(error as? LibraryVaultError, .malformed)
+        }
+        let stillNotAwaiting = await corrupt.isAwaitingDownload()
+        XCTAssertFalse(stillNotAwaiting)
+    }
 }
