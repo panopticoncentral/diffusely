@@ -505,6 +505,69 @@ final class LibraryExporterTests: XCTestCase {
         XCTAssertEqual(second.albumsExported, 0)
     }
 
+    /// Album files live in the same evictable iCloud container as everything
+    /// else, so the album pass must materialize before it reads — exactly as
+    /// the item pass does. Reading a dataless file directly blocks in `read(2)`
+    /// indefinitely and is not interruptible, so skipping this would wedge the
+    /// whole export past the point where Cancel can rescue it.
+    func testAlbumFilesAreMaterializedBeforeBeingRead() throws {
+        let container = try makeDir(), destination = try makeDir()
+        let store = plaintextStore(container)
+        let album = makeAlbum("Evictable")
+        try LibraryAlbumStore(store: store).write(album)
+
+        var materialized: [String] = []
+        let instrumented = LibraryExporter(
+            store: store, destination: destination,
+            materialize: { materialized.append($0.lastPathComponent); return nil },
+            startPrefetch: { _ in },
+            shouldCancel: { false })
+        _ = instrumented.run { _, _ in }
+
+        XCTAssertTrue(materialized.contains(LibraryAlbumStore.fileName(for: album.id)),
+                      "album file was read without being materialized first: \(materialized)")
+    }
+
+    func testAlbumFileThatCannotBeDownloadedIsReportedNotSilentlySkipped() throws {
+        let container = try makeDir(), destination = try makeDir()
+        let store = plaintextStore(container)
+        let album = makeAlbum("Unreachable")
+        try LibraryAlbumStore(store: store).write(album)
+        let albumName = LibraryAlbumStore.fileName(for: album.id)
+
+        let failing = LibraryExporter(
+            store: store, destination: destination,
+            materialize: { $0.lastPathComponent == albumName ? URLError(.timedOut) : nil },
+            startPrefetch: { _ in },
+            shouldCancel: { false })
+        let summary = failing.run { _, _ in }
+
+        XCTAssertEqual(summary.albumsExported, 0)
+        XCTAssertEqual(summary.failures.count, 1)
+        XCTAssertEqual(summary.failures.first?.fileName, albumName)
+        guard case .downloadFailed = summary.failures.first?.reason else {
+            return XCTFail("expected downloadFailed, got \(String(describing: summary.failures.first?.reason))")
+        }
+    }
+
+    /// A cancel landing during an album materialize is not a download failure,
+    /// matching the item pass's rule.
+    func testCancellationDuringAlbumMaterializeRecordsNoFailure() throws {
+        let container = try makeDir(), destination = try makeDir()
+        let store = plaintextStore(container)
+        try LibraryAlbumStore(store: store).write(makeAlbum("Cancelled"))
+
+        let cancelling = LibraryExporter(
+            store: store, destination: destination,
+            materialize: { _ in CancellationError() },
+            startPrefetch: { _ in },
+            shouldCancel: { false })
+        let summary = cancelling.run { _, _ in }
+
+        XCTAssertEqual(summary.albumsExported, 0)
+        XCTAssertEqual(summary.failures, [])
+    }
+
     // MARK: Cancellation and prefetch
 
     func testCancellationStopsEarlyAndLeavesAResumableExport() throws {

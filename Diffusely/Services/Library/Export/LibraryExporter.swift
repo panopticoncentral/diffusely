@@ -365,6 +365,7 @@ struct LibraryExporter {
         if store.isEncrypted {
             var payloads: [(String, Data)] = []
             for url in store.enumerateAuxFiles() {
+                guard materializeAux(url, named: url.lastPathComponent, into: &summary) else { continue }
                 guard let payload = store.readAux(at: url) else {
                     summary.failures.append(LibraryExportFailure(
                         itemID: nil, fileName: url.lastPathComponent,
@@ -382,6 +383,7 @@ struct LibraryExporter {
             .contentsOfDirectory(atPath: store.itemsDirectory.path)) ?? []
         var payloads: [(String, Data)] = []
         for name in names.sorted() where LibraryAlbumStore.albumID(fromFileName: name) != nil {
+            guard materializeAux(store.auxURL(name: name), named: name, into: &summary) else { continue }
             guard let payload = store.readAux(name: name) else {
                 summary.failures.append(LibraryExportFailure(
                     itemID: nil, fileName: name, reason: .albumUnreadable))
@@ -390,6 +392,33 @@ struct LibraryExporter {
             payloads.append((name, payload))
         }
         return payloads
+    }
+
+    /// Brings one aux file local before it is read, returning false when the
+    /// caller must skip it.
+    ///
+    /// Aux files live in the same evictable container as items, so they need
+    /// the same treatment the item pass gives sidecars and media — and for a
+    /// sharper reason than "the read might fail". A coordinated read of a
+    /// dataless iCloud file blocks in `read(2)` indefinitely and cannot be
+    /// interrupted, so an evicted album file would wedge the export at the
+    /// very end of the run, past the point where `shouldCancel` is consulted:
+    /// the user could neither finish nor cancel, only force-quit. Probing and
+    /// downloading first is what keeps that read non-blocking.
+    ///
+    /// A cancel landing mid-download is silent, matching `write(_:into:)` — a
+    /// download the user cancelled is not a download that failed.
+    private func materializeAux(
+        _ url: URL,
+        named name: String,
+        into summary: inout LibraryExportSummary
+    ) -> Bool {
+        guard let error = materialize(url) else { return true }
+        guard !isCancellation(error) else { return false }
+        summary.failures.append(LibraryExportFailure(
+            itemID: nil, fileName: name,
+            reason: .downloadFailed(error.localizedDescription)))
+        return false
     }
 
     // MARK: Helpers
