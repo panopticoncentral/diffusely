@@ -28,6 +28,12 @@ final class LibraryStore: ObservableObject {
     /// `itemCount`.
     @Published private(set) var albumsVersion: Int = 0
 
+    /// How much of the container is still waiting on iCloud, and whether that
+    /// backlog is actually moving. Read by the Library's status banner and the
+    /// Settings rebuild result. Only a reconcile that COMPLETED a scan updates
+    /// this — see `LibraryIndexService.ReconcileOutcome`.
+    @Published private(set) var downloadProgress = LibraryDownloadProgress()
+
     static let cacheLimitDefaultsKey = "library_cache_limit_bytes"
     static let defaultCacheLimitBytes = 2 * 1024 * 1024 * 1024  // 2 GB
 
@@ -281,7 +287,9 @@ final class LibraryStore: ObservableObject {
             reconcileNeedsRerun = false
             guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
             iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
-            let albumStateChanged = await indexService.reconcile(itemsDirectory: dir)
+            let outcome = await indexService.reconcile(itemsDirectory: dir)
+            let albumStateChanged = outcome.albumStateChanged
+            applyPendingDownloads(from: outcome)
             // A reconcile has now actually reached the index service, so a
             // later `start()` (the post-unlock one) no longer needs to run a
             // catch-up pass. Set only here — past the gate guard above and past
@@ -316,9 +324,10 @@ final class LibraryStore: ObservableObject {
             return
         }
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        let albumStateChanged = await indexService.rebuild(itemsDirectory: dir)
+        let outcome = await indexService.rebuild(itemsDirectory: dir)
+        applyPendingDownloads(from: outcome)
         await refreshTotals()
-        if albumStateChanged { notifyAlbumsChanged() }
+        if outcome.albumStateChanged { notifyAlbumsChanged() }
     }
 
     // Both eviction entry points resolve the container first (fail fast, same
@@ -454,6 +463,20 @@ final class LibraryStore: ObservableObject {
         await Self.runDeleteAllContents(in: dir)
         await indexService.wipe()
         await refreshTotals()
+    }
+
+    /// Folds a completed scan's pending counts into `downloadProgress`. A
+    /// reconcile that never scanned (`nil` counts) leaves the last known figure
+    /// untouched rather than reporting a misleading zero.
+    ///
+    /// Items and albums are summed into one backlog: both are content the user
+    /// can't see yet, and the stall clock only needs to know whether ANY of it
+    /// moved. The split stays available on the outcome for callers that want to
+    /// word things more precisely.
+    private func applyPendingDownloads(from outcome: LibraryIndexService.ReconcileOutcome) {
+        guard let items = outcome.pendingItems else { return }
+        let total = items + (outcome.pendingAlbums ?? 0)
+        downloadProgress = downloadProgress.recording(pending: total, now: Date())
     }
 
     private func refreshTotals() async {

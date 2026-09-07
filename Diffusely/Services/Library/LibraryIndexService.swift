@@ -221,8 +221,28 @@ actor LibraryIndexService {
     /// (unreadable container, or direct writes kept landing) returns false: the
     /// metadata query re-fires for every container change, so a follow-up
     /// reconcile reports the change instead.
+    /// What a reconcile pass learned.
+    ///
+    /// `pendingItems`/`pendingAlbums` are OPTIONAL on purpose: a reconcile that
+    /// never completed a scan — locked vault, unreadable container, or repeated
+    /// direct-write collisions — knows nothing about the backlog. Reporting `0`
+    /// there would read as "everything is downloaded" and wrongly clear the
+    /// Library's status; `nil` tells the caller to leave the last known figure
+    /// alone.
+    struct ReconcileOutcome: Equatable {
+        var albumStateChanged = false
+        var pendingItems: Int?
+        var pendingAlbums: Int?
+
+        /// Outcome of a pass that never got to look at the container.
+        static let didNotScan = ReconcileOutcome()
+    }
+
     @discardableResult
-    func reconcile(itemsDirectory: URL) async -> Bool {
+    func reconcile(
+        itemsDirectory: URL,
+        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) }
+    ) async -> ReconcileOutcome {
         // Load-bearing guard: a configured-but-LOCKED vault has no DEK, so a
         // store built with `crypto == nil` is a plain passthrough —
         // indistinguishable from `.notConfigured` — that would scan for
@@ -243,7 +263,7 @@ actor LibraryIndexService {
         let ctx = await LibraryVaultProvider.shared.reconcileContext()
         guard Self.shouldReconcile(givenVaultState: ctx.state) else {
             print("[LibraryIndex] vault is locked; skipping reconcile to preserve the index")
-            return false
+            return .didNotScan
         }
         // `ctx.store` is bound to the provider's own resolved directory (same
         // path as `itemsDirectory` in production, both from
@@ -273,7 +293,8 @@ actor LibraryIndexService {
             let scan = await Self.runScan(
                 store: store,
                 indexedItemIDs: known.items,
-                indexedAlbumIDs: known.albums
+                indexedAlbumIDs: known.albums,
+                isPlaceholder: isPlaceholder
             )
 
             // A nil scan means the directory read *threw* (transient iCloud/filesystem
@@ -284,16 +305,20 @@ actor LibraryIndexService {
             // depends on it.
             guard let scan else {
                 print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
-                return false
+                return .didNotScan
             }
 
             if case .applied(let albumStateChanged) = applyScan(scan, ifEpochMatches: epoch) {
-                return albumStateChanged
+                return ReconcileOutcome(
+                    albumStateChanged: albumStateChanged,
+                    pendingItems: scan.pendingItems,
+                    pendingAlbums: scan.pendingAlbums
+                )
             }
             print("[LibraryIndex] direct write landed during the container scan; rescanning")
         }
         print("[LibraryIndex] reconcile skipped: direct writes kept landing during scans")
-        return false
+        return .didNotScan
     }
 
     /// Pure decision extracted from `reconcile` so it's directly unit-testable
@@ -432,11 +457,23 @@ actor LibraryIndexService {
     /// Result of an off-actor container scan: every readable sidecar paired with
     /// its media download status, plus the set of itemIDs seen (for pruning),
     /// plus every readable album file and the set of album ids seen (for album pruning).
+    /// `pendingItems`/`pendingAlbums` count the files this scan SKIPPED because
+    /// they are un-materialized iCloud placeholders — i.e. content the user owns
+    /// but cannot see yet. The scan already makes that judgement per file to
+    /// decide whether reading is safe; these just stop it being discarded, so
+    /// the Library can report "still downloading" rather than presenting a
+    /// partial container as the whole library.
+    ///
+    /// Deliberately NOT a count of evicted media (`*.b`): most media being
+    /// evicted is this app's healthy steady state, so including it would pin the
+    /// UI in a "downloading" state that never clears.
     typealias ScanResult = (
         items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)],
         seenIDs: Set<Int>,
         albums: [LibraryAlbumFile],
-        seenAlbumIDs: Set<UUID>
+        seenAlbumIDs: Set<UUID>,
+        pendingItems: Int,
+        pendingAlbums: Int
     )
 
     /// Dedicated serial queue for the blocking container scan. Keeps the
@@ -453,14 +490,16 @@ actor LibraryIndexService {
     nonisolated static func runScan(
         store: LibraryFileStore,
         indexedItemIDs: Set<Int> = [],
-        indexedAlbumIDs: Set<UUID> = []
+        indexedAlbumIDs: Set<UUID> = [],
+        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) }
     ) async -> ScanResult? {
         await withCheckedContinuation { continuation in
             scanQueue.async {
                 continuation.resume(returning: scanContainer(
                     store: store,
                     indexedItemIDs: indexedItemIDs,
-                    indexedAlbumIDs: indexedAlbumIDs
+                    indexedAlbumIDs: indexedAlbumIDs,
+                    isPlaceholder: isPlaceholder
                 ))
             }
         }
@@ -537,6 +576,13 @@ actor LibraryIndexService {
         var items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)] = []
         var albums: [LibraryAlbumFile] = []
         var seenAlbumIDs = Set<UUID>()
+        // Counted independently of `seenIDs`: after an eviction sweep most
+        // placeholders resolve to no known id (nothing is invented), yet those
+        // are exactly the items missing from the user's library. A pending total
+        // that only tallied recognized rows would report ~0 while thousands of
+        // items were absent.
+        var pendingItems = 0
+        var pendingAlbums = 0
 
         // Reverse token maps are built at most once per scan, and only if an
         // evicted file is actually met — the common all-materialized scan pays
@@ -573,6 +619,7 @@ actor LibraryIndexService {
                 seenAlbumIDs.insert(albumID)
                 if isPlaceholder(sidecarURL) {
                     try? fileManager.startDownloadingUbiquitousItem(at: sidecarURL)
+                    pendingAlbums += 1
                     continue
                 }
                 // Decode best-effort: only a readable file refreshes name/createdAt.
@@ -600,6 +647,7 @@ actor LibraryIndexService {
             // which then rebuilt file-by-file as the sidecars re-downloaded.
             if isPlaceholder(sidecarURL) {
                 try? fileManager.startDownloadingUbiquitousItem(at: sidecarURL)
+                pendingItems += 1
                 if let id = preservedItemID(sidecarURL) {
                     seenIDs.insert(id)
                 }
@@ -646,6 +694,14 @@ actor LibraryIndexService {
             for auxURL in auxURLs {
                 if isPlaceholder(auxURL) {
                     try? fileManager.startDownloadingUbiquitousItem(at: auxURL)
+                    // An evicted `.x` blob is opaque: album file and
+                    // sort-assistant state are indistinguishable without
+                    // reading it, so this can overcount albums by the number of
+                    // evicted non-album aux files (currently at most one). The
+                    // alternative — counting only tokens matching a known album
+                    // id — would undercount exactly when it matters most, on a
+                    // container whose album rows haven't been ingested yet.
+                    pendingAlbums += 1
                     // Same preservation as an evicted item sidecar: an album row
                     // whose file is merely not materialized has not vanished.
                     if let id = preservedAlbumID(auxURL) {
@@ -673,7 +729,8 @@ actor LibraryIndexService {
             }
         }
 
-        return (items: items, seenIDs: seenIDs, albums: albums, seenAlbumIDs: seenAlbumIDs)
+        return (items: items, seenIDs: seenIDs, albums: albums, seenAlbumIDs: seenAlbumIDs,
+                pendingItems: pendingItems, pendingAlbums: pendingAlbums)
     }
 
     /// True when `url` is an iCloud item whose contents are not yet downloaded —
@@ -738,7 +795,7 @@ actor LibraryIndexService {
     /// rows whose sidecar has vanished. That is a full rebuild from the source of
     /// truth, without the destructive empty window or the re-insert hazard.
     @discardableResult
-    func rebuild(itemsDirectory: URL) async -> Bool {
+    func rebuild(itemsDirectory: URL) async -> ReconcileOutcome {
         await reconcile(itemsDirectory: itemsDirectory)
     }
 

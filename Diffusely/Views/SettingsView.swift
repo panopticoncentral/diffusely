@@ -204,10 +204,38 @@ struct SettingsView: View {
                 Task { await libraryStore.freeUpSpaceNow() }
             }
 
-            Button("Rebuild Index") {
-                Task { await libraryStore.rebuildIndex() }
+            HStack {
+                Button("Rebuild Index") {
+                    Task {
+                        isRebuildingIndex = true
+                        rebuildIndexResult = nil
+                        await libraryStore.rebuildIndex()
+                        // Read AFTER the await: `rebuildIndex` republishes both
+                        // of these, so the summary describes the pass that just
+                        // finished rather than the state it started from.
+                        let now = Date()
+                        rebuildIndexResult = libraryStore.downloadProgress
+                            .state(now: now)
+                            .rebuildSummary(indexedItems: libraryStore.itemCount, now: now)
+                        isRebuildingIndex = false
+                    }
+                }
+                .disabled(!canRebuildIndex || isRebuildingIndex)
+
+                if isRebuildingIndex {
+                    ProgressView().controlSize(.small)
+                }
             }
-            .disabled(!canRebuildIndex)
+
+            // A rebuild that correctly changes nothing is indistinguishable
+            // from one that never ran unless it says so — pressing this twice
+            // with no visible response is what sent one debugging session
+            // looking for a bug in the index.
+            if let rebuildIndexResult {
+                Text(rebuildIndexResult)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
 
             // Explains the disabled state above rather than letting the tap
             // silently no-op against `LibraryStore.rebuildIndex()`'s own gate
@@ -332,6 +360,14 @@ struct SettingsView: View {
     /// the rebuild anyway. Derived from `rebuildIndexUnavailableReason` (which
     /// calls the store's own predicate) so the button state and the caption
     /// below it can never disagree: disabled ⇔ a caption explains why.
+    /// Live for the duration of one tap: disables the button and shows a
+    /// spinner so a rebuild over a large container doesn't look like a no-op.
+    @State private var isRebuildingIndex = false
+
+    /// What the last rebuild in this session reported. Cleared at the start of
+    /// each run so a stale line never describes a newer pass.
+    @State private var rebuildIndexResult: String?
+
     private var canRebuildIndex: Bool {
         rebuildIndexUnavailableReason == nil
     }

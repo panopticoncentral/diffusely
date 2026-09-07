@@ -85,10 +85,10 @@ import SwiftData
 
         // Simulates an album file syncing in from another device.
         try store_write(LibraryAlbumFile(id: UUID(), name: "Synced", createdAt: Date(timeIntervalSince1970: 1)), in: dir)
-        #expect(await index.reconcile(itemsDirectory: dir) == true)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == true)
 
         // A reconcile that finds nothing new must stay quiet (no pointless reloads).
-        #expect(await index.reconcile(itemsDirectory: dir) == false)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == false)
     }
 
     @Test func reconcileReportsChangeWhenSidecarMembershipSyncsIn() async throws {
@@ -98,12 +98,12 @@ import SwiftData
 
         // An item with no membership: ingesting it is not an album-state change.
         try writeItemSidecar(7, albums: [], in: dir)
-        #expect(await index.reconcile(itemsDirectory: dir) == false)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == false)
 
         // Another device files the item into an album (sidecar rewritten via sync).
         try writeItemSidecar(7, albums: [UUID().uuidString], in: dir)
-        #expect(await index.reconcile(itemsDirectory: dir) == true)
-        #expect(await index.reconcile(itemsDirectory: dir) == false)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == true)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == false)
     }
 
     @Test func reconcileReportsChangeWhenAlbumFileVanishesOrIsRenamed() async throws {
@@ -118,12 +118,12 @@ import SwiftData
         // Rename synced in from another device.
         file.name = "New"
         try store.write(file)
-        #expect(await index.reconcile(itemsDirectory: dir) == true)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == true)
 
         // Deletion synced in from another device.
         store.delete(id: file.id)
-        #expect(await index.reconcile(itemsDirectory: dir) == true)
-        #expect(await index.reconcile(itemsDirectory: dir) == false)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == true)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == false)
     }
 
     @Test func reconcileReportsChangeWhenAlbumMemberItemVanishes() async throws {
@@ -133,11 +133,11 @@ import SwiftData
 
         // A new item arriving already in an album is an album-state change.
         try writeItemSidecar(9, albums: [UUID().uuidString], in: dir)
-        #expect(await index.reconcile(itemsDirectory: dir) == true)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == true)
 
         // The member item being deleted on another device empties its album.
         try FileManager.default.removeItem(at: dir.appendingPathComponent("9.json"))
-        #expect(await index.reconcile(itemsDirectory: dir) == true)
+        #expect(await index.reconcile(itemsDirectory: dir).albumStateChanged == true)
     }
 
     @Test func reconcileDenormalizesDescriptionAndProfile() async throws {

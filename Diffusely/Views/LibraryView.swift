@@ -195,7 +195,11 @@ struct LibraryView: View {
         case .setupIncomplete:
             LibrarySetupIncompleteView(direction: setupIncompleteDirection)
         case .browsable:
-            rootContent
+            VStack(spacing: 0) {
+                LibraryDownloadStatusBanner(progress: store.downloadProgress,
+                                            indexedItems: store.itemCount)
+                rootContent
+            }
         }
     }
 
@@ -1161,6 +1165,65 @@ struct LibraryView: View {
 /// content load, so the true gate (possibly `.locked`) is known before any
 /// reconcile or image request could fire. Closes the launch race where the view
 /// would otherwise briefly see `.notConfigured` and kick off a reconcile.
+/// Non-blocking strip above the grid saying how much of the container is still
+/// waiting on iCloud. Deliberately does NOT gate the Library: a partial library
+/// is still usable, and blocking it would trade one confusing state for another.
+///
+/// Wrapped in a `TimelineView` because the stall state is time-derived and
+/// nothing pushes it. Reconciles only run when the container CHANGES, so a
+/// backlog that has stopped moving produces no further updates at all — without
+/// a clock of its own this banner would sit on "still downloading" forever,
+/// which is exactly the lie it exists to prevent. One tick a minute is enough
+/// for a threshold measured in minutes.
+private struct LibraryDownloadStatusBanner: View {
+    let progress: LibraryDownloadProgress
+    let indexedItems: Int
+
+    var body: some View {
+        // The timer exists only to age an EXISTING backlog into the stalled
+        // wording; with nothing pending there is nothing to age, so the common
+        // case renders no TimelineView and schedules no ticks at all.
+        if progress.pending > 0 {
+            timedBanner
+        }
+    }
+
+    private var timedBanner: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let state = progress.state(now: context.date)
+            if let text = state.statusText(indexedItems: indexedItems, now: context.date) {
+                HStack(spacing: 8) {
+                    icon(for: state)
+                    Text(text)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(.thinMaterial)
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    /// A spinner would claim progress is happening, which is precisely wrong in
+    /// the stalled case — that state gets a static warning glyph instead.
+    @ViewBuilder
+    private func icon(for state: LibraryDownloadProgress.State) -> some View {
+        switch state {
+        case .idle:
+            EmptyView()
+        case .downloading:
+            ProgressView().controlSize(.small)
+        case .stalled:
+            Image(systemName: "exclamationmark.icloud")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct LibraryGatePlaceholderView: View {
     var body: some View {
         ProgressView()

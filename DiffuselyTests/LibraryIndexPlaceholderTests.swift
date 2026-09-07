@@ -240,4 +240,158 @@ import SwiftData
 
         #expect(scan.seenIDs == Set([5]))
     }
+
+    // MARK: - Pending-download counts
+
+    /// The scan already decides, per file, whether it is an un-materialized
+    /// placeholder — it just used to throw that away. Counting it is what lets
+    /// the Library say "6,102 of 8,049 items still downloading" instead of
+    /// silently presenting a partial library as the whole thing.
+    @Test func scanCountsEvictedItemSidecarsAsPendingDownloads() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let crypto = LibraryFileCrypto(dek: SymmetricKey(size: .bits256))
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: crypto)
+        for id in 1...3 { try store.writeMetadata(metadataJSON(itemID: id), itemID: id) }
+
+        let evicted = Set([crypto.fileName(itemID: 2, role: .meta),
+                           crypto.fileName(itemID: 3, role: .meta)])
+        let scan = try #require(LibraryIndexService.scanContainer(
+            store: store,
+            indexedItemIDs: [1, 2, 3],
+            isPlaceholder: { evicted.contains($0.lastPathComponent) }
+        ))
+
+        #expect(scan.pendingItems == 2)
+        #expect(scan.pendingAlbums == 0)
+    }
+
+    /// The case that actually bit: after an eviction sweep almost nothing was
+    /// in the index yet, so most placeholders resolved to no known id. Those
+    /// are precisely the items missing from the user's library, so they MUST
+    /// still count — a pending total that only tallied recognized rows would
+    /// have reported ~0 while 7,563 items were absent.
+    @Test func scanCountsEvictedSidecarsEvenWhenTheIndexHasNeverSeenThem() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let crypto = LibraryFileCrypto(dek: SymmetricKey(size: .bits256))
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: crypto)
+        for id in 1...4 { try store.writeMetadata(metadataJSON(itemID: id), itemID: id) }
+
+        let scan = try #require(LibraryIndexService.scanContainer(
+            store: store,
+            indexedItemIDs: [],           // empty index: no token resolves
+            isPlaceholder: { _ in true }
+        ))
+
+        #expect(scan.seenIDs.isEmpty, "nothing is invented")
+        #expect(scan.pendingItems == 4, "but every evicted sidecar is still awaiting download")
+    }
+
+    @Test func scanReportsNothingPendingWhenEverySidecarIsMaterialized() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: nil)
+        try store.writeMetadata(metadataJSON(itemID: 1), itemID: 1)
+        try store.writeMetadata(metadataJSON(itemID: 2), itemID: 2)
+
+        let scan = try #require(LibraryIndexService.scanContainer(
+            store: store,
+            isPlaceholder: { _ in false }
+        ))
+
+        #expect(scan.pendingItems == 0)
+        #expect(scan.pendingAlbums == 0)
+    }
+
+    /// Albums are counted separately: all 23 album files being evicted while
+    /// items are fine is a distinct, reportable state.
+    @Test func scanCountsEvictedAlbumFilesSeparatelyFromItems() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let crypto = LibraryFileCrypto(dek: SymmetricKey(size: .bits256))
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: crypto)
+        let albumID = UUID()
+        try LibraryAlbumStore(store: store).write(
+            LibraryAlbumFile(id: albumID, name: "Favorites", createdAt: Date()))
+        try store.writeMetadata(metadataJSON(itemID: 1), itemID: 1)
+
+        let albumFile = crypto.fileName(auxName: LibraryAlbumStore.fileName(for: albumID))
+        let scan = try #require(LibraryIndexService.scanContainer(
+            store: store,
+            indexedItemIDs: [1],
+            indexedAlbumIDs: [albumID],
+            isPlaceholder: { $0.lastPathComponent == albumFile }
+        ))
+
+        #expect(scan.pendingItems == 0)
+        #expect(scan.pendingAlbums == 1)
+    }
+
+    /// "Pending" means waiting on iCloud, not broken. A materialized file whose
+    /// bytes don't decode is corruption — counting it would put the Library in
+    /// a permanent "still downloading" state that no download can ever clear.
+    @Test func materializedButUnreadableSidecarIsNotCountedAsPending() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let crypto = LibraryFileCrypto(dek: SymmetricKey(size: .bits256))
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: crypto)
+        try Data("not a DFEB envelope".utf8)
+            .write(to: dir.appendingPathComponent(crypto.fileName(itemID: 9, role: .meta)))
+
+        let scan = try #require(LibraryIndexService.scanContainer(
+            store: store,
+            indexedItemIDs: [9],
+            isPlaceholder: { _ in false }
+        ))
+
+        #expect(scan.seenIDs == Set([9]), "still preserved from pruning")
+        #expect(scan.pendingItems == 0, "but it is corrupt, not downloading")
+    }
+
+    /// End of the chain the UI depends on: the scan's pending counts have to
+    /// survive `reconcile` and reach the caller, otherwise the Library still has
+    /// nothing to display. Uses the same injected placeholder seam as the scan
+    /// tests, since a temp directory can't produce real iCloud placeholders.
+    @Test func reconcileReportsThePendingCountsFromTheScan() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: nil)
+        for id in 1...3 { try store.writeMetadata(metadataJSON(itemID: id), itemID: id) }
+
+        let container = try ModelContainer(
+            for: PersistedLibraryItem.self, PersistedAlbum.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let index = LibraryIndexService(modelContainer: container)
+
+        let outcome = await index.reconcile(
+            itemsDirectory: dir,
+            isPlaceholder: { ["2.json", "3.json"].contains($0.lastPathComponent) }
+        )
+
+        #expect(outcome.pendingItems == 2)
+        #expect(outcome.pendingAlbums == 0)
+        let count = await index.itemCount()
+        #expect(count == 1, "only the materialized sidecar is ingested")
+    }
+
+    @Test func reconcileReportsNothingPendingOnAFullyMaterializedContainer() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: nil)
+        for id in 1...3 { try store.writeMetadata(metadataJSON(itemID: id), itemID: id) }
+
+        let container = try ModelContainer(
+            for: PersistedLibraryItem.self, PersistedAlbum.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let index = LibraryIndexService(modelContainer: container)
+
+        let outcome = await index.reconcile(itemsDirectory: dir, isPlaceholder: { _ in false })
+
+        #expect(outcome.pendingItems == 0)
+        let count = await index.itemCount()
+        #expect(count == 3)
+    }
 }
