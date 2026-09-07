@@ -27,6 +27,14 @@ control. A folder the user chose is storage they *do* control — Cryptomator,
 FileVault, an encrypted volume, whatever they already trust. So a custom location is
 unconditionally plaintext, and the in-app vault is an iCloud-only concern.
 
+**Constraint: a custom root is local storage.** Confirmed with the user — custom
+roots are local volumes only, never a provider-synced folder (OneDrive, Dropbox).
+Those providers can present dataless placeholders much as iCloud does, but without
+the ubiquitous APIs the app uses to detect and materialize them, so the design would
+have to grow a whole second materialization story to support them. It does not: a
+custom root is treated as always-local, and that is a supported-configuration
+boundary rather than an assumption to defend in code.
+
 **Scope: macOS only.** Same reasoning as export — the Mac app is unsandboxed, so a
 folder URL from `NSOpenPanel` needs no security-scoped bookmark plumbing, and a
 folder picker is a native idiom there. iOS keeps using iCloud unchanged.
@@ -247,12 +255,6 @@ production code is `#if os(macOS)`-guarded, and its tests with it.
   down and re-bootstraps the vault. Verify the full round trip — iCloud → custom →
   back to iCloud, vault intact and unlockable — against a seeded fake library first,
   exactly as the encryption feature was verified, before pointing it at real data.
-- **A synced folder (OneDrive, Dropbox) can be dataless too.** Those providers can
-  present placeholder files much as iCloud does, but without the ubiquitous APIs the
-  app uses to detect and materialize them. This design treats a custom root as
-  always-local. If that proves wrong in practice, the fix is a separate feature, not
-  a silent expansion of this one; `onedrive-starves-fileproviderd` is the relevant
-  prior pain.
 - **The folder watcher fires on the app's own writes**, so a save will schedule a
   reconcile of work already applied. The existing 750ms debounce absorbs bursts and a
   redundant reconcile is idempotent, so this is accepted rather than filtered.
@@ -263,5 +265,7 @@ production code is `#if os(macOS)`-guarded, and its tests with it.
   Library read and write).
 - Multiple libraries open at once, or a recents list of libraries.
 - Encryption at a custom root.
+- Provider-synced folders as custom roots (OneDrive, Dropbox and friends). Out of
+  scope by the constraint above, not merely untested.
 - Moving or copying data between roots. Switching re-points the app; it never
   relocates files. Use Export to produce a folder, then switch to it.
