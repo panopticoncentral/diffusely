@@ -108,7 +108,7 @@ show the user.
 New type owning persistence, validation and capabilities. Pure enough to test
 directly.
 
-**Validation** (`validate(_ url: URL) -> Result<Void, LibraryRootError>`):
+**Validation** (`validate(_ url: URL, iCloudItemsDirectory: URL?) -> LibraryRootError?`, `nil` = valid):
 
 | Condition | Result |
 |---|---|

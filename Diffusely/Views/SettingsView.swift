@@ -17,6 +17,15 @@ struct SettingsView: View {
     @State private var cacheLimitGB: Int = 2
     @State private var checkpointReport: CheckpointReportText?
     @State private var isRunningCheckpointReport = false
+    /// Mirrors the Library Location row's own source of truth: gates the
+    /// iCloud-only controls (sync status, cache limit, Free Up Space), none of
+    /// which make sense against a plain local folder.
+    @State private var isCustomRoot = LibraryRootStore.standard.load().isCustom
+    /// The active root's capability table. The encryption row reads
+    /// `allowsEncryption` from HERE rather than re-deriving "is this a custom
+    /// root?" locally, so "where may the Library be encrypted?" has exactly one
+    /// encoding (`LibraryRoot.capabilities`) instead of two that can drift.
+    @State private var rootCapabilities = LibraryRootStore.standard.load().capabilities
 
     private static let cacheLimitOptions = [1, 2, 5, 10, 20]
 
@@ -37,7 +46,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("This permanently deletes all \(libraryStore.itemCount) items from your library, including originals in iCloud on all your devices. This cannot be undone.")
+                Text(resetLibraryWarning)
             }
             // macOS's Settings scene has no navigation stack to push into, so
             // "Library Encryption" opens as a sheet there; iOS instead uses a
@@ -166,16 +175,22 @@ struct SettingsView: View {
         sortAssistantSection
 
         Section {
-            HStack {
-                Text("iCloud Sync")
-                Spacer()
-                switch libraryStore.iCloudStatus {
-                case .checking:
-                    Text("Checking…").foregroundColor(.secondary)
-                case .available:
-                    Text("On").foregroundColor(.green)
-                case .unavailable:
-                    Text("Local only").foregroundColor(.orange)
+            #if os(macOS)
+            LibraryLocationRow(libraryStore: libraryStore)
+            #endif
+
+            if !isCustomRoot {
+                HStack {
+                    Text("iCloud Sync")
+                    Spacer()
+                    switch libraryStore.iCloudStatus {
+                    case .checking:
+                        Text("Checking…").foregroundColor(.secondary)
+                    case .available:
+                        Text("On").foregroundColor(.green)
+                    case .unavailable:
+                        Text("Local only").foregroundColor(.orange)
+                    }
                 }
             }
 
@@ -191,17 +206,19 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
-            Picker("Keep Up To", selection: $cacheLimitGB) {
-                ForEach(Self.cacheLimitOptions, id: \.self) { gb in
-                    Text("\(gb) GB").tag(gb)
+            if !isCustomRoot {
+                Picker("Keep Up To", selection: $cacheLimitGB) {
+                    ForEach(Self.cacheLimitOptions, id: \.self) { gb in
+                        Text("\(gb) GB").tag(gb)
+                    }
                 }
-            }
-            .onChange(of: cacheLimitGB) { _, newValue in
-                libraryStore.cacheLimitBytes = newValue * 1024 * 1024 * 1024
-            }
+                .onChange(of: cacheLimitGB) { _, newValue in
+                    libraryStore.cacheLimitBytes = newValue * 1024 * 1024 * 1024
+                }
 
-            Button("Free Up Space Now") {
-                Task { await libraryStore.freeUpSpaceNow() }
+                Button("Free Up Space Now") {
+                    Task { await libraryStore.freeUpSpaceNow() }
+                }
             }
 
             HStack {
@@ -259,6 +276,13 @@ struct SettingsView: View {
                 libraryEncryptionRow
             }
             .buttonStyle(.plain)
+            .disabled(!rootCapabilities.allowsEncryption)
+
+            if !rootCapabilities.allowsEncryption {
+                Text("Library Encryption is available only when your Library is in iCloud.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             #endif
 
             Button("Reset Library", role: .destructive) {
@@ -268,14 +292,31 @@ struct SettingsView: View {
         } header: {
             Text("Personal Library")
         } footer: {
-            Text("Originals are stored in iCloud Drive. This device keeps roughly the selected amount downloaded for fast viewing; iCloud may keep more or less.")
-                .font(.caption)
+            if isCustomRoot {
+                Text("Your Library is stored as plain files in the folder you chose above.")
+                    .font(.caption)
+            } else {
+                Text("Originals are stored in iCloud Drive. This device keeps roughly the selected amount downloaded for fast viewing; iCloud may keep more or less.")
+                    .font(.caption)
+            }
         }
         .onAppear {
             cacheLimitGB = max(1, libraryStore.cacheLimitBytes / (1024 * 1024 * 1024))
         }
         .task(id: vaultProvider.state) {
             libraryEncryptionDirection = await vaultProvider.incompleteMigrationDirection()
+        }
+        // `LibraryLocationRow` re-reads the root itself after a switch, but
+        // `isCustomRoot` here is a separate `@State` seeded once; without this
+        // it would go stale for the rest of this Settings session — the
+        // iCloud-only rows above would stay hidden (or shown) against the
+        // root that's actually active. `libraryGate` moves through
+        // `.switchingRoot` and back on every switch, so it's a reliable signal
+        // to re-read the persisted root.
+        .onChange(of: vaultProvider.libraryGate) { _, _ in
+            let root = LibraryRootStore.standard.load()
+            isCustomRoot = root.isCustom
+            rootCapabilities = root.capabilities
         }
 
         diagnosticsSection
@@ -376,18 +417,24 @@ struct SettingsView: View {
     /// allowed. The *decision* is delegated to the very predicate
     /// `LibraryStore.rebuildIndex()` guards on, so this can never claim the
     /// button works when the store would skip the rebuild (or vice versa);
-    /// the switch below only explains the answer.
-    ///
+    /// `Self.rebuildIndexUnavailableReason(gate:)` only explains the answer.
+    private var rebuildIndexUnavailableReason: String? {
+        let gate = vaultProvider.libraryGate
+        guard !LibraryStore.shouldAutonomousReconcile(givenLibraryGate: gate) else { return nil }
+        return Self.rebuildIndexUnavailableReason(gate: gate)
+    }
+
     /// State-specific by design: Settings is reachable in every gate state, and
     /// the vault auto-locks (idle timeout, and on every relaunch), so `.locked`
     /// is the case a user actually hits — telling them Library Encryption is
     /// "finishing setup" then sent one debugging session chasing a migration
     /// that wasn't running. Exhaustive with no `default`, so a new
     /// `LibraryVaultProvider.LibraryGate` case is a compile error here rather
-    /// than silently inheriting someone else's explanation.
-    private var rebuildIndexUnavailableReason: String? {
-        let gate = vaultProvider.libraryGate
-        guard !LibraryStore.shouldAutonomousReconcile(givenLibraryGate: gate) else { return nil }
+    /// than silently inheriting someone else's explanation. `nonisolated
+    /// static` so it is directly testable without a live `vaultProvider`.
+    nonisolated static func rebuildIndexUnavailableReason(
+        gate: LibraryVaultProvider.LibraryGate
+    ) -> String? {
         switch gate {
         case .browsable:
             // Unreachable while the predicate is `gate == .browsable`; kept so
@@ -399,6 +446,47 @@ struct SettingsView: View {
             return "Unlock your Library to rebuild the index."
         case .migrating, .setupIncomplete:
             return "Rebuild Index is unavailable while Library Encryption is finishing setup."
+        case .switchingRoot:
+            return "Rebuild Index is unavailable while switching Library location."
+        case .rootUnavailable(let url):
+            // No URL means no folder of the user's is implicated (a failed
+            // switch back to iCloud). Say that, rather than naming a path they
+            // never chose.
+            guard let url else {
+                return "Rebuild Index is unavailable until your Library is available again."
+            }
+            return "Library not found at \(url.path)."
+        }
+    }
+
+    /// Delegates to the pure, testable static below with the live root and
+    /// item count. Kept thin on purpose: the decision of *what the warning
+    /// says* lives entirely in `Self.resetLibraryWarning(root:itemCount:)`, so
+    /// there is exactly one place to get this right.
+    private var resetLibraryWarning: String {
+        Self.resetLibraryWarning(root: LibraryRootStore.standard.load(), itemCount: libraryStore.itemCount)
+    }
+
+    /// The last thing a user reads before an unrecoverable action, so this
+    /// must state the true blast radius, not a euphemism for it:
+    /// - At a custom root, `resetLibrary()` deletes via
+    ///   `LibraryContainer.itemsDirectory()`, which AT A CUSTOM ROOT IS the
+    ///   user's chosen folder — `runDeleteAllContents` enumerates and removes
+    ///   every entry in it, permanently, including files Diffusely never
+    ///   wrote (`LibraryRootStore.validate` deliberately allows a non-empty
+    ///   folder). "Every Library file" would understate that.
+    /// - In iCloud, deleting local originals also removes them from iCloud,
+    ///   which removes them from every other device signed into the same
+    ///   account — the most surprising consequence of Reset for an iCloud
+    ///   user, so it's named explicitly rather than implied.
+    /// `nonisolated static` (mirrors `rebuildIndexUnavailableReason` above) so
+    /// both branches are directly testable without a live `libraryStore`.
+    nonisolated static func resetLibraryWarning(root: LibraryRoot, itemCount: Int) -> String {
+        switch root {
+        case .iCloud:
+            return "This permanently deletes all \(itemCount) items from your Library, including the originals in iCloud on all your devices. This cannot be undone."
+        case .custom(let url):
+            return "This permanently deletes everything in \(url.path), including any files there that aren't part of your Library. This cannot be undone."
         }
     }
 

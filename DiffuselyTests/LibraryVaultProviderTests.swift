@@ -26,6 +26,30 @@ final class LibraryVaultProviderTests: XCTestCase {
         XCTAssertTrue(store.isEncrypted)
     }
 
+    /// FINDING 1's seam. `LibraryRootCoordinator.live` asks this right after
+    /// `rebootstrap()` to tell "the new root's vault is locked, which is the
+    /// expected result of switching back to an encrypted iCloud Library" apart
+    /// from "the new root is unreadable and the index has just been wiped".
+    func testIsVaultLockedReportsTheLiveVaultState() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let vault = LibraryVault(vaultURL: dir.appendingPathComponent("v.json"),
+                                 backupURL: dir.appendingPathComponent("v.bak.json"),
+                                 keyStore: InMemoryKeyStore(), rounds: 1000)
+        let provider = LibraryVaultProvider(vault: vault, itemsDirectory: dir)
+
+        let unconfigured = await provider.isVaultLocked()
+        XCTAssertFalse(unconfigured, "an unconfigured vault is not locked — it's plaintext")
+
+        _ = try await vault.configure(password: "pw")
+        let unlocked = await provider.isVaultLocked()
+        XCTAssertFalse(unlocked)
+
+        await vault.lock()
+        let locked = await provider.isVaultLocked()
+        XCTAssertTrue(locked, "this is the state a fresh vault over an existing vault.json reports")
+    }
+
     // MARK: reconcileContext() — the atomic (state, store) pair reconcile's
     // locked-guard depends on. Uses the injectable provider (not `.shared`),
     // so this is safe from the singleton-pollution concern documented for
@@ -156,7 +180,8 @@ final class LibraryVaultProviderTests: XCTestCase {
         _ = try await vault.configure(password: "pw")
         let provider = LibraryVaultProvider(vault: vault, itemsDirectory: dir)
 
-        let coordinator = await provider.encryptionCoordinator()
+        let coordinatorOrNil = await provider.encryptionCoordinator()
+        let coordinator = try XCTUnwrap(coordinatorOrNil)
         // Drive the coordinator's phase-change hook directly (the same hook a
         // real migration fires), then force a deterministic recompute.
         coordinator.onPhaseChange?(.encrypting(done: 1, total: 3))
@@ -173,8 +198,10 @@ final class LibraryVaultProviderTests: XCTestCase {
         let dir = try makeDir()
         let provider = LibraryVaultProvider(vault: makeVault(dir), itemsDirectory: dir)
 
-        let a = await provider.encryptionCoordinator()
-        let b = await provider.encryptionCoordinator()
+        let aOrNil = await provider.encryptionCoordinator()
+        let bOrNil = await provider.encryptionCoordinator()
+        let a = try XCTUnwrap(aOrNil)
+        let b = try XCTUnwrap(bOrNil)
         XCTAssertTrue(a === b)
     }
 
@@ -202,5 +229,91 @@ final class LibraryVaultProviderTests: XCTestCase {
         XCTAssertEqual(provider.libraryGate, .browsable)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("1.json").path),
                        "item 1 should be encrypted after the provider-driven migration")
+    }
+
+    // MARK: - rootOverride state machine (review findings 1 & 2)
+    //
+    // The real resolve `Task` inside `resolveIfNeeded()` never runs in the
+    // test host (see `isRunningInTestHost`), so these tests can't drive a
+    // full `rebootstrap()` round-trip against a real container. Instead they
+    // exercise the same state-transition helpers the production Task calls
+    // (`clearRootUnavailableOnSuccessfulResolve()`, which `finishBootstrap`
+    // calls on every successful resolve, and `endRootSwitch()`), using the
+    // injectable initializer per the existing convention in this file.
+
+    /// Finding 1: a stale `.rootUnavailable` override must not survive a
+    /// resolve that then succeeds — otherwise a root plugged back in leaves
+    /// the Library gated forever, since nothing else ever clears it.
+    func testSuccessfulResolveClearsStaleRootUnavailableOverride() async throws {
+        let dir = try makeDir()
+        let vault = makeVault(dir)
+        _ = try await vault.configure(password: "pw")   // unlocked, no pending plaintext
+        let provider = LibraryVaultProvider(vault: vault, itemsDirectory: dir)
+
+        let goneURL = URL(fileURLWithPath: "/Volumes/Gone/Library")
+        provider.reportRootUnavailable(goneURL)
+        XCTAssertEqual(provider.libraryGate, .rootUnavailable(goneURL))
+
+        // Simulates what `finishBootstrap` does on the Task's success path.
+        provider.clearRootUnavailableOnSuccessfulResolve()
+        await provider.refreshState()
+        XCTAssertEqual(provider.libraryGate, .browsable,
+                       "a successful resolve must clear a stale .rootUnavailable override, not gate forever")
+    }
+
+    /// Finding 1 (second half): the same success path must NEVER clear a
+    /// `.switchingRoot` override — only `endRootSwitch()` may do that, or a
+    /// `rebootstrap()` racing mid-switch would prematurely un-gate a switch
+    /// that hasn't finished.
+    func testSuccessfulResolveNeverClearsASwitchingRootOverride() async throws {
+        let dir = try makeDir()
+        let vault = makeVault(dir)
+        _ = try await vault.configure(password: "pw")
+        let provider = LibraryVaultProvider(vault: vault, itemsDirectory: dir)
+
+        provider.beginRootSwitch()
+        XCTAssertEqual(provider.libraryGate, .switchingRoot)
+
+        provider.clearRootUnavailableOnSuccessfulResolve()
+        await provider.refreshState()
+        XCTAssertEqual(provider.libraryGate, .switchingRoot,
+                       "a successful resolve must not stomp an in-progress .switchingRoot override")
+    }
+
+    /// Finding 2: `endRootSwitch()` must not silently discard a
+    /// `.rootUnavailable` discovered mid-switch (e.g. a `rebootstrap()` that
+    /// hit `LibraryRootError.unavailable` while a switch was running) — doing
+    /// so would wipe the only explanation for what went wrong and recompute
+    /// back to a bare, unexplained `.loading`.
+    func testEndRootSwitchPreservesRootUnavailableDiscoveredMidSwitch() async throws {
+        let dir = try makeDir()
+        let vault = makeVault(dir)
+        let provider = LibraryVaultProvider(vault: vault, itemsDirectory: dir)
+
+        provider.beginRootSwitch()
+        XCTAssertEqual(provider.libraryGate, .switchingRoot)
+
+        let goneURL = URL(fileURLWithPath: "/Volumes/Gone/Library")
+        provider.reportRootUnavailable(goneURL)   // simulates a mid-switch rebootstrap() failure
+        XCTAssertEqual(provider.libraryGate, .rootUnavailable(goneURL))
+
+        await provider.endRootSwitch()
+        XCTAssertEqual(provider.libraryGate, .rootUnavailable(goneURL),
+                       "endRootSwitch must preserve a .rootUnavailable discovered mid-switch")
+    }
+
+    /// `endRootSwitch()`'s normal case: a switch that finished cleanly clears
+    /// `.switchingRoot` and lets the gate recompute to the real state.
+    func testEndRootSwitchClearsASwitchingRootOverrideOnCleanFinish() async throws {
+        let dir = try makeDir()
+        let vault = makeVault(dir)
+        _ = try await vault.configure(password: "pw")
+        let provider = LibraryVaultProvider(vault: vault, itemsDirectory: dir)
+
+        provider.beginRootSwitch()
+        XCTAssertEqual(provider.libraryGate, .switchingRoot)
+
+        await provider.endRootSwitch()
+        XCTAssertEqual(provider.libraryGate, .browsable)
     }
 }

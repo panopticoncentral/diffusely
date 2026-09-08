@@ -63,6 +63,10 @@ final class LibraryStore: ObservableObject {
     /// arrival is still picked up quickly.
     private var reconcileScheduler: ReconcileScheduler?
 
+    /// Change detection for a custom root, where there is no `NSMetadataQuery`.
+    /// Exactly one of this and `metadataQuery` is ever active.
+    private var folderWatcher: LibraryFolderWatcher?
+
     /// Keeps `LibrarySaveService.isLibraryBrowsable` — the visibility gate on
     /// the feeds' "already in your library" badge — following the vault gate.
     /// Held here because this is where the save service's other cross-service
@@ -169,16 +173,52 @@ final class LibraryStore: ObservableObject {
     /// `shouldStartReconcile` for why `isReady` can't serve as this latch.
     private var didReconcileSinceLaunch = false
 
-    /// Separate one-shot latch for the metadata query. `isReady` used to serve
-    /// double duty here, but it only flips once the first reconcile completes,
-    /// so it can't guard a synchronous exactly-once setup against two `start()`
-    /// calls in quick succession.
-    private var didConfigureMetadataQuery = false
+    /// Set true only once a configuration pass has actually installed a
+    /// trigger (`configureMetadataQuery()` ran, or `folderWatcher` was
+    /// assigned). Left false by a failed resolve, a nil `LibraryFolderWatcher`
+    /// init, or a pass that lost the epoch race below — any of those must let
+    /// the NEXT `start()` retry rather than latching change detection off for
+    /// the rest of the session.
+    private var didConfigureChangeDetection = false
+
+    /// The epoch a configuration pass is currently in flight for, or `nil`
+    /// when none is. Guards the same "two `start()` calls in quick
+    /// succession" race `didConfigureChangeDetection` used to (`isReady`
+    /// can't serve as that guard — see above — and neither can
+    /// `didConfigureChangeDetection` once its own async setup can fail or be
+    /// aborted, since a bare bool set before the awaits would just recreate
+    /// this task's Finding 2).
+    ///
+    /// It is keyed by epoch, not a plain bool, so that a root switch which
+    /// lands while a pass is still suspended does not also block the
+    /// FOLLOW-UP pass `restartAfterRootSwitch()` needs to launch for the new
+    /// root: `quiesceForRootSwitch()` bumps `changeDetectionEpoch`, so the
+    /// in-flight pass's captured epoch no longer matches, `start()` is free to
+    /// launch a new pass for the current epoch, and the old pass's own
+    /// completion (recognising the epoch has moved on again under it) skips
+    /// clearing a marker that no longer belongs to it.
+    private var configuringChangeDetectionEpoch: Int?
+
+    /// Bumped by `quiesceForRootSwitch()` on every root switch. A
+    /// configuration pass captures this at entry and re-checks it (via
+    /// `mayInstallChangeDetection`) after every suspension point, right
+    /// before it would install anything — see `configureChangeDetection`.
+    private var changeDetectionEpoch = 0
 
     func start() {
-        if !didConfigureMetadataQuery {
-            didConfigureMetadataQuery = true
-            configureMetadataQuery()
+        if !didConfigureChangeDetection && configuringChangeDetectionEpoch != changeDetectionEpoch {
+            let epoch = changeDetectionEpoch
+            configuringChangeDetectionEpoch = epoch
+            Task {
+                await configureChangeDetection(startedAtEpoch: epoch)
+                // Only clear the marker if it still belongs to this pass —
+                // a later pass (launched after a root switch moved the epoch
+                // on while this one was still suspended) may have already
+                // taken over.
+                if configuringChangeDetectionEpoch == epoch {
+                    configuringChangeDetectionEpoch = nil
+                }
+            }
         }
         guard Self.shouldStartReconcile(
             isReady: isReady,
@@ -189,10 +229,87 @@ final class LibraryStore: ObservableObject {
             await refreshTotals()
             let isFirstReady = !isReady
             isReady = true
-            // Cache enforcement belongs to the launch pass only; a post-unlock
-            // catch-up reconcile shouldn't also start evicting media.
+            // Cache enforcement belongs to the launch pass only, and only where
+            // eviction means anything.
             if isFirstReady { await enforceCacheLimit() }
         }
+    }
+
+    /// Whether a configuration pass that began at `startedAtEpoch` may still
+    /// install its trigger. A root switch bumps the epoch, so a pass that was
+    /// already suspended when the switch happened must install nothing — it
+    /// would otherwise point a watcher at the previous root, and leave two
+    /// change-detection mechanisms live at once.
+    nonisolated static func mayInstallChangeDetection(startedAtEpoch: Int, currentEpoch: Int) -> Bool {
+        startedAtEpoch == currentEpoch
+    }
+
+    /// Picks the change-detection mechanism the active root supports:
+    /// `NSMetadataQuery` under iCloud, a `DispatchSource` folder watcher for a
+    /// custom root. Both funnel into the same debounced `reconcileScheduler`.
+    ///
+    /// This suspends twice — awaiting the container's capabilities, then (for
+    /// a custom root) its items directory — and `quiesceForRootSwitch()` can
+    /// land on the main actor in either gap. `startedAtEpoch` is re-checked
+    /// against the live `changeDetectionEpoch` after EACH suspension, right
+    /// before this would install anything, so a pass overtaken by a root
+    /// switch installs nothing instead of arming a trigger for the root that
+    /// is no longer active.
+    private func configureChangeDetection(startedAtEpoch epoch: Int) async {
+        let usesMetadataQuery = await LibraryContainer.shared.capabilities.usesMetadataQuery
+        guard Self.mayInstallChangeDetection(
+            startedAtEpoch: epoch, currentEpoch: changeDetectionEpoch
+        ) else { return }
+
+        if usesMetadataQuery {
+            configureMetadataQuery()
+            didConfigureChangeDetection = true
+            return
+        }
+
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        guard Self.mayInstallChangeDetection(
+            startedAtEpoch: epoch, currentEpoch: changeDetectionEpoch
+        ) else { return }
+        guard let watcher = LibraryFolderWatcher(url: dir, onChange: { [weak self] in
+            Task { @MainActor in self?.handleQueryUpdate() }
+        }) else { return }
+        folderWatcher = watcher
+        didConfigureChangeDetection = true
+    }
+
+    /// Stops every autonomous trigger ahead of a root switch. Does NOT wait for
+    /// an in-flight scan — that is what `LibraryContainer.rootGeneration` and
+    /// `LibraryIndexService.shouldApplyScan` are for. Nor does it wait for an
+    /// in-flight `configureChangeDetection()` pass — bumping the epoch is what
+    /// makes that pass's own re-checks a no-op instead.
+    func quiesceForRootSwitch() async {
+        changeDetectionEpoch += 1
+        reconcileScheduler?.cancel()
+        folderWatcher?.cancel()
+        folderWatcher = nil
+        if didConfigureChangeDetection {
+            metadataQuery.stop()
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers.removeAll()
+        }
+        didConfigureChangeDetection = false
+        isReady = false
+        didReconcileSinceLaunch = false
+        // These two are "once per session" latches only because re-running the
+        // backfills against the SAME Library would be pointless work. A root
+        // switch makes that no longer true: the folder being opened is a
+        // different set of items that has never been backfilled in this
+        // process. Leaving them latched meant a newly opened root — an exported
+        // folder, the headline use case — got no publish-date and no checkpoint
+        // backfill at all until the app was relaunched.
+        didRunDateBackfillThisSession = false
+        didRunCheckpointBackfillThisSession = false
+    }
+
+    /// Re-arms everything against whatever root `LibraryContainer` now holds.
+    func restartAfterRootSwitch() async {
+        start()
     }
 
     /// Flips `didRunDateBackfillThisSession` so subsequent `LibraryView` mounts
@@ -270,6 +387,44 @@ final class LibraryStore: ObservableObject {
         gate == .browsable
     }
 
+    /// `LibraryContainer.resolveItemsDirectory()`, with the one error that is a
+    /// STATE rather than a hiccup promoted to the gate.
+    ///
+    /// A custom root can vanish mid-session — the volume is ejected, the folder
+    /// renamed — and `LibraryContainer` reports exactly that as
+    /// `LibraryRootError.unavailable(url)`. Swallowing it with `try?` (as every
+    /// call site here originally did) left the gate `.browsable` over a stale
+    /// index: images failed to load one by one and saves failed silently, with
+    /// nothing on screen saying why. The folder watcher's own doc comment
+    /// already promised this behaviour ("the reconcile it schedules will find
+    /// the root unavailable and the gate will block"); this is what makes that
+    /// true.
+    ///
+    /// Deliberately narrow. ONLY `.unavailable` blocks: it is the one error
+    /// that means "the root you chose is not there", and it is unreachable
+    /// under `.iCloud`, whose container is app-owned and created on demand.
+    /// Every other failure (a full disk, a permissions blip) keeps the previous
+    /// behaviour of returning quietly and retrying on the next pass, because
+    /// gating the whole Library on a transient is its own harm.
+    private func resolveItemsDirectoryReportingUnavailability() async -> (url: URL, generation: Int)? {
+        do {
+            return try await LibraryContainer.shared.resolveItemsDirectory()
+        } catch {
+            if let url = Self.rootUnavailableURL(from: error) {
+                LibraryVaultProvider.shared.reportRootUnavailable(url)
+            }
+            return nil
+        }
+    }
+
+    /// The folder to block on, or `nil` to keep today's quiet-retry behaviour.
+    /// The whole of the "which failures gate the Library?" decision, pulled out
+    /// `nonisolated static` so it is directly testable without a live container.
+    nonisolated static func rootUnavailableURL(from error: Error) -> URL? {
+        guard case LibraryRootError.unavailable(let url) = error else { return nil }
+        return url
+    }
+
     private func reconcileNow() async {
         let gate = LibraryVaultProvider.shared.libraryGate
         guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else {
@@ -285,9 +440,12 @@ final class LibraryStore: ObservableObject {
 
         repeat {
             reconcileNeedsRerun = false
-            guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+            guard let resolved = await resolveItemsDirectoryReportingUnavailability() else { return }
             iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
-            let outcome = await indexService.reconcile(itemsDirectory: dir)
+            let outcome = await indexService.reconcile(
+                itemsDirectory: resolved.url,
+                startedAtGeneration: resolved.generation
+            )
             let albumStateChanged = outcome.albumStateChanged
             applyPendingDownloads(from: outcome)
             // A reconcile has now actually reached the index service, so a
@@ -323,8 +481,11 @@ final class LibraryStore: ObservableObject {
             print("[LibraryStore] manual rebuild skipped; libraryGate=\(gate)")
             return
         }
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        let outcome = await indexService.rebuild(itemsDirectory: dir)
+        guard let resolved = await resolveItemsDirectoryReportingUnavailability() else { return }
+        let outcome = await indexService.rebuild(
+            itemsDirectory: resolved.url,
+            startedAtGeneration: resolved.generation
+        )
         applyPendingDownloads(from: outcome)
         await refreshTotals()
         if outcome.albumStateChanged { notifyAlbumsChanged() }
@@ -335,12 +496,14 @@ final class LibraryStore: ObservableObject {
     // store, so an encrypted container's opaque `{token}.b` media is the file
     // actually targeted — the plaintext `mediaFileName` names nothing there.
     func freeUpSpaceNow() async {
+        guard await LibraryContainer.shared.capabilities.supportsCacheLimit else { return }
         guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
         await indexService.evictAllDownloaded(store: LibraryVaultProvider.shared.fileStore())
         await refreshTotals()
     }
 
     func enforceCacheLimit() async {
+        guard await LibraryContainer.shared.capabilities.supportsCacheLimit else { return }
         guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
         await indexService.enforceCacheLimit(
             maxBytes: cacheLimitBytes,

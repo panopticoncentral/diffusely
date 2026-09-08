@@ -9,11 +9,19 @@ struct LibraryFileStore {
     let itemsDirectory: URL
     let crypto: LibraryFileCrypto?
 
+    /// Whether this store may create its items directory. True for the iCloud
+    /// container, which the app owns and recreates freely. FALSE for a custom
+    /// root: that folder belongs to the user, and recreating it after its volume
+    /// went away would manufacture an empty Library at a dead mount point —
+    /// which a later reconcile would read as "every item was deleted".
+    let createsContainerDirectory: Bool
+
     var isEncrypted: Bool { crypto != nil }
 
-    init(itemsDirectory: URL, crypto: LibraryFileCrypto?) {
+    init(itemsDirectory: URL, crypto: LibraryFileCrypto?, createsContainerDirectory: Bool = true) {
         self.itemsDirectory = itemsDirectory
         self.crypto = crypto
+        self.createsContainerDirectory = createsContainerDirectory
     }
 
     // MARK: URLs
@@ -210,7 +218,9 @@ struct LibraryFileStore {
     // MARK: Coordinated I/O
 
     private func write(payload: Data, to url: URL, token: String?) throws {
-        try FileManager.default.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
+        if createsContainerDirectory {
+            try FileManager.default.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
+        }
         let bytes: Data
         if let token, let crypto { bytes = try crypto.seal(payload, fileToken: token) } else { bytes = payload }
         let coordinator = NSFileCoordinator()

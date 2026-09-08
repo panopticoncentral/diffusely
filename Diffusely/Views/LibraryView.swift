@@ -24,6 +24,15 @@ struct LibraryView: View {
     /// fully-migrated + unlocked). Every content load / reload guards on this.
     private var isBrowsable: Bool { vaultProvider.libraryGate == .browsable }
 
+    /// A custom root is never iCloud-backed, so `store.iCloudStatus` reads
+    /// `.unavailable` there exactly as it would for a real iCloud outage. That's
+    /// correct for Settings' "iCloud Sync" row (hidden at a custom root — see
+    /// `SettingsView.isCustomRoot`) but would otherwise show this Library's
+    /// "iCloud unavailable" banners for a folder the user deliberately chose
+    /// instead of an actual sync problem. Gate both banners on this so the
+    /// iCloud-outage behaviour they exist for is untouched.
+    private var isCustomRoot: Bool { LibraryRootStore.standard.load().isCustom }
+
     /// Which slice of the library this instance renders. `.all` is the top-level
     /// Library (and shows the Photos/Albums switcher — added in Task 11); the
     /// other cases are pushed detail screens scoped to an album or the
@@ -194,6 +203,36 @@ struct LibraryView: View {
             LibraryMigrationBlockView(phase: vaultProvider.migrationPhase)
         case .setupIncomplete:
             LibrarySetupIncompleteView(direction: setupIncompleteDirection)
+        case .switchingRoot:
+            LibraryRootSwitchingView()
+        case .rootUnavailable(let url):
+            // Bind the store to a LOCAL before building the closures. Reading a
+            // view property from inside an escaping content closure captures
+            // `self`, which this codebase has hit as a hard-to-diagnose macOS
+            // beachball. Capturing the value instead is the fix.
+            let libraryStore = store
+            LibraryRootUnavailableView(
+                path: url?.path,
+                onLocate: {
+                    #if os(macOS)
+                    switch await LibraryLocationSwitcher.chooseFolder() {
+                    case .cancelled: return nil
+                    case .rejected(let message): return message
+                    case .chosen(let folder):
+                        return await LibraryLocationSwitcher.apply(.custom(folder), store: libraryStore)
+                    }
+                    #else
+                    return nil
+                    #endif
+                },
+                onUseICloud: {
+                    #if os(macOS)
+                    return await LibraryLocationSwitcher.apply(.iCloud, store: libraryStore)
+                    #else
+                    return nil
+                    #endif
+                }
+            )
         case .browsable:
             VStack(spacing: 0) {
                 LibraryDownloadStatusBanner(progress: store.downloadProgress,
@@ -536,7 +575,7 @@ struct LibraryView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    if store.iCloudStatus == .unavailable {
+                    if store.iCloudStatus == .unavailable && !isCustomRoot {
                         localOnlyBanner
                     }
                     if backfillRemaining > 0 {
@@ -930,12 +969,14 @@ struct LibraryView: View {
                 .foregroundColor(.secondary)
             Text("Your Library is Empty")
                 .font(.headline)
-            Text("Use \"Save to Library\" on any image or video to keep your own iCloud-synced copy.")
+            Text(isCustomRoot
+                 ? "Use \"Save to Library\" on any image or video to keep your own copy in your chosen folder."
+                 : "Use \"Save to Library\" on any image or video to keep your own iCloud-synced copy.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            if store.iCloudStatus == .unavailable {
+            if store.iCloudStatus == .unavailable && !isCustomRoot {
                 Text("iCloud is unavailable - items are saved on this device only.")
                     .font(.caption)
                     .foregroundColor(.orange)

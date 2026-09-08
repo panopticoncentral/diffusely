@@ -241,7 +241,11 @@ actor LibraryIndexService {
     @discardableResult
     func reconcile(
         itemsDirectory: URL,
-        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) }
+        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) },
+        startedAtGeneration: Int? = nil,
+        generationProbe: @Sendable @escaping () async -> Int = {
+            await LibraryContainer.shared.rootGeneration
+        }
     ) async -> ReconcileOutcome {
         // Load-bearing guard: a configured-but-LOCKED vault has no DEK, so a
         // store built with `crypto == nil` is a plain passthrough —
@@ -265,6 +269,13 @@ actor LibraryIndexService {
             print("[LibraryIndex] vault is locked; skipping reconcile to preserve the index")
             return .didNotScan
         }
+        let resolvedStartedAtGeneration: Int
+        if let startedAtGeneration {
+            resolvedStartedAtGeneration = startedAtGeneration
+        } else {
+            resolvedStartedAtGeneration = await generationProbe()
+        }
+        let startedAtGeneration = resolvedStartedAtGeneration
         // `ctx.store` is bound to the provider's own resolved directory (same
         // path as `itemsDirectory` in production, both from
         // `LibraryContainer.shared.itemsDirectory()`); tests pass their own
@@ -308,6 +319,17 @@ actor LibraryIndexService {
                 return .didNotScan
             }
 
+            // The root may have been switched while this scan ran on its own
+            // queue. Applying it now would write the OLD root's contents into
+            // the NEW root's index and prune everything else.
+            guard Self.shouldApplyScan(
+                startedAtGeneration: startedAtGeneration,
+                currentGeneration: await generationProbe()
+            ) else {
+                print("[LibraryIndex] Library root changed during the scan; discarding it")
+                return .didNotScan
+            }
+
             if case .applied(let albumStateChanged) = applyScan(scan, ifEpochMatches: epoch) {
                 return ReconcileOutcome(
                     albumStateChanged: albumStateChanged,
@@ -327,6 +349,23 @@ actor LibraryIndexService {
     /// (plaintext, today's only shipped mode) and `.unlocked` both proceed.
     nonisolated static func shouldReconcile(givenVaultState state: LibraryVault.State) -> Bool {
         state != .locked
+    }
+
+    /// Pure decision extracted so it is directly unit-testable: a scan may only
+    /// be applied to the index if the Library root hasn't changed since the scan
+    /// started.
+    ///
+    /// Scans run on `scanQueue`, off the model actor, so a root switch cannot
+    /// cancel one already in flight. Without this check, a scan of the OLD root
+    /// finishing after the switch would be applied to the NEW root's index and
+    /// prune every row it never saw — the "I didn't see the files, therefore
+    /// they're gone" failure this codebase has hit before with evicted iCloud
+    /// containers.
+    nonisolated static func shouldApplyScan(
+        startedAtGeneration: Int,
+        currentGeneration: Int
+    ) -> Bool {
+        startedAtGeneration == currentGeneration
     }
 
     /// Applies a completed scan to the index — unless a direct mutation landed
@@ -795,8 +834,16 @@ actor LibraryIndexService {
     /// rows whose sidecar has vanished. That is a full rebuild from the source of
     /// truth, without the destructive empty window or the re-insert hazard.
     @discardableResult
-    func rebuild(itemsDirectory: URL) async -> ReconcileOutcome {
-        await reconcile(itemsDirectory: itemsDirectory)
+    func rebuild(
+        itemsDirectory: URL,
+        startedAtGeneration: Int? = nil,
+        generationProbe: @Sendable @escaping () async -> Int = {
+            await LibraryContainer.shared.rootGeneration
+        }
+    ) async -> ReconcileOutcome {
+        await reconcile(itemsDirectory: itemsDirectory,
+                        startedAtGeneration: startedAtGeneration,
+                        generationProbe: generationProbe)
     }
 
     /// Deletes every index row without reconciling. Used by Reset Library after

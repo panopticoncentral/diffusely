@@ -307,7 +307,7 @@ git commit -m "feat(library): add LibraryRoot, capabilities, and root persistenc
 
 **Interfaces:**
 - Consumes: `LibraryRoot`, `LibraryRootError` from Task 1.
-- Produces: `func validate(_ url: URL, iCloudItemsDirectory: URL?) -> Result<Void, LibraryRootError>` on `LibraryRootStore`. `iCloudItemsDirectory` is injected rather than resolved internally, both because resolving it is blocking actor I/O and because tests must not touch the real container.
+- Produces: `func validate(_ url: URL, iCloudItemsDirectory: URL?) -> LibraryRootError?` on `LibraryRootStore` (`nil` means valid — `Result<Void, E>` is deliberately avoided because `Void` isn't `Equatable`, so it can't be asserted with `XCTAssertEqual`). `iCloudItemsDirectory` is injected rather than resolved internally, both because resolving it is blocking actor I/O and because tests must not touch the real container.
 
 An **empty folder is valid** — that is how a fresh Library is started somewhere.
 
@@ -345,7 +345,7 @@ final class LibraryRootStoreTests: XCTestCase {
 
     func testEmptyFolderIsValid() throws {
         let folder = try makeFolder("empty")
-        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil), .success(()))
+        XCTAssertNil(store.validate(folder, iCloudItemsDirectory: nil))
     }
 
     func testFolderWithPlaintextLibraryIsValid() throws {
@@ -353,51 +353,45 @@ final class LibraryRootStoreTests: XCTestCase {
         try write("12345.json", into: folder)
         try write("12345.jpeg", into: folder)
         try write("album-\(UUID().uuidString).json", into: folder)
-        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil), .success(()))
+        XCTAssertNil(store.validate(folder, iCloudItemsDirectory: nil))
     }
 
     func testMissingFolderIsNotADirectory() {
         let missing = tempRoot.appendingPathComponent("nope", isDirectory: true)
-        XCTAssertEqual(store.validate(missing, iCloudItemsDirectory: nil),
-                       .failure(.notADirectory))
+        XCTAssertEqual(store.validate(missing, iCloudItemsDirectory: nil), .notADirectory)
     }
 
     func testFileIsNotADirectory() throws {
         try write("plain.txt", into: tempRoot)
         XCTAssertEqual(store.validate(tempRoot.appendingPathComponent("plain.txt"),
-                                      iCloudItemsDirectory: nil),
-                       .failure(.notADirectory))
+                                      iCloudItemsDirectory: nil), .notADirectory)
     }
 
     func testFolderWithVaultFileIsRejected() throws {
         let folder = try makeFolder("vaulted")
         try write("vault.json", into: folder)
-        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil),
-                       .failure(.encryptedLibrary))
+        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil), .encryptedLibrary)
     }
 
     func testFolderWithSealedFilesIsRejected() throws {
         for (name, ext) in [("meta", "m"), ("media", "b"), ("aux", "x")] {
             let folder = try makeFolder("sealed-\(name)")
             try write("a1b2c3.\(ext)", into: folder)
-            XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil),
-                           .failure(.encryptedLibrary),
+            XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil), .encryptedLibrary,
                            "a .\(ext) file should mark the folder encrypted")
         }
     }
 
     func testICloudContainerIsRejected() throws {
         let folder = try makeFolder("container")
-        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: folder),
-                       .failure(.isICloudContainer))
+        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: folder), .isICloudContainer)
     }
 
     func testNotWritableFolderIsRejected() throws {
         let folder = try makeFolder("readonly")
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path) }
-        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil),
-                       .failure(.notWritable))
+        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil), .notWritable)
     }
 }
 ```
@@ -427,37 +421,37 @@ Append to `LibraryRootStore`:
     /// it is blocking, actor-isolated I/O, and the test suite must never touch
     /// the real container. Pass `nil` when it is unknown or unavailable — the
     /// container check is simply skipped.
-    func validate(_ url: URL, iCloudItemsDirectory: URL?) -> Result<Void, LibraryRootError> {
+    func validate(_ url: URL, iCloudItemsDirectory: URL?) -> LibraryRootError? {
         let fileManager = FileManager.default
 
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            return .failure(.notADirectory)
+            return .notADirectory
         }
 
         if let iCloudItemsDirectory,
            url.standardizedFileURL == iCloudItemsDirectory.standardizedFileURL {
-            return .failure(.isICloudContainer)
+            return .isICloudContainer
         }
 
         guard fileManager.isWritableFile(atPath: url.path) else {
-            return .failure(.notWritable)
+            return .notWritable
         }
 
         let contents = (try? fileManager.contentsOfDirectory(atPath: url.path)) ?? []
         for name in contents {
             if name == Self.vaultFileName {
-                return .failure(.encryptedLibrary)
+                return .encryptedLibrary
             }
             if Self.sealedExtensions.contains((name as NSString).pathExtension) {
-                return .failure(.encryptedLibrary)
+                return .encryptedLibrary
             }
         }
 
         // An empty folder is deliberately valid: that is how a user starts a
         // fresh Library somewhere.
-        return .success(())
+        return nil
     }
 ```
 
@@ -486,7 +480,7 @@ git commit -m "feat(library): validate a candidate Library folder"
 
 **Interfaces:**
 - Consumes: `LibraryRoot`, `LibraryRootError`, `LibraryRootStore` (Tasks 1–2).
-- Produces: on `LibraryContainer` — `init(rootStore: LibraryRootStore)`, `var root: LibraryRoot`, `var rootGeneration: Int`, `@discardableResult func setRoot(_ root: LibraryRoot) -> Int`, and `func iCloudItemsDirectoryIfAvailable() -> URL?`. `itemsDirectory()` and `vaultURLs()` keep their signatures.
+- Produces: on `LibraryContainer` — `init(rootStore: LibraryRootStore)`, `var root: LibraryRoot`, `var rootGeneration: Int`, `var capabilities: LibraryRootCapabilities`, `@discardableResult func setRoot(_ root: LibraryRoot) -> Int`, and `func iCloudItemsDirectoryIfAvailable() -> URL?`. `itemsDirectory()` and `vaultURLs()` keep their signatures.
 
 Three behaviours are load-bearing:
 
@@ -837,11 +831,14 @@ git commit -m "feat(library): make LibraryContainer resolve an arbitrary root"
 
 **Files:**
 - Modify: `Diffusely/Services/Library/LibraryIndexService.swift:242-320` (`reconcile`), `:798` (`rebuild`)
+- Modify: `Diffusely/Services/Library/LibraryStore.swift` (`reconcileNow`, `rebuildIndex`) — the caller wiring
 - Test: `DiffuselyTests/LibraryIndexGenerationTests.swift`
 
 **Interfaces:**
-- Consumes: `LibraryContainer.rootGeneration` (Task 3).
-- Produces: `nonisolated static func shouldApplyScan(startedAtGeneration: Int, currentGeneration: Int) -> Bool`; `reconcile` gains a `generationProbe: @Sendable () async -> Int` parameter defaulting to `{ await LibraryContainer.shared.rootGeneration }`, and `rebuild` gains the same parameter purely to pass it through (it delegates to `reconcile`).
+- Consumes: `LibraryContainer.resolveItemsDirectory()` (Task 3) — returns `(url:generation:)` in one actor-isolated call.
+- Produces: `nonisolated static func shouldApplyScan(startedAtGeneration: Int, currentGeneration: Int) -> Bool`; `reconcile` gains `startedAtGeneration: Int? = nil` and `generationProbe: @Sendable () async -> Int = { await LibraryContainer.shared.rootGeneration }`; `rebuild` gains both purely to pass them through (it delegates to `reconcile`).
+
+**Why the caller supplies the generation.** Probing it inside `reconcile` reopens the very race the counter closes. The caller resolves the directory in one actor hop and `reconcile` would probe the generation in another; a `setRoot` landing between them pairs the OLD root's directory with the NEW root's generation, both staleness checks then agree, and the old root's scan is applied to the new root's index. `resolveItemsDirectory()` exists precisely so the pair is read atomically — so the caller reads the pair and passes both down. `startedAtGeneration: nil` means "probe now", which keeps every existing call site and test compiling unchanged.
 
 This is the highest-value change in the feature. A scan of the old root that finishes after a switch would otherwise apply to the new root's index and prune every row it never saw — the same shape as the iCloud eviction-sweep bug class ("I didn't see the files, so they're gone"). The probe is called once before the scan and again before applying it.
 
@@ -924,8 +921,10 @@ Change the signature and add the two probe calls:
 Immediately after the existing `let ctx = await LibraryVaultProvider.shared.reconcileContext()` / `shouldReconcile` guard block, capture the generation:
 
 ```swift
-        let startedAtGeneration = await generationProbe()
+        let startedAtGeneration = startedAtGeneration ?? (await generationProbe())
 ```
+
+Declare the parameter as `startedAtGeneration: Int? = nil` and shadow it here. A caller that resolved its directory through `resolveItemsDirectory()` passes the paired generation; a caller that did not (and every existing test) falls back to probing, which is no worse than today.
 
 Then inside the retry loop, replace the apply block:
 
@@ -950,7 +949,24 @@ with a generation check before it:
             if case .applied(let albumStateChanged) = applyScan(scan, ifEpochMatches: epoch) {
 ```
 
-- [ ] **Step 5: Confirm `rebuild` inherits the check**
+- [ ] **Step 5: Wire the callers so the pair is atomic**
+
+In `LibraryStore.reconcileNow`, replace the separate directory resolve with the paired one and pass the generation down:
+
+```swift
+            guard let resolved = try? await LibraryContainer.shared.resolveItemsDirectory() else { return }
+            iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
+            let outcome = await indexService.reconcile(
+                itemsDirectory: resolved.url,
+                startedAtGeneration: resolved.generation
+            )
+```
+
+Do the same in `LibraryStore.rebuildIndex`, passing `resolved.generation` to `indexService.rebuild`.
+
+This is the whole point of the mechanism: resolving the directory and the generation in one actor-isolated call is what makes the pair trustworthy. Leaving the caller on `itemsDirectory()` alone would keep the race open no matter how careful `reconcile` is.
+
+- [ ] **Step 6: Confirm `rebuild` inherits the check**
 
 `rebuild(itemsDirectory:)` at `LibraryIndexService.swift:798` is a one-line delegation to `reconcile(itemsDirectory:)`, so it picks the generation check up for free — **do not** duplicate the logic there. Add the pass-through parameter only, so a caller can inject a probe:
 
@@ -958,15 +974,18 @@ with a generation check before it:
     @discardableResult
     func rebuild(
         itemsDirectory: URL,
+        startedAtGeneration: Int? = nil,
         generationProbe: @Sendable @escaping () async -> Int = {
             await LibraryContainer.shared.rootGeneration
         }
     ) async -> ReconcileOutcome {
-        await reconcile(itemsDirectory: itemsDirectory, generationProbe: generationProbe)
+        await reconcile(itemsDirectory: itemsDirectory,
+                        startedAtGeneration: startedAtGeneration,
+                        generationProbe: generationProbe)
     }
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 7: Run the tests to verify they pass**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests/LibraryIndexGenerationTests 2>&1 | tail -20
@@ -974,7 +993,7 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 
 Expected: `Executed 3 tests, with 0 failures`.
 
-- [ ] **Step 7: Run the index and store suites — the signature changed**
+- [ ] **Step 8: Run the index and store suites — the signature changed**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests 2>&1 | tail -30
@@ -982,10 +1001,10 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 
 Expected: no new failures. The default parameter means existing call sites are untouched; if anything fails to compile, it is a call site passing arguments positionally — name them rather than reordering the new parameter.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add Diffusely/Services/Library/LibraryIndexService.swift DiffuselyTests/LibraryIndexGenerationTests.swift
+git add Diffusely/Services/Library/LibraryIndexService.swift Diffusely/Services/Library/LibraryStore.swift DiffuselyTests/LibraryIndexGenerationTests.swift
 git commit -m "fix(library): discard container scans that outlive their root"
 ```
 
@@ -995,6 +1014,7 @@ git commit -m "fix(library): discard container scans that outlive their root"
 
 **Files:**
 - Modify: `Diffusely/Services/Library/LibraryVaultProvider.swift`
+- Modify: `Diffusely/Services/Library/LibraryFileStore.swift` (stop it recreating a vanished custom root)
 - Test: `DiffuselyTests/LibraryVaultProviderRootGateTests.swift`
 
 **Interfaces:**
@@ -1191,32 +1211,37 @@ Rewrite the instance `computedGate()` to delegate. It must keep skipping the pen
 
 ```swift
     private func computedGate() async -> LibraryGate {
-        if let rootOverride { return rootOverride }
+        let snapshot = await vault?.snapshot()
 
+        // The static below is the ONLY place the gate is decided. The guard
+        // here decides something narrower: whether the expensive part — a
+        // blocking directory listing on `gateScanQueue` — is worth doing at
+        // all. It is only ever consulted for an unlocked, configured vault
+        // that nothing else is already blocking.
+        let migrationBlocks: Bool
         switch migrationPhase {
-        case .encrypting, .decrypting: return .migrating
-        case .idle, .failed: break
+        case .encrypting, .decrypting: migrationBlocks = true
+        case .idle, .failed: migrationBlocks = false
         }
 
-        if isPlaintextRoot { return .browsable }
-        guard let vault else { return .loading }
-
-        let snapshot = await vault.snapshot()
         var pending = 0
-        if case .unlocked = snapshot.state, let crypto = snapshot.crypto {
+        if rootOverride == nil, !isPlaintextRoot, !migrationBlocks,
+           snapshot?.state == .unlocked, let crypto = snapshot?.crypto {
             pending = await Self.scanPendingPlaintextCount(
                 directory: resolvedDirectory(), crypto: crypto)
         }
 
         return Self.computedGate(
-            rootOverride: nil,
+            rootOverride: rootOverride,
             migrationPhase: migrationPhase,
-            isPlaintextRoot: false,
-            vaultState: snapshot.state,
+            isPlaintextRoot: isPlaintextRoot,
+            vaultState: snapshot?.state,
             pendingPlaintextCount: pending
         )
     }
 ```
+
+Note the shape: the instance method gathers inputs and delegates once. Re-implementing the precedence here as a second set of early returns would mean two decision sites that can drift, and the unit tests would only cover one of them.
 
 - [ ] **Step 5: Skip vault bootstrap for a custom root, and support re-bootstrap**
 
@@ -1291,7 +1316,24 @@ Update `finishBootstrap` and add `rebootstrap`:
 
 Note `vault` becomes `LibraryVault?` at `finishBootstrap` — it already is optional on the property, so only the parameter type changes.
 
-- [ ] **Step 6: Fix the exhaustive switches the new cases break**
+- [ ] **Step 6: Stop `LibraryFileStore` recreating a vanished custom root**
+
+Task 3 guaranteed that a `.custom` root is never created — but only inside `LibraryContainer`. `LibraryFileStore` calls `createDirectory(at: itemsDirectory, withIntermediateDirectories: true)` on every write, and the container caches its resolved directory indefinitely. So a volume ejected AFTER a successful resolve leaves every caller holding a URL under a vanished mount point, and the first save recreates the folder tree there — reaching the same "empty directory that reconcile treats as authoritative" outcome one step later.
+
+Give the store an explicit say, defaulting to today's behaviour:
+
+```swift
+    /// Whether this store may create its items directory. True for the iCloud
+    /// container, which the app owns and recreates freely. FALSE for a custom
+    /// root: that folder belongs to the user, and recreating it after its volume
+    /// went away would manufacture an empty Library at a dead mount point —
+    /// which a later reconcile would read as "every item was deleted".
+    let createsContainerDirectory: Bool
+```
+
+Add it as an initializer parameter defaulting to `true`, and guard the existing `createDirectory` call on it. Then, everywhere `LibraryVaultProvider` builds a store (`fileStore()` and `reconcileContext()`), pass `createsContainerDirectory: !isPlaintextRoot` — a plaintext root is exactly a custom one.
+
+- [ ] **Step 7: Fix the exhaustive switches the new cases break**
 
 The compiler will point at them. Handle them minimally for now; Tasks 9 and 10 give them real UI:
 
@@ -1299,7 +1341,7 @@ The compiler will point at them. Handle them minimally for now; Tasks 9 and 10 g
 - `LibraryView.gatedContent` — add `case .switchingRoot, .rootUnavailable: LibraryGatePlaceholderView()` as a placeholder. Task 9 replaces it.
 - `SettingsView.rebuildIndexUnavailableReason` — add `case .switchingRoot, .rootUnavailable: return nil` as a placeholder. Task 10 replaces it.
 
-- [ ] **Step 7: Run the tests to verify they pass**
+- [ ] **Step 8: Run the tests to verify they pass**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests/LibraryVaultProviderRootGateTests 2>&1 | tail -20
@@ -1307,7 +1349,7 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 
 Expected: `Executed 8 tests, with 0 failures`.
 
-- [ ] **Step 8: Run the whole suite and the iOS build**
+- [ ] **Step 9: Run the whole suite and the iOS build**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests 2>&1 | tail -30
@@ -1317,10 +1359,10 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'generic/platform=iOS Simulator' 2>&1 | tail -5
 ```
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add Diffusely/Services/Library/LibraryVaultProvider.swift Diffusely/Views/LibraryView.swift Diffusely/Views/SettingsView.swift DiffuselyTests/LibraryVaultProviderRootGateTests.swift
+git add Diffusely/Services/Library/LibraryVaultProvider.swift Diffusely/Services/Library/LibraryFileStore.swift Diffusely/Views/LibraryView.swift Diffusely/Views/SettingsView.swift DiffuselyTests/LibraryVaultProviderRootGateTests.swift
 git commit -m "feat(library): gate the Library on root switching and availability"
 ```
 
@@ -1482,13 +1524,78 @@ git commit -m "feat(library): watch a custom Library folder for changes"
 
 **Files:**
 - Modify: `Diffusely/Services/Library/LibraryStore.swift`
-- Test: none new — the behaviour here is singleton- and run-loop-bound; it is covered by the ordering tests in Task 8 and the end-to-end verification in Task 11.
+- Modify: `Diffusely/Services/Library/LibraryContainer.swift` (re-validate a cached custom root)
+- Test: `DiffuselyTests/LibraryContainerRootTests.swift` (extend) — the rest of the behaviour here is
+  singleton- and run-loop-bound, and is covered by the ordering tests in Task 8 and the end-to-end
+  verification in Task 11.
 
 **Interfaces:**
 - Consumes: `LibraryFolderWatcher` (Task 6), `LibraryContainer.capabilities` / `root` (Task 3).
 - Produces: `func quiesceForRootSwitch() async` and `func restartAfterRootSwitch() async` on `LibraryStore`.
 
-- [ ] **Step 1: Replace metadata-query setup with capability-based selection**
+- [ ] **Step 1: Re-validate a cached custom root**
+
+Task 3 guaranteed a custom root is never *created*, and Task 5 stopped `LibraryFileStore` recreating
+one. A third hole remains: `LibraryContainer` caches its resolved directory indefinitely, so a volume
+ejected AFTER a successful resolve leaves every caller holding a URL under a dead mount point. Nine
+other production sites build a `LibraryFileStore` straight from that URL with the default
+`createsContainerDirectory: true` — `LibraryAlbumService`, `LibraryDateBackfillService` (twice),
+`SortAssistantService`, `LibraryCheckpointBackfillService`, `LibraryIndexService` among them — and any
+one of their writes would recreate the tree at the dead path, manufacturing an empty Library that a
+later reconcile reads as "every item was deleted".
+
+Rather than thread the flag through all nine, close it at the source: a cached `.custom` directory is
+re-checked for existence on every resolve, so a caller can never be handed a dead path in the first
+place. In `itemsDirectory()`, before returning the cached value:
+
+```swift
+        if let cached = cachedItemsDirectory {
+            // A custom root lives on a volume the user can eject. Re-check it
+            // rather than handing back a path that no longer exists: nine other
+            // call sites build a file store straight from this URL and would
+            // recreate the folder tree at a dead mount point, manufacturing an
+            // empty Library that reconcile then reads as "everything was
+            // deleted". The iCloud container is app-owned and not ejectable, so
+            // it keeps the cheap unconditional cache.
+            if case .custom(let url) = root {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else {
+                    cachedItemsDirectory = nil
+                    throw LibraryRootError.unavailable(url)
+                }
+            }
+            return cached
+        }
+```
+
+The added cost is one `stat` per resolve under a custom root only. The spec constrains custom roots to
+local volumes, so that is a local-filesystem call, not a network round trip.
+
+Add a test to `DiffuselyTests/LibraryContainerRootTests.swift`:
+
+```swift
+    func testCachedCustomRootIsRecheckedAfterItDisappears() async throws {
+        let container = makeContainer()
+        let folder = tempRoot.appendingPathComponent("ejectable", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        await container.setRoot(.custom(folder))
+        _ = try await container.itemsDirectory()
+
+        try FileManager.default.removeItem(at: folder)
+
+        do {
+            _ = try await container.itemsDirectory()
+            XCTFail("a cached custom root must not be handed back after it disappears")
+        } catch let error as LibraryRootError {
+            XCTAssertEqual(error, .unavailable(folder))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path),
+                       "the re-check must not recreate the folder")
+    }
+```
+
+- [ ] **Step 2: Replace metadata-query setup with capability-based selection**
 
 Add a stored watcher next to `metadataQuery`:
 
@@ -1540,7 +1647,7 @@ Rename the latch `didConfigureMetadataQuery` to `didConfigureChangeDetection`, a
     }
 ```
 
-- [ ] **Step 2: Add quiesce and restart**
+- [ ] **Step 3: Add quiesce and restart**
 
 ```swift
     /// Stops every autonomous trigger ahead of a root switch. Does NOT wait for
@@ -1566,7 +1673,7 @@ Rename the latch `didConfigureMetadataQuery` to `didConfigureChangeDetection`, a
     }
 ```
 
-- [ ] **Step 3: Make the iCloud-only surfaces capability-gated**
+- [ ] **Step 4: Make the iCloud-only surfaces capability-gated**
 
 `freeUpSpaceNow()` and `enforceCacheLimit()` both currently begin with a directory guard. Add a capability guard so neither runs where eviction is meaningless:
 
@@ -1589,7 +1696,7 @@ Rename the latch `didConfigureMetadataQuery` to `didConfigureChangeDetection`, a
     }
 ```
 
-- [ ] **Step 4: Build and run the whole suite**
+- [ ] **Step 5: Build and run the whole suite**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests 2>&1 | tail -30
@@ -1601,10 +1708,10 @@ xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'ge
 
 Expected: no new failures; `BUILD SUCCEEDED` for iOS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add Diffusely/Services/Library/LibraryStore.swift
+git add Diffusely/Services/Library/LibraryStore.swift Diffusely/Services/Library/LibraryContainer.swift DiffuselyTests/LibraryContainerRootTests.swift
 git commit -m "feat(library): choose change detection by root capability"
 ```
 
@@ -1618,7 +1725,7 @@ git commit -m "feat(library): choose change detection by root capability"
 
 **Interfaces:**
 - Consumes: everything from Tasks 1–7.
-- Produces: `@MainActor final class LibraryRootCoordinator: ObservableObject` with `struct Dependencies`, `static func live() -> LibraryRootCoordinator`, and `func switchTo(_ root: LibraryRoot) async -> Result<Void, LibraryRootError>`.
+- Produces: `@MainActor final class LibraryRootCoordinator: ObservableObject` with `struct Dependencies`, `static func live() -> LibraryRootCoordinator`, and `@discardableResult func switchTo(_ root: LibraryRoot) async -> LibraryRootError?` (`nil` = success; same `Void`-isn't-`Equatable` reason as Task 2).
 
 Dependencies are injected closures — the codebase's existing seam style — so the ordering can be tested without touching any singleton. **Order is the contract**: quiesce and the generation bump must precede the flip, and the wipe must precede the rebuild.
 
@@ -1642,10 +1749,10 @@ final class LibraryRootCoordinatorTests: XCTestCase {
 
     private func makeCoordinator(
         recorder: Recorder,
-        validate: @escaping (URL) -> Result<Void, LibraryRootError> = { _ in .success(()) },
+        validate: @escaping (URL) -> LibraryRootError? = { _ in nil },
         rebuildFails: Bool = false
     ) -> LibraryRootCoordinator {
-        var deps = LibraryRootCoordinator.Dependencies(
+        let deps = LibraryRootCoordinator.Dependencies(
             validate: validate,
             beginSwitch: { recorder.steps.append("beginSwitch") },
             quiesce: { recorder.steps.append("quiesce") },
@@ -1666,9 +1773,9 @@ final class LibraryRootCoordinatorTests: XCTestCase {
     func testHappyPathRunsEveryStepInOrder() async {
         let recorder = Recorder()
         let coordinator = makeCoordinator(recorder: recorder)
-        let result = await coordinator.switchTo(.custom(URL(fileURLWithPath: "/tmp/lib")))
+        let error = await coordinator.switchTo(.custom(URL(fileURLWithPath: "/tmp/lib")))
 
-        XCTAssertEqual(result, .success(()))
+        XCTAssertNil(error)
         XCTAssertEqual(recorder.steps, [
             "beginSwitch", "quiesce", "applyRoot", "rebootstrapVault",
             "wipeIndex", "rebuildIndex", "restartStore", "endSwitch"
@@ -1697,19 +1804,19 @@ final class LibraryRootCoordinatorTests: XCTestCase {
 
     func testValidationFailureChangesNothing() async {
         let recorder = Recorder()
-        let coordinator = makeCoordinator(recorder: recorder, validate: { _ in .failure(.encryptedLibrary) })
-        let result = await coordinator.switchTo(.custom(URL(fileURLWithPath: "/tmp/sealed")))
+        let coordinator = makeCoordinator(recorder: recorder, validate: { _ in .encryptedLibrary })
+        let error = await coordinator.switchTo(.custom(URL(fileURLWithPath: "/tmp/sealed")))
 
-        XCTAssertEqual(result, .failure(.encryptedLibrary))
+        XCTAssertEqual(error, .encryptedLibrary)
         XCTAssertEqual(recorder.steps, [], "a rejected folder must not start a switch")
     }
 
     func testSwitchingToICloudSkipsValidation() async {
         let recorder = Recorder()
-        let coordinator = makeCoordinator(recorder: recorder, validate: { _ in .failure(.notADirectory) })
-        let result = await coordinator.switchTo(.iCloud)
+        let coordinator = makeCoordinator(recorder: recorder, validate: { _ in .notADirectory })
+        let error = await coordinator.switchTo(.iCloud)
 
-        XCTAssertEqual(result, .success(()))
+        XCTAssertNil(error)
         XCTAssertTrue(recorder.steps.contains("applyRoot"))
     }
 
@@ -1718,9 +1825,9 @@ final class LibraryRootCoordinatorTests: XCTestCase {
     func testFailureAfterTheFlipReportsUnavailableAndDoesNotRevert() async {
         let recorder = Recorder()
         let coordinator = makeCoordinator(recorder: recorder, rebuildFails: true)
-        let result = await coordinator.switchTo(.custom(URL(fileURLWithPath: "/tmp/lib")))
+        let error = await coordinator.switchTo(.custom(URL(fileURLWithPath: "/tmp/lib")))
 
-        if case .success = result { XCTFail("expected a failure result") }
+        XCTAssertNotNil(error)
         XCTAssertTrue(recorder.steps.contains("reportUnavailable"))
         XCTAssertFalse(recorder.steps.contains("endSwitch"),
                        "a failed switch stays blocked rather than releasing the gate")
@@ -1751,7 +1858,7 @@ import Foundation
 @MainActor
 final class LibraryRootCoordinator: ObservableObject {
     struct Dependencies {
-        var validate: (URL) -> Result<Void, LibraryRootError>
+        var validate: (URL) -> LibraryRootError?
         var beginSwitch: () -> Void
         var quiesce: () async -> Void
         /// Persists the root, clears the cached directory and bumps the
@@ -1774,13 +1881,11 @@ final class LibraryRootCoordinator: ObservableObject {
     }
 
     @discardableResult
-    func switchTo(_ root: LibraryRoot) async -> Result<Void, LibraryRootError> {
+    func switchTo(_ root: LibraryRoot) async -> LibraryRootError? {
         // Validate BEFORE anything is touched: a rejected folder must leave the
         // current Library exactly as it was.
-        if case .custom(let url) = root {
-            if case .failure(let error) = dependencies.validate(url) {
-                return .failure(error)
-            }
+        if case .custom(let url) = root, let error = dependencies.validate(url) {
+            return error
         }
 
         isSwitching = true
@@ -1800,12 +1905,12 @@ final class LibraryRootCoordinator: ObservableObject {
             // Block instead, and let the user choose Locate… or iCloud.
             let url = root.customURL ?? URL(fileURLWithPath: "/")
             dependencies.reportUnavailable(url)
-            return .failure((error as? LibraryRootError) ?? .unavailable(url))
+            return (error as? LibraryRootError) ?? .unavailable(url)
         }
 
         await dependencies.restartStore()
         dependencies.endSwitch()
-        return .success(())
+        return nil
     }
 }
 ```
@@ -1866,13 +1971,17 @@ git commit -m "feat(library): orchestrate Library root switches"
 ### Task 9: Gate views for switching and unavailable roots
 
 **Files:**
+- Create: `Diffusely/Utilities/LibraryRootPanel.swift`
+- Create: `Diffusely/Services/Library/Root/LibraryLocationSwitcher.swift`
 - Create: `Diffusely/Views/LibraryRootGateViews.swift`
 - Modify: `Diffusely/Views/LibraryView.swift:188-197` (`gatedContent`)
 - Test: `DiffuselyTests/LibraryRootUITextTests.swift`
 
 **Interfaces:**
 - Consumes: `LibraryGate` cases (Task 5), `LibraryRootCoordinator` (Task 8).
-- Produces: `struct LibraryRootSwitchingView: View`; `struct LibraryRootUnavailableView: View` with `nonisolated static func message(forPath: String) -> String`.
+- Produces: `enum LibraryRootPanel { @MainActor static func chooseFolder() -> URL? }`; `enum LibraryLocationSwitcher` with `@MainActor static func chooseFolder() async -> Choice` (`enum Choice { case cancelled, rejected(String), chosen(URL) }`) and `@discardableResult @MainActor static func apply(_ root: LibraryRoot, store: LibraryStore) async -> String?`; `struct LibraryRootSwitchingView: View`; `struct LibraryRootUnavailableView: View` with `nonisolated static func message(forPath: String) -> String`.
+
+`LibraryLocationSwitcher` exists so the two entry points into a switch — the Library tab's "Locate…" recovery here, and Settings' "Choose Folder…" in Task 10 — share one pick-validate-switch path instead of each implementing their own. Task 10 consumes it; do not duplicate its body there.
 
 New gate views live in their own file rather than growing `LibraryView.swift`, which already carries four of them.
 
@@ -1901,7 +2010,81 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 
 Expected: build failure — `cannot find 'LibraryRootUnavailableView' in scope`.
 
-- [ ] **Step 3: Write the views**
+- [ ] **Step 3: Write the folder panel and the shared switch seam**
+
+`Diffusely/Utilities/LibraryRootPanel.swift`:
+
+```swift
+#if os(macOS)
+import AppKit
+
+/// Folder picker for choosing where the Library lives. Sibling of
+/// `LibraryExportPanel` — same unsandboxed assumption, different wording: this
+/// URL is stored and reused across launches rather than used once.
+enum LibraryRootPanel {
+    @MainActor
+    static func chooseFolder() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Open"
+        panel.message = "Choose the folder that holds your Library. An empty folder starts a new one."
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+}
+#endif
+```
+
+`Diffusely/Services/Library/Root/LibraryLocationSwitcher.swift`:
+
+```swift
+import Foundation
+
+#if os(macOS)
+/// The one path from "the user wants a different Library folder" to a completed
+/// switch. Both entry points — Settings' "Choose Folder…" and the Library tab's
+/// "Locate…" recovery — go through here, so validation, the iCloud-container
+/// check and the coordinator wiring cannot drift between them.
+///
+/// Picking and applying are separate calls because Settings interposes a
+/// confirmation between them; the recovery path applies straight away, since
+/// the user is already looking at a broken Library and chose the folder to fix it.
+enum LibraryLocationSwitcher {
+    enum Choice {
+        case cancelled
+        /// The folder was rejected; carries the user-facing reason.
+        case rejected(String)
+        case chosen(URL)
+    }
+
+    @MainActor
+    static func chooseFolder() async -> Choice {
+        guard let url = LibraryRootPanel.chooseFolder() else { return .cancelled }
+        // Resolved here rather than in the coordinator's synchronous validate
+        // seam, so the "that's the app's own container" check actually runs on
+        // the path a user takes.
+        let iCloudItems = await LibraryContainer.shared.iCloudItemsDirectoryIfAvailable()
+        if let error = LibraryRootStore.standard.validate(url, iCloudItemsDirectory: iCloudItems) {
+            return .rejected(error.message)
+        }
+        return .chosen(url)
+    }
+
+    /// Returns a user-facing error message, or nil on success.
+    @discardableResult
+    @MainActor
+    static func apply(_ root: LibraryRoot, store: LibraryStore) async -> String? {
+        let coordinator = LibraryRootCoordinator.live(store: store)
+        return (await coordinator.switchTo(root))?.message
+    }
+}
+#endif
+```
+
+- [ ] **Step 4: Write the views**
 
 ```swift
 import SwiftUI
@@ -1932,8 +2115,14 @@ struct LibraryRootSwitchingView: View {
 /// is its own kind of data loss.
 struct LibraryRootUnavailableView: View {
     let path: String
-    let onLocate: () -> Void
-    let onUseICloud: () -> Void
+    /// Both return a user-facing error message, or nil on success/cancel. The
+    /// view owns the error surface because this gate is a dead end - there is
+    /// no other UI on screen to report a failed recovery through.
+    let onLocate: () async -> String?
+    let onUseICloud: () async -> String?
+
+    @State private var errorMessage: String?
+    @State private var isWorking = false
 
     nonisolated static func message(forPath path: String) -> String {
         "Library not found at \(path)."
@@ -1954,19 +2143,34 @@ struct LibraryRootUnavailableView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-            HStack(spacing: 12) {
-                Button("Locate…", action: onLocate)
-                Button("Switch Back to iCloud", action: onUseICloud)
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
             }
+            HStack(spacing: 12) {
+                Button("Locate…") { run(onLocate) }
+                Button("Switch Back to iCloud") { run(onUseICloud) }
+            }
+            .disabled(isWorking)
             .padding(.top, 4)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    private func run(_ action: @escaping () async -> String?) {
+        isWorking = true
+        Task {
+            errorMessage = await action()
+            isWorking = false
+        }
+    }
 }
 ```
 
-- [ ] **Step 4: Wire the two cases into `LibraryView.gatedContent`**
+- [ ] **Step 5: Wire the two cases into `LibraryView.gatedContent`**
 
 Replace the placeholder added in Task 5, Step 6:
 
@@ -1974,30 +2178,40 @@ Replace the placeholder added in Task 5, Step 6:
         case .switchingRoot:
             LibraryRootSwitchingView()
         case .rootUnavailable(let url):
+            // Bind the store to a LOCAL before building the closures. Reading a
+            // view property from inside an escaping content closure captures
+            // `self`, which this codebase has hit as a hard-to-diagnose macOS
+            // beachball. Capturing the value instead is the fix.
+            let libraryStore = store
             LibraryRootUnavailableView(
                 path: url.path,
-                onLocate: { showingLibraryLocationPicker = true },
-                onUseICloud: { Task { await rootCoordinator.switchTo(.iCloud) } }
+                onLocate: {
+                    #if os(macOS)
+                    switch await LibraryLocationSwitcher.chooseFolder() {
+                    case .cancelled: return nil
+                    case .rejected(let message): return message
+                    case .chosen(let folder):
+                        return await LibraryLocationSwitcher.apply(.custom(folder), store: libraryStore)
+                    }
+                    #else
+                    return nil
+                    #endif
+                },
+                onUseICloud: {
+                    #if os(macOS)
+                    return await LibraryLocationSwitcher.apply(.iCloud, store: libraryStore)
+                    #else
+                    return nil
+                    #endif
+                }
             )
 ```
 
-`LibraryView` needs the coordinator and a picker flag. Add near its other state:
+The gate enum is shared with iOS, so the switch must stay exhaustive there too - hence the `#if` inside the closures rather than around the whole case.
 
-```swift
-    @State private var showingLibraryLocationPicker = false
-```
+No new `@State` on `LibraryView`: the error surface belongs to the gate view, which owns it.
 
-and build the coordinator from the store it already holds:
-
-```swift
-    /// Built from the store this view already owns; the switch it drives blocks
-    /// the whole tab through `libraryGate`, so a view-scoped instance is enough.
-    private var rootCoordinator: LibraryRootCoordinator { .live(store: store) }
-```
-
-Task 10 supplies the picker presentation; until then `showingLibraryLocationPicker` is set but unobserved, which is inert.
-
-- [ ] **Step 5: Run the test and build**
+- [ ] **Step 6: Run the test and build**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests/LibraryRootUITextTests 2>&1 | tail -20
@@ -2009,10 +2223,10 @@ xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'ge
 
 Expected: `Executed 1 test, with 0 failures`; `BUILD SUCCEEDED`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add Diffusely/Views/LibraryRootGateViews.swift Diffusely/Views/LibraryView.swift DiffuselyTests/LibraryRootUITextTests.swift
+git add Diffusely/Utilities/LibraryRootPanel.swift Diffusely/Services/Library/Root/LibraryLocationSwitcher.swift Diffusely/Views/LibraryRootGateViews.swift Diffusely/Views/LibraryView.swift DiffuselyTests/LibraryRootUITextTests.swift
 git commit -m "feat(library): gate views for switching and missing Library roots"
 ```
 
@@ -2021,14 +2235,15 @@ git commit -m "feat(library): gate views for switching and missing Library roots
 ### Task 10: Settings — Library Location
 
 **Files:**
-- Create: `Diffusely/Utilities/LibraryRootPanel.swift`
 - Create: `Diffusely/Views/LibraryLocationRow.swift`
 - Modify: `Diffusely/Views/SettingsView.swift`
 - Test: `DiffuselyTests/LibraryRootUITextTests.swift` (extend)
 
 **Interfaces:**
-- Consumes: everything above.
-- Produces: `enum LibraryRootPanel { @MainActor static func chooseFolder() -> URL? }`; `struct LibraryLocationRow: View` with `nonisolated static func displayName(for root: LibraryRoot) -> String`; `SettingsView.rebuildIndexUnavailableReason(gate:)` as a testable static.
+- Consumes: `LibraryLocationSwitcher` and `LibraryRootPanel` (Task 9), plus everything above.
+- Produces: `struct LibraryLocationRow: View` with `nonisolated static func displayName(for root: LibraryRoot) -> String`; `SettingsView.rebuildIndexUnavailableReason(gate:)` as a testable static.
+
+The pick-validate-switch path already exists as `LibraryLocationSwitcher` (Task 9). Call it; do not re-implement panel handling, validation or coordinator wiring here.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2071,33 +2286,7 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 
 Expected: build failure — no `LibraryLocationRow`, no static reason function.
 
-- [ ] **Step 3: Write the folder panel**
-
-```swift
-#if os(macOS)
-import AppKit
-
-/// Folder picker for choosing where the Library lives. Sibling of
-/// `LibraryExportPanel` — same unsandboxed assumption, different wording: this
-/// URL is stored and reused across launches rather than used once.
-enum LibraryRootPanel {
-    @MainActor
-    static func chooseFolder() -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Open"
-        panel.message = "Choose the folder that holds your Library. An empty folder starts a new one."
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
-    }
-}
-#endif
-```
-
-- [ ] **Step 4: Write the Settings row**
+- [ ] **Step 3: Write the Settings row**
 
 ```swift
 import SwiftUI
@@ -2162,17 +2351,16 @@ struct LibraryLocationRow: View {
     private func chooseFolder() {
         errorMessage = nil
         #if os(macOS)
-        guard let url = LibraryRootPanel.chooseFolder() else { return }
         Task {
-            // Resolved here (not in the coordinator's synchronous seam) so the
-            // "that's the app's own container" check actually runs on the path
-            // a user takes.
-            let iCloudItems = await LibraryContainer.shared.iCloudItemsDirectoryIfAvailable()
-            switch LibraryRootStore.standard.validate(url, iCloudItemsDirectory: iCloudItems) {
-            case .success:
+            // Pick + validate go through the shared seam (Task 9); the
+            // confirmation below is what Settings adds on top of it.
+            switch await LibraryLocationSwitcher.chooseFolder() {
+            case .cancelled:
+                break
+            case .rejected(let message):
+                errorMessage = message
+            case .chosen(let url):
                 pendingFolder = url
-            case .failure(let error):
-                errorMessage = error.message
             }
         }
         #endif
@@ -2180,21 +2368,19 @@ struct LibraryLocationRow: View {
 
     private func switchTo(_ target: LibraryRoot) {
         errorMessage = nil
+        #if os(macOS)
         Task {
-            let coordinator = LibraryRootCoordinator.live(store: libraryStore)
-            switch await coordinator.switchTo(target) {
-            case .success:
-                root = target
-            case .failure(let error):
-                errorMessage = error.message
-                root = LibraryRootStore.standard.load()
-            }
+            errorMessage = await LibraryLocationSwitcher.apply(target, store: libraryStore)
+            // Re-read rather than assuming the target took: a failed switch
+            // leaves the persisted root wherever the coordinator left it.
+            root = LibraryRootStore.standard.load()
         }
+        #endif
     }
 }
 ```
 
-- [ ] **Step 5: Wire it into `SettingsView`**
+- [ ] **Step 4: Wire it into `SettingsView`**
 
 In the Personal Library `Section`, put the location row first and make the iCloud-only controls conditional. `isCustomRoot` mirrors the row's own source of truth:
 
@@ -2288,7 +2474,7 @@ Name the path in the reset confirmation. Replace the existing alert's message wi
     }
 ```
 
-- [ ] **Step 6: Make the rebuild reason testable and cover the new gates**
+- [ ] **Step 5: Make the rebuild reason testable and cover the new gates**
 
 Replace the computed property with a delegating pair:
 
@@ -2322,7 +2508,7 @@ Replace the computed property with a delegating pair:
     }
 ```
 
-- [ ] **Step 7: Run the tests and both builds**
+- [ ] **Step 6: Run the tests and both builds**
 
 ```bash
 xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:DiffuselyTests/LibraryRootUITextTests 2>&1 | tail -20
@@ -2338,10 +2524,10 @@ xcodebuild test -project Diffusely.xcodeproj -scheme Diffusely -destination 'pla
 xcodebuild build -project Diffusely.xcodeproj -scheme Diffusely -destination 'generic/platform=iOS Simulator' 2>&1 | tail -5
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add Diffusely/Utilities/LibraryRootPanel.swift Diffusely/Views/LibraryLocationRow.swift Diffusely/Views/SettingsView.swift DiffuselyTests/LibraryRootUITextTests.swift
+git add Diffusely/Views/LibraryLocationRow.swift Diffusely/Views/SettingsView.swift DiffuselyTests/LibraryRootUITextTests.swift
 git commit -m "feat(library): choose the Library location in Settings"
 ```
 
@@ -2390,8 +2576,10 @@ ls -la /tmp/diffusely-root-test/
 With the app running and the Library tab open, copy the pair to a second id from a terminal:
 
 ```bash
-cd /tmp/diffusely-root-test/library-a && for f in *.json; do cp "$f" "99999999.json"; done
+cp "$(ls /tmp/diffusely-root-test/library-a/*.json | head -1)" /tmp/diffusely-root-test/library-a/99999999.json
 ```
+
+If a worktree-isolated shell refuses that command substitution, list the folder and copy the sidecar by its literal name instead - the point is only that one new `<id>.json` appears.
 
 Expected: the new item appears in the grid within a second or two without a manual Rebuild Index. (It will render as a broken/missing item since its media isn't copied — that is fine; the point is that the index noticed.)
 

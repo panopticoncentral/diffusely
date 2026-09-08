@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import Diffusely
 
 /// BE-f: `LibraryStore.reconcileNow()` is the sole choke point for the two
@@ -150,5 +151,72 @@ import Testing
 
         #expect(LibraryStore.shouldStartReconcile(
             isReady: true, didReconcileSinceLaunch: latched) == true)
+    }
+}
+
+/// Task 7 review Findings 1 & 2: `configureChangeDetection()` suspends twice
+/// (awaiting the container's capabilities, then its items directory), and a
+/// `quiesceForRootSwitch()` landing on the main actor in either gap must stop
+/// that in-flight pass from installing a trigger for the root it started
+/// against — otherwise a folder watcher for a just-ejected custom root and a
+/// freshly-started `NSMetadataQuery` for the new iCloud root end up live at
+/// the same time, or (on the failure exits) `didConfigureChangeDetection`
+/// never gets set and change detection is stuck off for the rest of the
+/// session.
+///
+/// `mayInstallChangeDetection` is the pure re-check `configureChangeDetection`
+/// calls at both suspension points; proven here directly, mirroring the other
+/// gate-decision suites in this file.
+@Suite struct LibraryStoreChangeDetectionEpochTests {
+    /// The common case: no root switch happened while this pass was
+    /// suspended, so it may install its trigger.
+    @Test func sameEpochMayInstall() {
+        #expect(LibraryStore.mayInstallChangeDetection(startedAtEpoch: 0, currentEpoch: 0) == true)
+    }
+
+    /// THE REGRESSION (Finding 1): a root switch bumped the epoch while this
+    /// pass was suspended awaiting capabilities or the items directory. It
+    /// must not install anything — that would arm a trigger for the root that
+    /// is no longer active, alongside whatever the restart already armed for
+    /// the new one.
+    @Test func changedEpochMayNotInstall() {
+        #expect(LibraryStore.mayInstallChangeDetection(startedAtEpoch: 0, currentEpoch: 1) == false)
+    }
+
+    /// A pass that started after a later switch is naturally against a
+    /// LOWER live epoch only in theory — epochs only increase — but the
+    /// comparison is symmetric equality, not `<=`, so this documents that
+    /// any mismatch, not just a stale/behind one, blocks installation.
+    @Test func anyEpochMismatchMayNotInstall() {
+        #expect(LibraryStore.mayInstallChangeDetection(startedAtEpoch: 2, currentEpoch: 1) == false)
+    }
+}
+
+/// FINDING 4. A custom root that disappears MID-SESSION must reach the blocked
+/// state. `reconcileNow` used to resolve the items directory with `try?`, which
+/// swallowed `LibraryRootError.unavailable` and simply returned — so ejecting
+/// the volume left a `.browsable` gate over a stale index, images failing one by
+/// one and saves failing silently, with nothing on screen saying why. The folder
+/// watcher's own doc comment already promised the opposite.
+///
+/// The promotion decision is proven here directly; only `.unavailable` may gate
+/// the Library, and it is unreachable under `.iCloud` (an app-owned container
+/// that is created on demand), so an iCloud root is untouched by this.
+@Suite struct LibraryStoreRootUnavailablePromotionTests {
+    @Test func unavailableIsPromotedAndCarriesItsPath() {
+        let gone = URL(fileURLWithPath: "/Volumes/Gone")
+        #expect(LibraryStore.rootUnavailableURL(from: LibraryRootError.unavailable(gone)) == gone)
+    }
+
+    /// Every OTHER failure keeps today's behaviour: return quietly, retry on
+    /// the next pass. Gating the whole Library on a transient (a full disk, a
+    /// permissions blip) would be its own harm.
+    @Test func everyOtherErrorKeepsTodaysQuietRetry() {
+        #expect(LibraryStore.rootUnavailableURL(from: LibraryRootError.notWritable) == nil)
+        #expect(LibraryStore.rootUnavailableURL(from: LibraryRootError.notADirectory) == nil)
+        #expect(LibraryStore.rootUnavailableURL(from: LibraryRootError.encryptedLibrary) == nil)
+        #expect(LibraryStore.rootUnavailableURL(from: LibraryRootError.unreadable) == nil)
+        #expect(LibraryStore.rootUnavailableURL(from: CocoaError(.fileWriteOutOfSpace)) == nil)
+        #expect(LibraryStore.rootUnavailableURL(from: URLError(.timedOut)) == nil)
     }
 }
