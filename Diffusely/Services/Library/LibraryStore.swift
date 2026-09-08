@@ -585,16 +585,68 @@ final class LibraryStore: ObservableObject {
     /// Enumerates and deletes every file in `dir` on `deleteQueue` (the
     /// directory walk is blocking I/O too), suspending the caller until done.
     /// Backs `resetLibrary()`.
-    nonisolated static func runDeleteAllContents(in dir: URL) async {
+    /// Deletes the files Diffusely itself wrote in `dir` and returns how many
+    /// entries were left behind.
+    ///
+    /// Reset used to sweep the whole directory. That is harmless for the iCloud
+    /// container, which the app owns outright, but a custom root IS the user's
+    /// own folder — `LibraryRootStore.validate` deliberately accepts a non-empty
+    /// one — so a blanket delete would destroy files the app never wrote.
+    ///
+    /// Items are removed through `deleteItemFiles`, the same seam single-item
+    /// delete uses, so this cannot drift from it: that resolves each item's real
+    /// on-disk names, plaintext `{id}.json` + `{id}.jpeg`/`.mp4` or the opaque
+    /// encrypted tokens alike. Everything else the app writes is matched by its
+    /// own naming convention, sourced from the types that own those names rather
+    /// than re-spelled here.
+    ///
+    /// Two things are deliberately KEPT. A media file with no readable sidecar:
+    /// `2024.jpeg` could equally be a photo of the user's, and nothing on disk
+    /// distinguishes it from an orphan of ours. And subdirectories: the layout is
+    /// flat, so a directory is never something we wrote.
+    nonisolated static func deleteAppWrittenFiles(
+        in dir: URL,
+        store: LibraryFileStore
+    ) async -> Int {
         await withCheckedContinuation { continuation in
             deleteQueue.async {
-                let contents = (try? FileManager.default.contentsOfDirectory(
-                    at: dir, includingPropertiesForKeys: nil)) ?? []
-                deleteFiles(at: contents)
-                continuation.resume()
+                continuation.resume(returning: deleteAppWrittenFilesSync(in: dir, store: store))
             }
         }
     }
+
+    /// Synchronous body of `deleteAppWrittenFiles`. Blocking coordinated deletes
+    /// belong on `deleteQueue`, never the cooperative pool.
+    nonisolated static func deleteAppWrittenFilesSync(
+        in dir: URL,
+        store: LibraryFileStore
+    ) -> Int {
+        // Items first: the metadata files name them, and the store knows what
+        // each one's media is actually called. A `{uuid}.json` album file yields
+        // no id here and is handled by the name match below.
+        let itemIDs = store.enumerateMetadataFiles().compactMap {
+            store.itemID(forMetadataFile: $0)
+        }
+        deleteItemFiles(itemIDs: itemIDs, store: store)
+
+        let fileManager = FileManager.default
+        let remaining = (try? fileManager.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+
+        let auxURLs = remaining.filter { url in
+            let name = url.lastPathComponent
+            return LibraryAlbumStore.albumID(fromFileName: name) != nil
+                || name == SortAssistantStateStore.fileName
+                || name == LibraryExporter.failuresFileName
+                || store.isAuxFileName(name)
+        }
+        deleteFiles(at: auxURLs)
+
+        let left = (try? fileManager.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)) ?? []
+        return left.count
+    }
+
 
     func remove(itemID: Int) async {
         // Resolve up front so a failure (iCloud unavailable, disk full, etc.)
@@ -621,11 +673,17 @@ final class LibraryStore: ObservableObject {
         await refreshTotals()
     }
 
-    func resetLibrary() async {
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
-        await Self.runDeleteAllContents(in: dir)
+    /// Clears the Library and returns how many entries were left behind because
+    /// Diffusely did not write them. Callers surface that count: a reset that
+    /// silently spares files is indistinguishable from one that missed them.
+    @discardableResult
+    func resetLibrary() async -> Int {
+        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return 0 }
+        let store = await LibraryVaultProvider.shared.fileStore()
+        let kept = await Self.deleteAppWrittenFiles(in: dir, store: store)
         await indexService.wipe()
         await refreshTotals()
+        return kept
     }
 
     /// Folds a completed scan's pending counts into `downloadProgress`. A

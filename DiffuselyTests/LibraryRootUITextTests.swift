@@ -54,15 +54,16 @@ final class LibraryRootUITextTests: XCTestCase {
         XCTAssertNil(SettingsView.rebuildIndexUnavailableReason(gate: .browsable))
     }
 
-    func testResetWarningForCustomRootNamesTheFolderAndEverythingInIt() {
+    func testResetWarningForCustomRootNamesTheFolderAndSparesForeignFiles() {
         let url = URL(fileURLWithPath: "/Volumes/Media/Diffusely Library")
         let warning = SettingsView.resetLibraryWarning(root: .custom(url), itemCount: 42)
         XCTAssertTrue(warning.contains("/Volumes/Media/Diffusely Library"),
                       "the user must be told WHICH folder is about to be emptied")
-        XCTAssertTrue(warning.contains("everything"),
-                      "must convey the whole folder goes, not just Library files")
-        XCTAssertTrue(warning.contains("aren't part of your Library"),
-                      "must warn that non-Library files in the folder are destroyed too")
+        XCTAssertTrue(warning.contains("42"), "should carry the item count")
+        XCTAssertFalse(warning.contains("everything"),
+                       "reset no longer empties the folder, so it must not claim to")
+        XCTAssertTrue(warning.lowercased().contains("other files"),
+                      "must reassure that files Diffusely didn't write are left alone")
         XCTAssertTrue(warning.contains("cannot be undone"),
                       "the last screen before an unrecoverable action must say so plainly")
     }

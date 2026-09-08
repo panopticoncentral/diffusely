@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CryptoKit
 import SwiftData
 @testable import Diffusely
 
@@ -523,19 +524,82 @@ private func makeMetadata(
         #expect(fm.fileExists(atPath: dir.appendingPathComponent("8.json").path))
     }
 
-    // Reset path's deletion seam, also off the main actor.
-    @Test func runDeleteAllContentsRemovesEveryFileInDirectory() async throws {
+
+    /// Reset must clear the Library without touching anything the app did not
+    /// write. At a custom root the items directory IS the user's own folder, so
+    /// a blanket sweep would destroy unrelated files.
+    @Test func resetDeletesOnlyFilesDiffuselyWrote() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try Data("a".utf8).write(to: dir.appendingPathComponent("1.json"))
+        let fm = FileManager.default
+
+        // Diffusely's: one item (sidecar + media) and one album file.
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("1.json"))
         try Data("a".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
-        try Data("a".utf8).write(to: dir.appendingPathComponent("2.mp4"))
+        let albumName = LibraryAlbumStore.fileName(for: UUID())
+        try Data("{}".utf8).write(to: dir.appendingPathComponent(albumName))
 
-        await LibraryStore.runDeleteAllContents(in: dir)
+        // The user's own file, sitting in the same folder.
+        try Data("hi".utf8).write(to: dir.appendingPathComponent("notes.txt"))
 
-        let remaining = try FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil)
-        #expect(remaining.isEmpty)
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: nil)
+        _ = await LibraryStore.deleteAppWrittenFiles(in: dir, store: store)
+
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("1.json").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("1.jpeg").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent(albumName).path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("notes.txt").path))
+    }
+
+    /// The user's own files, an orphaned media file with no sidecar, and any
+    /// subdirectory must all survive, and the count reported back must match
+    /// what is actually left so the UI cannot claim a cleaner sweep than happened.
+    @Test func resetKeepsForeignFilesOrphansAndDirectoriesAndCountsThem() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fm = FileManager.default
+
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("1.json"))
+        try Data("a".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
+        // Media whose sidecar is already gone. Indistinguishable from a photo of
+        // the user's that happens to have a numeric name, so it stays.
+        try Data("a".utf8).write(to: dir.appendingPathComponent("9999.jpeg"))
+        try Data("hi".utf8).write(to: dir.appendingPathComponent("notes.txt"))
+        try fm.createDirectory(at: dir.appendingPathComponent("Screenshots", isDirectory: true),
+                               withIntermediateDirectories: true)
+
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: nil)
+        let kept = await LibraryStore.deleteAppWrittenFiles(in: dir, store: store)
+
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("1.json").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("1.jpeg").path) == false)
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("9999.jpeg").path))
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("notes.txt").path))
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("Screenshots").path))
+        #expect(kept == 3)
+    }
+
+    /// The encrypted container is the case that would silently do nothing if the
+    /// sweep matched plaintext names: every file there has an opaque HMAC stem
+    /// and only its `.m` / `.b` / `.x` role extension to go on.
+    @Test func resetDeletesOpaqueEncryptedFilesButNotForeignOnes() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fm = FileManager.default
+
+        let crypto = LibraryFileCrypto(dek: SymmetricKey(size: .bits256))
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: crypto)
+        try store.writeMetadata(Data(#"{"itemID":1}"#.utf8), itemID: 1)
+        try store.writeMedia(Data("a".utf8), itemID: 1, plaintextExtension: "jpeg")
+        try store.writeAux(Data("{}".utf8), name: LibraryAlbumStore.fileName(for: UUID()))
+        try Data("hi".utf8).write(to: dir.appendingPathComponent("notes.txt"))
+
+        let kept = await LibraryStore.deleteAppWrittenFiles(in: dir, store: store)
+
+        let remaining = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent)
+        #expect(remaining == ["notes.txt"])
+        #expect(kept == 1)
     }
 
     @Test func removeItemIDsDeletesListedRowsAndLeavesOthers() async throws {

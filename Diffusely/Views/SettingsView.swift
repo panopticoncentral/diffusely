@@ -42,7 +42,11 @@ struct SettingsView: View {
             }
             .alert("Reset Library", isPresented: $showingResetConfirmation) {
                 Button("Delete Everything", role: .destructive) {
-                    Task { await libraryStore.resetLibrary() }
+                    Task {
+                        resetResult = nil
+                        let kept = await libraryStore.resetLibrary()
+                        resetResult = SettingsView.resetResultText(keptForeignFiles: kept)
+                    }
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
@@ -254,6 +258,12 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            if let resetResult {
+                Text(resetResult)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             // Explains the disabled state above rather than letting the tap
             // silently no-op against `LibraryStore.rebuildIndex()`'s own gate
             // (mirrors BE-f's "no silent caps" convention).
@@ -405,6 +415,11 @@ struct SettingsView: View {
     /// spinner so a rebuild over a large container doesn't look like a no-op.
     @State private var isRebuildingIndex = false
 
+    /// What the last Reset in this session left behind, if anything. A reset
+    /// that deliberately spares files must say so — otherwise it is
+    /// indistinguishable from one that failed to remove them.
+    @State private var resetResult: String?
+
     /// What the last rebuild in this session reported. Cleared at the start of
     /// each run so a stale line never describes a newer pass.
     @State private var rebuildIndexResult: String?
@@ -469,24 +484,32 @@ struct SettingsView: View {
 
     /// The last thing a user reads before an unrecoverable action, so this
     /// must state the true blast radius, not a euphemism for it:
-    /// - At a custom root, `resetLibrary()` deletes via
-    ///   `LibraryContainer.itemsDirectory()`, which AT A CUSTOM ROOT IS the
-    ///   user's chosen folder — `runDeleteAllContents` enumerates and removes
-    ///   every entry in it, permanently, including files Diffusely never
-    ///   wrote (`LibraryRootStore.validate` deliberately allows a non-empty
-    ///   folder). "Every Library file" would understate that.
+    /// - At a custom root, `LibraryContainer.itemsDirectory()` IS the user's
+    ///   chosen folder, and `LibraryRootStore.validate` deliberately allows a
+    ///   non-empty one. `deleteAppWrittenFiles` therefore removes only the
+    ///   items and album files Diffusely wrote and leaves the rest, so the
+    ///   text says both halves: what goes, and what is spared.
     /// - In iCloud, deleting local originals also removes them from iCloud,
     ///   which removes them from every other device signed into the same
     ///   account — the most surprising consequence of Reset for an iCloud
     ///   user, so it's named explicitly rather than implied.
     /// `nonisolated static` (mirrors `rebuildIndexUnavailableReason` above) so
     /// both branches are directly testable without a live `libraryStore`.
+    /// Reports what a completed Reset left alone. `nonisolated static` for the
+    /// same reason as the warning above: directly testable without a live view.
+    nonisolated static func resetResultText(keptForeignFiles kept: Int) -> String {
+        guard kept > 0 else { return "Library reset." }
+        return kept == 1
+            ? "Library reset. 1 file Diffusely didn't write was left in place."
+            : "Library reset. \(kept) files Diffusely didn't write were left in place."
+    }
+
     nonisolated static func resetLibraryWarning(root: LibraryRoot, itemCount: Int) -> String {
         switch root {
         case .iCloud:
             return "This permanently deletes all \(itemCount) items from your Library, including the originals in iCloud on all your devices. This cannot be undone."
         case .custom(let url):
-            return "This permanently deletes everything in \(url.path), including any files there that aren't part of your Library. This cannot be undone."
+            return "This permanently deletes the \(itemCount) items in your Library from \(url.path), along with its album files. Other files in that folder are left alone. This cannot be undone."
         }
     }
 
