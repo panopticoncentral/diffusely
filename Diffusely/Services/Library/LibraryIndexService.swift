@@ -1397,17 +1397,32 @@ actor LibraryIndexService {
         victims.map { store.mediaURL(itemID: $0.itemID, plaintextExtension: $0.plaintextExtension) }
     }
 
-    nonisolated static func evictMedia(victims: [(itemID: Int, plaintextExtension: String)], store: LibraryFileStore) {
-        let coordinator = NSFileCoordinator()
+    /// Evicts each victim's local media copy.
+    ///
+    /// Deliberately does NOT wrap the eviction in file coordination.
+    /// `evictUbiquitousItem` is a ubiquity API that performs its own
+    /// coordination internally, so an outer write claim on the same URL
+    /// deadlocks it: the inner claim waits on the outer one, in the same
+    /// process, forever. That shipped, and it meant "Free Up Space Now" and the
+    /// automatic cache limit both hung on their FIRST file and freed nothing —
+    /// 70 minutes and 0 bytes on a real library, with the thread parked in
+    /// `FPEvictItemAtURL`. Measured side by side on the same container: the bare
+    /// call returned in 0.685s, the coordinated one was still blocked at 30s.
+    ///
+    /// The sibling ubiquity call `startDownloadingUbiquitousItem` is likewise
+    /// used uncoordinated elsewhere in this file. Contrast `deleteFiles`, which
+    /// coordinates correctly — `removeItem` is NOT a ubiquity API and does not
+    /// coordinate itself.
+    ///
+    /// `evict` is injectable so a test can prove the claim is not held without
+    /// needing a real ubiquitous file.
+    nonisolated static func evictMedia(
+        victims: [(itemID: Int, plaintextExtension: String)],
+        store: LibraryFileStore,
+        evict: (URL) -> Void = { try? FileManager.default.evictUbiquitousItem(at: $0) }
+    ) {
         for mediaURL in mediaURLsToEvict(victims: victims, store: store) {
-            var coordinationError: NSError?
-            coordinator.coordinate(
-                writingItemAt: mediaURL,
-                options: .forDeleting,
-                error: &coordinationError
-            ) { url in
-                try? FileManager.default.evictUbiquitousItem(at: url)
-            }
+            evict(mediaURL)
         }
     }
 

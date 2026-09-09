@@ -402,6 +402,44 @@ func makeMetadata(
     // thread). `evictUbiquitousItem` is an iCloud op, so on a plain
     // non-ubiquitous temp file it does not remove the file; we assert the
     // helper completes and tolerates a mix of present and missing files.
+    /// `evictUbiquitousItem` performs its OWN file coordination. Wrapping it in an
+    /// outer coordinated write claim on the same URL self-deadlocks: the inner
+    /// claim waits forever on the outer one, from inside the same process.
+    ///
+    /// That shipped, and it meant "Free Up Space Now" and the automatic cache
+    /// limit both hung on their FIRST file and freed nothing — measured at 70
+    /// minutes and 0 bytes on a real library, with the eviction thread parked in
+    /// `FPEvictItemAtURL`.
+    ///
+    /// This reproduces it without iCloud: file coordination is not ubiquity-
+    /// specific, so an injected evictor that takes its own claim deadlocks
+    /// against an outer claim exactly as the real one did. The watchdog turns
+    /// that deadlock into a failure instead of a hung suite.
+    @Test func evictMediaDoesNotHoldACoordinationClaimWhileEvicting() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("m".utf8).write(to: dir.appendingPathComponent("1.jpeg"))
+        let store = LibraryFileStore(itemsDirectory: dir, crypto: nil)
+
+        let finished = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            LibraryIndexService.evictMedia(
+                victims: [(itemID: 1, plaintextExtension: "jpeg")],
+                store: store
+            ) { url in
+                // Stands in for the real `evictUbiquitousItem`, which coordinates
+                // internally. A fresh coordinator is what the ubiquity API uses,
+                // and is what deadlocks against an outer claim.
+                var err: NSError?
+                NSFileCoordinator().coordinate(writingItemAt: url, options: .forDeleting, error: &err) { _ in }
+            }
+            finished.signal()
+        }
+
+        #expect(finished.wait(timeout: .now() + 10) == .success,
+                "evictMedia is holding a coordination claim while evicting — the ubiquity API coordinates itself, so this deadlocks")
+    }
+
     @Test func runEvictMediaCompletesOffMainActorAndToleratesMissing() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
