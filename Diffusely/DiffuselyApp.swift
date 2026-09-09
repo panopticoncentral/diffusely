@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import os
 
 #if os(macOS)
 struct FeedCommands: Commands {
@@ -127,6 +128,21 @@ struct DiffuselyApp: App {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             // "Rebuild, don't migrate": wipe and recreate rather than crash.
+            //
+            // Say so loudly. This silently discards the whole local index — on a
+            // large library that is thousands of rows and a full container
+            // rescan to get them back — and it previously left no trace at all.
+            // An 8,151-row index vanished during development and cost an hour to
+            // investigate, because nothing recorded that the store had been
+            // destroyed OR why the open failed. The most likely trigger is a
+            // schema change between builds, which is exactly what this path
+            // exists to absorb, so the error is the interesting part.
+            recordStoreDestruction(
+                "Local store could not be opened and is being DESTROYED and rebuilt. "
+                + "Every index row is discarded and will be rebuilt from the container. "
+                + "Underlying error: \(error)",
+                beside: storeURL
+            )
             destroyStore(at: storeURL)
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
@@ -136,11 +152,49 @@ struct DiffuselyApp: App {
         }
     }
 
+    /// Appends to `DiffuselyStore-destroyed.log`, beside the store itself.
+    ///
+    /// Deliberately a FILE, not `print`, stderr, or `os.Logger`. A GUI app
+    /// launched from Finder has no stdout or stderr, so those vanish exactly
+    /// when this matters; and `os.Logger` output on this project's machine
+    /// could not be retrieved with `log show` at all, verified with a
+    /// standalone probe. A file next to the store is the one destination that
+    /// is guaranteed readable afterwards.
+    ///
+    /// This is worth recording because destroying the store silently discards
+    /// the entire local index — thousands of rows on a large library, and a
+    /// full container rescan to rebuild them. An 8,151-row index disappeared
+    /// during development and cost an hour, because nothing recorded either
+    /// that it happened or why the open failed. Appends rather than
+    /// overwrites, so a repeating problem shows a history.
+    ///
+    /// `Logger` is also emitted, so it shows in Console.app where that works.
+    private static let storeLog = Logger(subsystem: "com.achatessoftware.diffusely", category: "store")
+
+    private static func recordStoreDestruction(_ message: String, beside storeURL: URL) {
+        storeLog.fault("\(message, privacy: .public)")
+        let line = "\(ISO8601DateFormatter().string(from: Date()))  \(message)\n"
+        let logURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("DiffuselyStore-destroyed.log")
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
+        } else {
+            try? Data(line.utf8).write(to: logURL)
+        }
+    }
+
     private static func destroyStore(at url: URL) {
         let fileManager = FileManager.default
         for suffix in ["", "-wal", "-shm"] {
             let path = url.path + suffix
             if fileManager.fileExists(atPath: path) {
+                let size = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int) ?? nil
+                recordStoreDestruction(
+                    "destroying \(url.lastPathComponent)\(suffix) (\(size.map(String.init) ?? "unknown") bytes)",
+                    beside: url
+                )
                 try? fileManager.removeItem(atPath: path)
             }
         }
