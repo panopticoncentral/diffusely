@@ -59,6 +59,19 @@ final class PersistedLibraryItem {
     /// fetchAll()+in-memory-filter read path. Defaults to "" for v4 rows.
     var albumIDsJoined: String = ""
 
+    /// The sidecar this row was last ingested from, and its fingerprint at that
+    /// moment. A later scan compares the two against the directory listing to
+    /// decide whether the file needs re-reading at all.
+    ///
+    /// The NAME is stored rather than derived because an encrypted sidecar's
+    /// filename is an opaque HMAC token carrying no item id — without this,
+    /// incremental reconcile could only ever work for plaintext roots.
+    /// Defaults are the "unknown, so read it" state, which is what every row
+    /// written before this field existed will have.
+    var sidecarFileName: String = ""
+    var sidecarModifiedAt: Date?
+    var sidecarByteSize: Int = 0
+
     init(
         itemID: Int,
         mediaType: String,
@@ -78,7 +91,10 @@ final class PersistedLibraryItem {
         downloadStatus: LibraryDownloadStatus,
         needsDateBackfill: Bool,
         needsGenerationDataBackfill: Bool = false,
-        albumIDsJoined: String = ""
+        albumIDsJoined: String = "",
+        sidecarFileName: String = "",
+        sidecarModifiedAt: Date? = nil,
+        sidecarByteSize: Int = 0
     ) {
         self.itemID = itemID
         self.mediaType = mediaType
@@ -99,6 +115,9 @@ final class PersistedLibraryItem {
         self.needsDateBackfill = needsDateBackfill
         self.needsGenerationDataBackfill = needsGenerationDataBackfill
         self.albumIDsJoined = albumIDsJoined
+        self.sidecarFileName = sidecarFileName
+        self.sidecarModifiedAt = sidecarModifiedAt
+        self.sidecarByteSize = sidecarByteSize
     }
 
     /// Single source of truth for "this item still needs a publish-date
@@ -119,7 +138,13 @@ final class PersistedLibraryItem {
         metadata.generationData == nil && metadata.generationDataBackfillAttemptedAt == nil
     }
 
-    convenience init(metadata: LibraryItemMetadata, downloadStatus: LibraryDownloadStatus) {
+    convenience init(
+        metadata: LibraryItemMetadata,
+        downloadStatus: LibraryDownloadStatus,
+        sidecarFileName: String = "",
+        sidecarModifiedAt: Date? = nil,
+        sidecarByteSize: Int = 0
+    ) {
         let checkpoint = metadata.generationData?
             .resources?
             .first(where: { $0.modelType == "Checkpoint" })?
@@ -143,7 +168,10 @@ final class PersistedLibraryItem {
             downloadStatus: downloadStatus,
             needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata),
             needsGenerationDataBackfill: Self.computeNeedsGenerationDataBackfill(for: metadata),
-            albumIDsJoined: Self.join(metadata.albumIDs)
+            albumIDsJoined: Self.join(metadata.albumIDs),
+            sidecarFileName: sidecarFileName,
+            sidecarModifiedAt: sidecarModifiedAt,
+            sidecarByteSize: sidecarByteSize
         )
     }
 

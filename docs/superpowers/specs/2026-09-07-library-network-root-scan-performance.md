@@ -36,6 +36,8 @@ Measured on the actual share, 8,151 item sidecars among 16,324 files:
 | `resourceValues` for the ubiquity keys | 0.01 ms | ~0 (prefetched by the listing) |
 | `fileExists` stat | 0.91 ms | 7.4 s |
 | Root existence re-check (custom-root cache guard) | 0.002 ms | ~0 |
+| **Sequential coordinated read, COLD (actually measured, real scan)** | **69.06 ms** | **562.88 s** |
+| **8-way concurrent, coordinated, COLD (actually measured, real scan)** | **489.67 ms/worker (~75.11 ms/file wall)** | **612.24 s** |
 
 **Two caveats, stated up front because an earlier measurement in this investigation was wrong for
 exactly this reason:**
@@ -46,6 +48,19 @@ exactly this reason:**
 2. These numbers predict ~51 s for a scan observed to take 12+ minutes. A debug build, a cold cache and
    repeated full scans plausibly account for a 14x gap, but nothing here proves it. **Task 0 is to
    instrument the real scan** rather than build on a synthetic benchmark.
+
+**Caveat 1 was wrong, and the concurrency prediction it fed was falsified on real hardware.** Task 0's
+cold, real-share measurement put the serial read at 69.06 ms/file — 11x the warm-cache benchmark's
+6.28 ms/file, not the "more latency-bound, so concurrency helps more" direction predicted above. Task 2
+then implemented and measured the 8-way concurrent read cold: 612.24 s wall against 562.88 s serial —
+concurrency made it slightly WORSE, not ~8x better, and per-worker cost was 489.67 ms/file (~61 ms/file
+of that is real work once the 8-way overlap is divided out — indistinguishable from the 69.06 ms/file
+serial baseline). Something below `LibraryFileStore.read` — the file-coordination arbiter, or the
+kernel SMB client serializing on one connection despite separate `NSFileCoordinator` instances — was
+already serializing the reads regardless of thread count, which the warm-cache benchmark could not see
+because a warm client cache has nothing left to serialize on. The concurrency was reverted in the
+branch's final fix wave; Part 1's phase split (classify, then read) was kept, since Part 2's per-sidecar
+skip needs it regardless of whether the read phase is concurrent.
 
 ## What the measurements ruled OUT
 
@@ -89,7 +104,7 @@ release build — and it gates the rest. If the gap turns out to be the debug bu
 are still worth doing but their expected payoff changes, and the plan should say so rather than
 quietly assuming a 10x.
 
-### Part 1 — Concurrent sidecar reads
+### Part 1 — Concurrent sidecar reads (attempted, then reverted — see below)
 
 `scanContainer` currently walks the listing and, per item, reads and decodes the sidecar. Split it:
 
@@ -110,6 +125,21 @@ would serialize them, and is how a naive parallelization would measure no faster
 Results must be **order-independent**: collect into a dictionary keyed by item id, or into a
 pre-sized array by index, and assemble deterministically afterwards. `ScanResult.items` ordering must
 not become dependent on completion order, or reconcile's behaviour becomes nondeterministic.
+
+**Outcome, recorded here rather than only in the task ledger because this section's premise turned out
+to be wrong: the concurrency was implemented exactly as designed above, measured cold against the real
+share, and reverted.** The `Measurements` section's "8-way concurrent, coordinated" row (0.75 ms/file,
+predicting ~6.1 s) was a warm-cache number; the cold, real-share equivalent measured 489.67 ms/file
+summed per worker (612.24 s wall) against a 69.06 ms/file, 562.88 s wall serial baseline — concurrency
+made the scan slightly *worse*, not ~8x faster, because the warm-cache benchmark was 11x optimistic on
+reads and something below the per-operation `NSFileCoordinator` (the file-coordination arbiter, or the
+kernel SMB client on one connection) was already serializing the reads regardless of thread count. The
+three points above (GCD not Swift concurrency, one coordinator per operation, order-independent
+results) remain correct engineering for *if* concurrency is ever revisited on hardware where it
+actually helps — they were not the mistake. The mistake was trusting a warm-cache scaling curve to
+predict cold-read behavior on this specific network filesystem. The classify/read phase split this Part
+also describes was kept regardless, since Part 2's per-sidecar skip needs it independent of whether the
+read phase is serial or concurrent.
 
 ### Part 2 — Incremental reconcile
 

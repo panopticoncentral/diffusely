@@ -56,10 +56,30 @@ actor LibraryIndexService {
     /// Copies the mutable fields from a freshly-read sidecar onto an existing
     /// index row. Pure in-memory work — no fetch, no save. Returns whether the
     /// row's album membership changed, so reconcile can signal album-observing UI.
+    /// `sidecarFileName`/`sidecarModifiedAt`/`sidecarByteSize` default to the
+    /// "unknown" state so callers that don't come from a container scan (e.g.
+    /// `ingest`, used by the backfill services) leave the row's fingerprint
+    /// unknown rather than stamping it with a stale one — those callers
+    /// rewrite the sidecar without going through the scan's directory
+    /// listing, so they have no fingerprint to report, and "unknown" is
+    /// always safe: it only ever costs a redundant re-read, never a wrong
+    /// skip.
+    ///
+    /// Concretely, `ingest()`'s three call sites — `LibrarySaveService`
+    /// (a freshly-saved item), `LibraryDateBackfillService`, and
+    /// `LibraryCheckpointBackfillService` — all leave these parameters
+    /// defaulted. That's correct, not an oversight: each of them rewrites
+    /// the sidecar to disk immediately before calling `ingest`, so any
+    /// fingerprint they could report would already be stale by the time a
+    /// later scan compared it, and defaulting to "unknown" simply forces
+    /// that one self-correcting re-read on the next scan instead.
     @discardableResult
     private func apply(
         _ metadata: LibraryItemMetadata,
         downloadStatus: LibraryDownloadStatus,
+        sidecarFileName: String = "",
+        sidecarModifiedAt: Date? = nil,
+        sidecarByteSize: Int = 0,
         to row: PersistedLibraryItem
     ) -> Bool {
         row.mediaType = metadata.mediaType.rawValue
@@ -81,6 +101,9 @@ actor LibraryIndexService {
             .first(where: { $0.modelType == "Checkpoint" })?
             .modelName
         row.downloadStatus = downloadStatus
+        row.sidecarFileName = sidecarFileName
+        row.sidecarModifiedAt = sidecarModifiedAt
+        row.sidecarByteSize = sidecarByteSize
         let newAlbumIDsJoined = PersistedLibraryItem.join(metadata.albumIDs)
         let membershipChanged = row.albumIDsJoined != newAlbumIDsJoined
         row.albumIDsJoined = newAlbumIDsJoined
@@ -245,7 +268,12 @@ actor LibraryIndexService {
         startedAtGeneration: Int? = nil,
         generationProbe: @Sendable @escaping () async -> Int = {
             await LibraryContainer.shared.rootGeneration
-        }
+        },
+        // Task 4 (skip unchanged sidecars): true for every normal reconcile.
+        // `rebuild` passes `false` so "Rebuild Index" means "distrust the
+        // index" and never consults the very fingerprints it exists to
+        // rebuild.
+        useFingerprints: Bool = true
     ) async -> ReconcileOutcome {
         // Load-bearing guard: a configured-but-LOCKED vault has no DEK, so a
         // store built with `crypto == nil` is a plain passthrough —
@@ -301,11 +329,17 @@ actor LibraryIndexService {
             // Encrypted only — plaintext recovers the id from the `{id}.json`
             // stem and needs no help, so it shouldn't pay for the fetch.
             let known = store.isEncrypted ? indexedIDs() : (items: Set<Int>(), albums: Set<UUID>())
+            // Task 4: read on the model actor, before the scan suspends —
+            // the scan itself must never reach into SwiftData. Empty when
+            // `rebuild` called this (`useFingerprints == false`), so every
+            // sidecar is re-read unconditionally.
+            let fingerprints = useFingerprints ? indexedFingerprints() : [:]
             let scan = await Self.runScan(
                 store: store,
                 indexedItemIDs: known.items,
                 indexedAlbumIDs: known.albums,
-                isPlaceholder: isPlaceholder
+                isPlaceholder: isPlaceholder,
+                fingerprints: fingerprints
             )
 
             // A nil scan means the directory read *threw* (transient iCloud/filesystem
@@ -419,15 +453,43 @@ actor LibraryIndexService {
         var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
 
         var albumStateChanged = false
-        for (metadata, status) in scan.items {
+        for scannedItem in scan.items {
+            let metadata = scannedItem.metadata
+            let status = scannedItem.status
             if let row = byID[metadata.itemID] {
-                if apply(metadata, downloadStatus: status, to: row) { albumStateChanged = true }
+                if apply(metadata, downloadStatus: status,
+                         sidecarFileName: scannedItem.sidecarFileName,
+                         sidecarModifiedAt: scannedItem.sidecarModifiedAt,
+                         sidecarByteSize: scannedItem.sidecarByteSize,
+                         to: row) { albumStateChanged = true }
             } else {
-                let row = PersistedLibraryItem(metadata: metadata, downloadStatus: status)
+                let row = PersistedLibraryItem(
+                    metadata: metadata, downloadStatus: status,
+                    sidecarFileName: scannedItem.sidecarFileName,
+                    sidecarModifiedAt: scannedItem.sidecarModifiedAt,
+                    sidecarByteSize: scannedItem.sidecarByteSize
+                )
                 modelContext.insert(row)
                 byID[metadata.itemID] = row
                 if !metadata.albumIDs.isEmpty { albumStateChanged = true }
             }
+        }
+        // Task 4: rows the scan skipped reading (unchanged fingerprint)
+        // still need their download status refreshed — the fingerprint
+        // covers the sidecar, not the media, so an iCloud eviction since the
+        // last scan must still flip the badge even though nothing else
+        // about the row changed. Every id here is already in `byID` (it
+        // came from an existing, unpruned row) and disjoint from
+        // `scan.items`, so this never races the loop above.
+        //
+        // Applied AFTER `scan.items` here, but BEFORE it in
+        // `reconcilePerItem` below — deliberately not unified, since the
+        // two ids sets (`scan.statusUpdates` and `scan.items`, both keyed
+        // by itemID) are disjoint by construction: Phase A/B route each
+        // sidecar to exactly one of "skipped" or "read", never both. Order
+        // between disjoint writers is harmless either way.
+        for update in scan.statusUpdates {
+            byID[update.itemID]?.downloadStatus = update.status
         }
         for item in existing where !scan.seenIDs.contains(item.itemID) {
             if !item.albumIDsJoined.isEmpty { albumStateChanged = true }
@@ -458,12 +520,36 @@ actor LibraryIndexService {
             modelContext.delete(item)
             if (try? modelContext.save()) == nil { modelContext.rollback() }
         }
-        for (metadata, status) in scan.items {
+        // Task 4: same status-only refresh as `reconcileBatched`, saved
+        // per-row to match this path's resilience contract (one bad row
+        // must not take the others down with it).
+        //
+        // Applied BEFORE `scan.items` here, but AFTER it in
+        // `reconcileBatched` above — see that loop's comment: the two id
+        // sets are disjoint by construction, so the ordering difference
+        // between the two reconcile paths is harmless.
+        for update in scan.statusUpdates {
+            guard let row = byID[update.itemID] else { continue }
+            row.downloadStatus = update.status
+            if (try? modelContext.save()) == nil { modelContext.rollback() }
+        }
+        for scannedItem in scan.items {
+            let metadata = scannedItem.metadata
+            let status = scannedItem.status
             let membershipChanged: Bool
             if let row = byID[metadata.itemID] {
-                membershipChanged = apply(metadata, downloadStatus: status, to: row)
+                membershipChanged = apply(metadata, downloadStatus: status,
+                                           sidecarFileName: scannedItem.sidecarFileName,
+                                           sidecarModifiedAt: scannedItem.sidecarModifiedAt,
+                                           sidecarByteSize: scannedItem.sidecarByteSize,
+                                           to: row)
             } else {
-                let row = PersistedLibraryItem(metadata: metadata, downloadStatus: status)
+                let row = PersistedLibraryItem(
+                    metadata: metadata, downloadStatus: status,
+                    sidecarFileName: scannedItem.sidecarFileName,
+                    sidecarModifiedAt: scannedItem.sidecarModifiedAt,
+                    sidecarByteSize: scannedItem.sidecarByteSize
+                )
                 modelContext.insert(row)
                 byID[metadata.itemID] = row
                 membershipChanged = !metadata.albumIDs.isEmpty
@@ -507,12 +593,34 @@ actor LibraryIndexService {
     /// evicted is this app's healthy steady state, so including it would pin the
     /// UI in a "downloading" state that never clears.
     typealias ScanResult = (
-        items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)],
+        items: [(
+            metadata: LibraryItemMetadata,
+            status: LibraryDownloadStatus,
+            /// The sidecar's name and fingerprint (`contentModificationDate`,
+            /// `fileSize`) as seen by THIS scan's directory listing — not a
+            /// separate stat. Recorded so incremental reconcile (Task 4) can
+            /// compare a later listing against these instead of re-reading.
+            sidecarFileName: String,
+            sidecarModifiedAt: Date?,
+            sidecarByteSize: Int
+        )],
         seenIDs: Set<Int>,
         albums: [LibraryAlbumFile],
         seenAlbumIDs: Set<UUID>,
         pendingItems: Int,
-        pendingAlbums: Int
+        pendingAlbums: Int,
+        /// Task 4: a skipped sidecar's freshly-resolved download status.
+        /// Status is free from the directory listing, so it's refreshed even
+        /// for a row whose sidecar read was skipped — the fingerprint covers
+        /// the sidecar, not the media, so an item whose media was evicted
+        /// since the last scan must still get an updated badge. Applied to
+        /// the existing row's `downloadStatus` only; nothing else about the
+        /// row is touched.
+        statusUpdates: [(itemID: Int, status: LibraryDownloadStatus)],
+        /// The scan's own I/O metrics, exposed (not just logged) so a caller
+        /// — chiefly tests — can verify a skip actually skipped the read,
+        /// not just that the resulting row survived.
+        metrics: ScanMetrics
     )
 
     /// Dedicated serial queue for the blocking container scan. Keeps the
@@ -530,7 +638,8 @@ actor LibraryIndexService {
         store: LibraryFileStore,
         indexedItemIDs: Set<Int> = [],
         indexedAlbumIDs: Set<UUID> = [],
-        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) }
+        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) },
+        fingerprints: [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)] = [:]
     ) async -> ScanResult? {
         await withCheckedContinuation { continuation in
             scanQueue.async {
@@ -538,7 +647,8 @@ actor LibraryIndexService {
                     store: store,
                     indexedItemIDs: indexedItemIDs,
                     indexedAlbumIDs: indexedAlbumIDs,
-                    isPlaceholder: isPlaceholder
+                    isPlaceholder: isPlaceholder,
+                    fingerprints: fingerprints
                 ))
             }
         }
@@ -552,7 +662,12 @@ actor LibraryIndexService {
     /// launch reconcile into minutes of churn on macOS.
     nonisolated static let scanPrefetchKeys: [URLResourceKey] = [
         .isUbiquitousItemKey,
-        .ubiquitousItemDownloadingStatusKey
+        .ubiquitousItemDownloadingStatusKey,
+        // Fingerprint fields for incremental reconcile (Task 4): prefetched
+        // here so reading them per sidecar in Phase A is served from this
+        // listing's cache, not a separate per-file stat.
+        .contentModificationDateKey,
+        .fileSizeKey
     ]
 
     /// Convenience for direct plaintext callers/tests that don't have a
@@ -569,6 +684,47 @@ actor LibraryIndexService {
     /// paths through the scan are reachable over a plain temp directory.
     typealias PlaceholderCheck = (URL) -> Bool
 
+    /// One scan's I/O profile. Printed once per scan so a slow container can be
+    /// diagnosed from the log without a profiler attached — the numbers that
+    /// motivated this work came from a synthetic benchmark that disagreed with
+    /// observed behaviour by more than 10x, and this is how that gets settled.
+    struct ScanMetrics {
+        var listingSeconds = 0.0
+        var sidecarsRead = 0
+        var readSeconds = 0.0
+        var decodeSeconds = 0.0
+        var statCount = 0
+        var statSeconds = 0.0
+
+        var description: String {
+            String(
+                format: "[LibraryIndex] scan: listing %.2fs | %d sidecars read in %.2fs (%.2f ms each) | decode %.2fs | %d stats in %.2fs",
+                listingSeconds, sidecarsRead, readSeconds,
+                sidecarsRead > 0 ? readSeconds * 1000 / Double(sidecarsRead) : 0,
+                decodeSeconds, statCount, statSeconds
+            )
+        }
+    }
+
+    /// One sidecar the scan has classified but not yet read. Splitting
+    /// classification from reading keeps every `seenIDs` preservation
+    /// decision in one serial pass (Phase A) even though the actual read
+    /// (Phase B) is a separate loop.
+    private struct SidecarWork {
+        /// The item id recovered during classification. Used as the key
+        /// passed to `store.readMetadata(itemID:)`, and — if the read or
+        /// decode fails — as the id preserved in `seenIDs` so the row isn't
+        /// pruned as vanished.
+        let itemID: Int
+        /// The sidecar's name and fingerprint, captured in Phase A from the
+        /// enumerated URL's already-prefetched resource values — no extra
+        /// I/O. Carried into Phase B so it can be recorded on the resulting
+        /// `ScanResult` item regardless of whether the read below succeeds.
+        let sidecarFileName: String
+        let sidecarModifiedAt: Date?
+        let sidecarByteSize: Int
+    }
+
     /// Reads the container through `store`: every readable item sidecar
     /// (`*.m` decrypted or `*.json` parsed, per `store.isEncrypted`) plus,
     /// separately, every readable album file. Plaintext album files are the
@@ -584,14 +740,46 @@ actor LibraryIndexService {
     /// wouldn't carry this call's prefetched resourceValues cache, reintroducing
     /// the per-file XPC round-trip this scan exists to avoid. `store.isMetadataFileName`/
     /// `isAuxFileName` classify names from the single listing captured here.
+    ///
+    /// Restructured into three phases to split classification from reading:
+    /// Phase A (serial) walks the sidecar URLs and classifies each into an
+    /// album, a preserved placeholder, or a queued `SidecarWork`; Phase B
+    /// (serial) reads + decodes each queued entry; Phase C (serial)
+    /// assembles the `ScanResult`. Every preservation decision
+    /// (`seenIDs`/`seenAlbumIDs`, the pending counters, the album handling)
+    /// happens in Phase A, exactly as before this split.
+    ///
+    /// Phase B was briefly run concurrently (bounded `OperationQueue`,
+    /// width 8) on the theory that each read is an independent, latency-
+    /// bound network round trip. Measured on the user's real network-
+    /// mounted share, concurrency made it slightly WORSE: 612.24s wall vs
+    /// 562.88s serial, with per-worker cost rising to ~489 ms/file (~61 ms
+    /// effective — indistinguishable from the 69.06 ms/file serial
+    /// baseline). Something below `store.readMetadata` — the file-
+    /// coordination arbiter, or the kernel SMB client serializing on one
+    /// connection — was already serializing the reads regardless of thread
+    /// count, so the concurrency machinery bought nothing and was reverted;
+    /// the phase split itself stays, since it is what makes Phase C's
+    /// index-ordered assembly and Task 4's per-sidecar skip a small,
+    /// reviewable diff instead of one tangled loop.
     nonisolated static func scanContainer(
         store: LibraryFileStore,
         indexedItemIDs: Set<Int> = [],
         indexedAlbumIDs: Set<UUID> = [],
-        isPlaceholder: PlaceholderCheck = { isDatalessPlaceholder($0) }
+        isPlaceholder: PlaceholderCheck = { isDatalessPlaceholder($0) },
+        // Task 4: sidecar fingerprints the index already holds, keyed by
+        // sidecar filename — read on the model actor by `reconcile` before
+        // the scan starts (`indexedFingerprints()`) and handed in here so
+        // Phase A can decide, per sidecar, whether reading it is necessary
+        // at all. Empty (the default) means "never skip" — every existing
+        // call site (tests, `rebuild`) that doesn't pass this gets the exact
+        // pre-Task-4 always-read behavior.
+        fingerprints: [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)] = [:]
     ) -> ScanResult? {
         let fileManager = FileManager.default
         let itemsDirectory = store.itemsDirectory
+        var metrics = ScanMetrics()
+        let listingStart = CFAbsoluteTimeGetCurrent()
         guard let contents = try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
             includingPropertiesForKeys: scanPrefetchKeys
@@ -601,6 +789,7 @@ actor LibraryIndexService {
             // index; signal failure so the caller leaves it intact instead.
             return nil
         }
+        metrics.listingSeconds = CFAbsoluteTimeGetCurrent() - listingStart
 
         // Media files are looked up from the same enumeration: the returned
         // URL objects carry the prefetched status values, while a freshly
@@ -610,11 +799,23 @@ actor LibraryIndexService {
         // and gets fresh objects.
         var urlsByName = [String: URL](minimumCapacity: contents.count)
         for url in contents { urlsByName[url.lastPathComponent] = url }
+        // Presence for every file this scan will look up is already known from
+        // the single listing above — `downloadStatus` uses membership in this
+        // set instead of a per-file `fileExists` round trip.
+        let presentNames = Set(urlsByName.keys)
 
         var seenIDs = Set<Int>()
-        var items: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)] = []
+        var items: [(
+            metadata: LibraryItemMetadata,
+            status: LibraryDownloadStatus,
+            sidecarFileName: String,
+            sidecarModifiedAt: Date?,
+            sidecarByteSize: Int
+        )] = []
         var albums: [LibraryAlbumFile] = []
         var seenAlbumIDs = Set<UUID>()
+        // Task 4: status refreshes for sidecars the scan chose not to read.
+        var statusUpdates: [(itemID: Int, status: LibraryDownloadStatus)] = []
         // Counted independently of `seenIDs`: after an eviction sweep most
         // placeholders resolve to no known id (nothing is invented), yet those
         // are exactly the items missing from the user's library. A pending total
@@ -641,7 +842,13 @@ actor LibraryIndexService {
             return map[url.lastPathComponent]
         }
 
+        // Phase A (serial): classify every sidecar. Album files, placeholder
+        // preservation, and the id-recovery guard are all unchanged from
+        // before this split — the only thing that changed is that a
+        // fully-classified item sidecar is queued as a `SidecarWork` instead
+        // of being read+decoded inline.
         let sidecarURLs = contents.filter { store.isMetadataFileName($0.lastPathComponent) }
+        var sidecarWork: [SidecarWork] = []
         for sidecarURL in sidecarURLs {
             let name = sidecarURL.lastPathComponent
 
@@ -693,35 +900,144 @@ actor LibraryIndexService {
                 continue
             }
 
+            // Cache-only: `sidecarURL` came from the single `contentsOfDirectory`
+            // listing above, which already prefetched these two keys via
+            // `scanPrefetchKeys`, so this is not a per-file XPC round trip.
+            let fingerprint = try? sidecarURL.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let observedModifiedAt = fingerprint?.contentModificationDate
+            let observedByteSize = fingerprint?.fileSize ?? 0
+
+            // Task 4: checked BEFORE `store.itemID(forMetadataFile:)` below —
+            // deliberately, not just for tidiness. In encrypted mode that
+            // call performs its own full coordinated read+decrypt of the
+            // sidecar (to decode the `{itemID}` stub), which is exactly the
+            // network round trip this skip exists to avoid. A name+fingerprint
+            // match against the index needs no file read at all to recover
+            // the id — it's already sitting in the fingerprint map recorded
+            // by the scan that ingested it.
+            //
+            // `knownModifiedAt` must be non-nil to match anything: a row
+            // whose prior scan couldn't stat the file (the partial-
+            // fingerprint case) recorded `sidecarModifiedAt == nil`, and nil
+            // must never be treated as "matches whatever we see now". Any
+            // mismatch on either field falls through to a normal read — the
+            // fingerprint can be legitimately stale (Phase A captures it,
+            // Phase B reads later, so a file modified in that window is
+            // recorded pre-change) and a stale-but-different fingerprint is
+            // meant to force a re-read, never a wrong skip.
+            if let known = fingerprints[name],
+               let knownModifiedAt = known.modifiedAt,
+               knownModifiedAt == observedModifiedAt,
+               known.size == observedByteSize {
+                // Unchanged since we last ingested it. Skip the READ, but the
+                // file is present, so the id must still be seen or reconcile
+                // prunes the row. Status is free from the listing, so refresh
+                // it anyway: the fingerprint covers the sidecar, not the
+                // media, and an evicted media file must still update the
+                // badge.
+                seenIDs.insert(known.itemID)
+                // The extension comes from the row's own stored
+                // `mediaFileName` — the value the index already has —
+                // instead of a per-scan guess built by listing every
+                // non-sidecar file and taking the last extension seen for
+                // each id. That guess was last-write-wins over an
+                // unordered listing: an item with both a stale `{id}.jpeg`
+                // and a current `{id}.mp4` present (a state the encryption
+                // migrator treats as real) could take its badge from the
+                // wrong file, and because this item is skipped on every
+                // later scan too, it would never self-heal. `store.mediaURL`
+                // ignores the extension entirely in encrypted mode, so this
+                // is correct there regardless.
+                let mediaURL = store.mediaURL(
+                    itemID: known.itemID,
+                    plaintextExtension: URL(fileURLWithPath: known.mediaFileName).pathExtension)
+                let lookupURL = urlsByName[mediaURL.lastPathComponent] ?? mediaURL
+                let statStart = CFAbsoluteTimeGetCurrent()
+                let status = downloadStatus(for: lookupURL, fileManager: fileManager, presentNames: presentNames)
+                // Task 4 correction: this branch resolves a real status from
+                // the listing for every skipped sidecar, but originally
+                // never counted it — an unchanged launch printed "0 stats"
+                // while actually resolving one per row. Count it like any
+                // other stat.
+                metrics.statSeconds += CFAbsoluteTimeGetCurrent() - statStart
+                metrics.statCount += 1
+                statusUpdates.append((itemID: known.itemID, status: status))
+                continue
+            }
+
             // A file that is present but can't be read or decoded THIS round —
             // a torn write, a failed coordination, corrupt bytes — has not
             // vanished, so it must not prune its row either. Same rule the
             // album branch above already applies, and the same no-I/O id
             // recovery the placeholder branch uses. A later reconcile ingests
             // its fields once the file reads cleanly again.
-            guard
-                let id = store.itemID(forMetadataFile: sidecarURL),
-                let data = store.readMetadata(itemID: id),
-                let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
-            else {
+            guard let id = store.itemID(forMetadataFile: sidecarURL) else {
                 if let id = preservedItemID(sidecarURL) {
                     seenIDs.insert(id)
                 }
                 continue
             }
 
+            sidecarWork.append(SidecarWork(
+                itemID: id,
+                sidecarFileName: name,
+                sidecarModifiedAt: observedModifiedAt,
+                sidecarByteSize: observedByteSize
+            ))
+        }
+
+        // Phase B (serial): read + decode each queued item sidecar and
+        // resolve its media download status. See this function's doc
+        // comment for why this is serial rather than concurrent — a bounded
+        // `OperationQueue` was measured on the real network share to be
+        // slightly worse than this loop, not faster.
+        for work in sidecarWork {
+            let id = work.itemID
+
+            let readStart = CFAbsoluteTimeGetCurrent()
+            let data = store.readMetadata(itemID: id)
+            metrics.readSeconds += CFAbsoluteTimeGetCurrent() - readStart
+            guard let data else {
+                // Present but unreadable this round (transient coordination
+                // failure, torn write): not vanished, so the row must be
+                // preserved rather than pruned, using the id Phase A already
+                // recovered for this exact sidecar.
+                seenIDs.insert(id)
+                continue
+            }
+            metrics.sidecarsRead += 1
+
+            let decodeStart = CFAbsoluteTimeGetCurrent()
+            let metadata = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
+            metrics.decodeSeconds += CFAbsoluteTimeGetCurrent() - decodeStart
+            guard let metadata else {
+                seenIDs.insert(id)
+                continue
+            }
+
             seenIDs.insert(metadata.itemID)
-            // The store's deterministic media URL for this item — identical to
-            // `itemsDirectory.appendingPathComponent(metadata.mediaFileName)` in
-            // plaintext mode (that's exactly how `mediaFileName` was built at
-            // save time), and the correct opaque `*.b` path when encrypted.
-            // Missing from the listing (no local placeholder at all) falls back
-            // to the built URL, which `downloadStatus` resolves to `.evicted`
-            // via its fileExists check — same result as before, no XPC needed.
+            // The store's deterministic media URL for this item — identical
+            // to `itemsDirectory.appendingPathComponent(metadata.mediaFileName)`
+            // in plaintext mode (that's exactly how `mediaFileName` was
+            // built at save time), and the correct opaque `*.b` path when
+            // encrypted. Missing from the listing (no local placeholder at
+            // all) falls back to the built URL, whose name `downloadStatus`
+            // won't find in `presentNames` — resolves to `.evicted`, same
+            // result as before, no XPC needed.
             let mediaURL = store.mediaURL(itemID: metadata.itemID, plaintextExtension: metadata.mediaType.fileExtension)
             let lookupURL = urlsByName[mediaURL.lastPathComponent] ?? mediaURL
-            let status = downloadStatus(for: lookupURL, fileManager: fileManager)
-            items.append((metadata: metadata, status: status))
+            let statStart = CFAbsoluteTimeGetCurrent()
+            let status = downloadStatus(for: lookupURL, fileManager: fileManager, presentNames: presentNames)
+            metrics.statSeconds += CFAbsoluteTimeGetCurrent() - statStart
+            metrics.statCount += 1
+            items.append((
+                metadata: metadata,
+                status: status,
+                sidecarFileName: work.sidecarFileName,
+                sidecarModifiedAt: work.sidecarModifiedAt,
+                sidecarByteSize: work.sidecarByteSize
+            ))
         }
 
         // Encrypted album rows: album files (and, once routed through the
@@ -768,8 +1084,10 @@ actor LibraryIndexService {
             }
         }
 
+        FileHandle.standardError.write(Data((metrics.description + "\n").utf8))
         return (items: items, seenIDs: seenIDs, albums: albums, seenAlbumIDs: seenAlbumIDs,
-                pendingItems: pendingItems, pendingAlbums: pendingAlbums)
+                pendingItems: pendingItems, pendingAlbums: pendingAlbums,
+                statusUpdates: statusUpdates, metrics: metrics)
     }
 
     /// True when `url` is an iCloud item whose contents are not yet downloaded —
@@ -843,7 +1161,8 @@ actor LibraryIndexService {
     ) async -> ReconcileOutcome {
         await reconcile(itemsDirectory: itemsDirectory,
                         startedAtGeneration: startedAtGeneration,
-                        generationProbe: generationProbe)
+                        generationProbe: generationProbe,
+                        useFingerprints: false)
     }
 
     /// Deletes every index row without reconciling. Used by Reset Library after
@@ -889,6 +1208,40 @@ actor LibraryIndexService {
         let items = (try? modelContext.fetch(itemsDescriptor)) ?? []
         let albums = (try? modelContext.fetch(albumsDescriptor)) ?? []
         return (Set(items.map(\.itemID)), Set(albums.map(\.id)))
+    }
+
+    /// Every indexed row's sidecar fingerprint, keyed by sidecar filename —
+    /// what Task 4's incremental reconcile compares a fresh directory
+    /// listing against to decide whether a sidecar needs to be re-read. Read
+    /// on the model actor BEFORE the scan starts; the scan itself (running
+    /// off the actor) must never reach into SwiftData. Rows with an empty
+    /// `sidecarFileName` (pre-Task-3 rows, or ones written through a
+    /// non-scan path like `ingest`) contribute nothing — an empty key can't
+    /// match any real listing entry, so those rows always fall through to a
+    /// read, exactly like a row with no recorded fingerprint should.
+    ///
+    /// This deliberately makes the returned id set a SUBSET of
+    /// `indexedIDs()`'s — every row is present in `indexedIDs()`, but a
+    /// row with no fingerprint yet contributes nothing here. Anyone tempted
+    /// to merge this with `indexedIDs()` into one whole-table fetch to save
+    /// a query must preserve that asymmetry, or an encrypted placeholder row
+    /// (indexed, but never fingerprinted because it has never been read)
+    /// would silently start being treated as fingerprint-known.
+    func indexedFingerprints() -> [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)] {
+        // Same shape as `indexedIDs()`: only the columns the comparison
+        // actually needs, not full rows, since this also runs over the
+        // whole table every reconcile.
+        var descriptor = FetchDescriptor<PersistedLibraryItem>()
+        descriptor.propertiesToFetch = [\.itemID, \.sidecarFileName, \.sidecarModifiedAt, \.sidecarByteSize, \.mediaFileName]
+        let rows = (try? modelContext.fetch(descriptor)) ?? []
+        var map = [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)](minimumCapacity: rows.count)
+        for row in rows where !row.sidecarFileName.isEmpty {
+            map[row.sidecarFileName] = (
+                modifiedAt: row.sidecarModifiedAt, size: row.sidecarByteSize,
+                itemID: row.itemID, mediaFileName: row.mediaFileName
+            )
+        }
+        return map
     }
 
     /// Every indexed id, plus `itemID` → `checkpointName` for the rows that
@@ -1082,8 +1435,21 @@ actor LibraryIndexService {
         return try? modelContext.fetch(descriptor).first
     }
 
-    static func downloadStatus(for mediaURL: URL, fileManager: FileManager) -> LibraryDownloadStatus {
-        guard fileManager.fileExists(atPath: mediaURL.path) else {
+    /// `presentNames`, when supplied, is the set of filenames from a single
+    /// directory listing (`scanContainer`'s `urlsByName` keys) — membership in
+    /// it replaces the `fileExists` round trip. That matters because the
+    /// listing prefetches resource values onto its URL objects, but
+    /// `fileExists(atPath:)` bypasses that cache and issues a fresh metadata
+    /// XPC call to fileproviderd per file (measured at 26.91 ms/file, 219s
+    /// across 8,151 items on a network-mounted iCloud root — 27.8% of the
+    /// whole scan). `nil` (every caller besides `scanContainer`) preserves the
+    /// original `fileExists` behaviour exactly, byte-for-byte.
+    static func downloadStatus(
+        for mediaURL: URL, fileManager: FileManager, presentNames: Set<String>? = nil
+    ) -> LibraryDownloadStatus {
+        let isPresent = presentNames?.contains(mediaURL.lastPathComponent)
+            ?? fileManager.fileExists(atPath: mediaURL.path)
+        guard isPresent else {
             // No local placeholder at all - treat as evicted; on-demand download
             // will materialize it when the user opens the item.
             return .evicted

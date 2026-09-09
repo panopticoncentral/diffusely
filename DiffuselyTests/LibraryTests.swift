@@ -4,7 +4,9 @@ import CryptoKit
 import SwiftData
 @testable import Diffusely
 
-private func makeMetadata(
+/// Shared across `DiffuselyTests` (not just this file) as the standard way to
+/// build a `LibraryItemMetadata` fixture with sane defaults.
+func makeMetadata(
     itemID: Int,
     mediaType: LibraryMediaType = .image,
     byteSize: Int = 1000,

@@ -10,6 +10,30 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-07-library-network-root-scan-performance.md`
 
+## Execution order (revised after Task 0's measurement)
+
+**0 → 5 → 1 → 2 → 3 → 4.** Task numbering is left alone so briefs and commits stay traceable; only the
+order changes.
+
+Task 0 measured the real scan and found `fileExists` is **27.8%** of it (219 s of 788 s), not the ~1%
+the pre-work benchmark implied — the benchmark's per-file numbers were 11-30x optimistic because they
+were measured against a warm client cache. Task 5 removes that 219 s, is the smallest change in the
+plan, and depends on nothing: `scanContainer` already builds the `urlsByName` map it needs. It runs
+first.
+
+Measured projection for the whole plan (as of the plan being written, before Task 2 ran): ~788 s
+today → ~568 s after Task 5 → ~73 s after Task 2 → ~3 s for an unchanged launch after Task 4.
+
+**Corrected after Task 2's real measurement.** The ~73 s projection assumed the warm-cache benchmark's
+8-way concurrency win (6.28 ms/file serial → 0.75 ms/file at 8-way) would hold cold, on the real share.
+It did not: Task 2 measured 562.88 s serial → 612.24 s at 8-way — concurrency made it slightly WORSE,
+with per-worker cost rising to 489 ms/file (~61 ms effective, indistinguishable from the 69.06 ms/file
+serial baseline). The concurrency was reverted in the branch's final fix wave; the phase split it was
+built on was kept, since it is what makes Task 4's per-sidecar skip a small diff. Actual outcome after
+Task 5 + Task 2 (revert): ~788 s → ~622 s, a 21% improvement, entirely from Task 5's `fileExists`
+removal — not the ~73 s this section originally projected. Task 4's incremental skip is unaffected by
+the revert and still delivers the ~3 s unchanged-launch figure below.
+
 ## Global Constraints
 
 - **Blocking file I/O uses GCD, never Swift concurrency.** `scanQueue` exists to keep `Data(contentsOf:)` off the cooperative pool; this repo has a documented history of pool starvation presenting as a grey spinner. `async let` / `TaskGroup` around these reads would reintroduce it at 8× the width.
@@ -84,7 +108,23 @@ In `LibraryIndexService`, above `scanContainer`:
     }
 ```
 
-Time the four regions inside `scanContainer`: the `contentsOfDirectory` call, each `store.readMetadata`, each `decode`, and each `downloadStatus` call. Accumulate into a local `ScanMetrics` and `print(metrics.description)` immediately before returning the result. Use `CFAbsoluteTimeGetCurrent()` rather than `Date()` for the per-file timers — at millisecond granularity across thousands of calls, `Date()`'s allocation shows up in what you are trying to measure.
+Time the four regions inside `scanContainer`: the `contentsOfDirectory` call, each `store.readMetadata`, each `decode`, and each `downloadStatus` call. Accumulate into a local `ScanMetrics` and emit it immediately before returning the result.
+
+**Emit on stderr, not via `print`.** This was established the hard way: `print()` writes to stdout,
+which is BLOCK-buffered when it is not a terminal, so a GUI app's sparse output never reaches a
+captured log — a 25-second run captured 0 bytes. `stderr` is unbuffered, so use:
+
+```swift
+        FileHandle.standardError.write(Data((metrics.description + "\n").utf8))
+```
+
+Capture it by launching the app bundle with stderr redirected (verified working):
+
+```bash
+open -a <path to Diffusely.app> --stdout /tmp/scan.log --stderr /tmp/scan.log
+```
+
+Do NOT run the binary directly (`<app>/Contents/MacOS/Diffusely`) — it exits without running. Use `CFAbsoluteTimeGetCurrent()` rather than `Date()` for the per-file timers — at millisecond granularity across thousands of calls, `Date()`'s allocation shows up in what you are trying to measure.
 
 - [ ] **Step 2: Build and confirm the line appears**
 
@@ -298,16 +338,46 @@ Add the constant and the parameter (defaulted, so no call site changes):
 
 Replace the serial read loop with:
 
-```swift
-        // Pre-sized so each operation writes its own slot: results are placed by
-        // INDEX, never appended, so `items` ordering cannot depend on completion
-        // order. `OperationQueue` (not a TaskGroup) because these reads block —
-        // running them on the cooperative pool is the documented grey-spinner
-        // starvation bug.
-        var readResults = [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)?](
-            repeating: nil, count: work.count)
-        let resultsLock = NSLock()
+Task 0's `ScanMetrics` and the results array both become **shared mutable state** the instant reads
+run concurrently. A captured `var` will not survive Swift 6's concurrency checking anyway, so both live
+behind one small lock-guarded reference type:
 
+```swift
+    /// Collects concurrent read results and their timings behind one lock.
+    /// A reference type because Swift 6 will not let a `@Sendable` operation
+    /// closure capture and mutate a local `var`, and because Task 0's metrics
+    /// counters are now written from every worker.
+    private final class ScanAccumulator: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var results: [(metadata: LibraryItemMetadata, status: LibraryDownloadStatus)?]
+        private(set) var metrics = ScanMetrics()
+
+        init(count: Int) { results = Array(repeating: nil, count: count) }
+
+        func record(index: Int,
+                    result: (metadata: LibraryItemMetadata, status: LibraryDownloadStatus)?,
+                    readSeconds: Double,
+                    decodeSeconds: Double) {
+            lock.lock()
+            defer { lock.unlock() }
+            results[index] = result
+            metrics.sidecarsRead += 1
+            metrics.readSeconds += readSeconds
+            metrics.decodeSeconds += decodeSeconds
+        }
+    }
+```
+
+Note the metrics now measure *summed worker time*, not wall clock — at width 8 the sum will exceed the
+scan's real duration. Say so in the printed line (or record wall clock separately), or Task 2's
+"before/after" comparison will look like it made things worse.
+
+```swift
+        // Results are placed by INDEX, never appended, so `items` ordering
+        // cannot depend on completion order. `OperationQueue` (not a TaskGroup)
+        // because these reads block — running them on the cooperative pool is
+        // the documented grey-spinner starvation bug.
+        let accumulator = ScanAccumulator(count: work.count)
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = max(1, concurrencyWidth)
         for (index, item) in work.enumerated() {
@@ -324,14 +394,13 @@ Replace the serial read loop with:
                 let lookupURL = item.mediaLookup[mediaURL.lastPathComponent] ?? mediaURL
                 let status = downloadStatus(for: lookupURL, fileManager: FileManager.default)
 
-                resultsLock.lock()
-                readResults[index] = (metadata: metadata, status: status)
-                resultsLock.unlock()
+                accumulator.record(index: index, result: (metadata: metadata, status: status),
+                                   readSeconds: readElapsed, decodeSeconds: decodeElapsed)
             }
         }
         queue.waitUntilAllOperationsAreFinished()
 
-        for (index, result) in readResults.enumerated() {
+        for (index, result) in accumulator.results.enumerated() {
             guard let result else {
                 // Unreadable or undecodable THIS round: present, so preserve the
                 // row rather than pruning it. Same rule as the serial version.
@@ -343,7 +412,14 @@ Replace the serial read loop with:
         }
 ```
 
-`FileManager.default` is documented as thread-safe for these operations; `store.readMetadata` performs its own coordinated read and each operation constructs its own coordinator inside `LibraryFileStore.read`. Confirm the latter — if `LibraryFileStore` holds a shared `NSFileCoordinator` instance, change it to construct one per read, and say so in your report, because that would silently serialize everything.
+`FileManager.default` is documented as thread-safe for these operations. `LibraryFileStore.read`
+already constructs its own `NSFileCoordinator` per call (verified: `LibraryFileStore.swift:238`), so the
+reads will not serialize on a shared coordinator — no change needed there, but re-confirm it still holds
+before relying on it.
+
+The `guard ... else { return }` inside the operation must ALSO record a nil result through the
+accumulator, or an unreadable sidecar leaves its slot untouched and the preservation loop below cannot
+tell "not read yet" from "read and failed". Record `nil` explicitly on that path.
 
 - [ ] **Step 4: Verify the test passes and the suite is green**
 
@@ -498,9 +574,16 @@ git commit -m "perf(library): skip re-reading sidecars that have not changed"
 - Test: `DiffuselyTests/LibraryScanConcurrencyTests.swift` (extend)
 
 **Interfaces:**
-- Produces: `downloadStatus(for:fileManager:presentNames:)` — presence resolved from the listing when available.
+- Produces: `downloadStatus(for:fileManager:presentNames:)` — presence resolved from the listing when available. The new parameter MUST be defaulted (`presentNames: Set<String>? = nil`), because Task 2's concurrent read calls this function and every other caller passes no listing; an undefaulted parameter breaks them all.
 
-Measured at 0.91 ms/file, 7.4 s across 8,151 items. Invisible behind a 51 s serial read; a meaningful share of the cost once Tasks 2 and 4 have removed the reads.
+**Measured at 26.91 ms/file, 219.36 s across 8,151 items — 27.8% of the entire scan.** The pre-work
+benchmark said 0.91 ms and 7.4 s; it was measured against a warm cache and was 30x optimistic. This is
+why the task runs first rather than last.
+
+The cost has a specific cause worth understanding before changing it: the directory listing prefetches
+resource values onto its URL objects, but `fileExists(atPath:)` bypasses that cache entirely and issues
+a fresh metadata round trip per file. Resolving presence from the listing does not parallelize that
+cost — it removes it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -514,7 +597,11 @@ Give `downloadStatus` an optional set of names present in the listing. When supp
 
 Leave the `fileExists` path in place for callers that have no listing.
 
-- [ ] **Step 4: Verify tests and suite green; re-measure**
+- [ ] **Step 4: Verify tests and suite green**
+
+Do NOT attempt to re-measure against the share. That requires launching the app and waiting ~10 minutes,
+and a subagent ends its turn when it waits — two dispatches were lost to exactly that. The controller
+owns the measurement runs.
 
 - [ ] **Step 5: Commit**
 
