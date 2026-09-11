@@ -15,13 +15,15 @@ struct LibraryFileStore {
     /// went away would manufacture an empty Library at a dead mount point —
     /// which a later reconcile would read as "every item was deleted".
     let createsContainerDirectory: Bool
+    let journalWriterID: String?
 
     var isEncrypted: Bool { crypto != nil }
 
-    init(itemsDirectory: URL, crypto: LibraryFileCrypto?, createsContainerDirectory: Bool = true) {
+    init(itemsDirectory: URL, crypto: LibraryFileCrypto?, createsContainerDirectory: Bool = true, journalWriterID: String? = nil) {
         self.itemsDirectory = itemsDirectory
         self.crypto = crypto
         self.createsContainerDirectory = createsContainerDirectory
+        self.journalWriterID = journalWriterID
     }
 
     // MARK: URLs
@@ -81,9 +83,13 @@ struct LibraryFileStore {
         for url in [mediaURL(itemID: itemID, plaintextExtension: ext), metadataURL(itemID: itemID)] {
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             var err: NSError?
-            coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
-                try? FileManager.default.removeItem(at: u)
+            let deletion = {
+                coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
+                    try? FileManager.default.removeItem(at: u)
+                }
             }
+            if let journal = changeJournal { try? journal.withMutation(names: [url.lastPathComponent], deletion) }
+            else { deletion() }
         }
     }
 
@@ -119,9 +125,13 @@ struct LibraryFileStore {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         let coordinator = NSFileCoordinator()
         var err: NSError?
-        coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
-            try? FileManager.default.removeItem(at: u)
+        let deletion = {
+            coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
+                try? FileManager.default.removeItem(at: u)
+            }
         }
+        if let journal = changeJournal { try? journal.withMutation(names: [url.lastPathComponent], deletion) }
+        else { deletion() }
     }
 
     /// Reads and decrypts an aux file located by its on-disk URL (as returned
@@ -215,9 +225,31 @@ struct LibraryFileStore {
 
     private struct ItemIDStub: Decodable { let itemID: Int }
 
+    /// Journals are for custom plaintext roots; iCloud keeps its own change
+    /// notifications and encrypted roots never expose filenames in a log.
+    var changeJournal: LibraryChangeJournal? {
+        guard !isEncrypted else { return nil }
+        // Older adapters reconstruct a store without the custom-root flag.
+        // Once a custom root is initialized, its journal directory keeps those
+        // album/backfill writes on the same logging path as new saves.
+        let hasJournal = !createsContainerDirectory || FileManager.default.fileExists(
+            atPath: itemsDirectory.appendingPathComponent(LibraryChangeJournal.directoryName).path)
+        return hasJournal ? LibraryChangeJournal(root: itemsDirectory, writerID: journalWriterID) : nil
+    }
+
     // MARK: Coordinated I/O
 
     private func write(payload: Data, to url: URL, token: String?) throws {
+        if let journal = changeJournal {
+            try journal.withMutation(names: [url.lastPathComponent]) {
+                try writeCoordinated(payload: payload, to: url, token: token)
+            }
+        } else {
+            try writeCoordinated(payload: payload, to: url, token: token)
+        }
+    }
+
+    private func writeCoordinated(payload: Data, to url: URL, token: String?) throws {
         if createsContainerDirectory {
             try FileManager.default.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
         }

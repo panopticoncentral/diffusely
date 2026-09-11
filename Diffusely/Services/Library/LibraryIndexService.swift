@@ -3,8 +3,8 @@ import SwiftData
 
 /// Owns all writes to the disposable `PersistedLibraryItem` index. The container
 /// (media + sidecar JSON) is the source of truth; this index is rebuilt from it on
-/// launch and whenever iCloud reports changes, and can be wiped and regenerated at
-/// any time without data loss.
+/// launch and when storage reports changes. Full scans publish bounded batches;
+/// custom-folder journals allow targeted refreshes between full audits.
 @ModelActor
 actor LibraryIndexService {
 
@@ -16,6 +16,20 @@ actor LibraryIndexService {
     /// stale container snapshot from overwriting newer rows (the
     /// "items reappear in Not in any Album" bug).
     private var mutationEpoch = 0
+    private var scanInFlight = false
+    private var scanWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquireScan() async {
+        if scanInFlight {
+            await withCheckedContinuation { scanWaiters.append($0) }
+        } else { scanInFlight = true }
+    }
+
+    private func releaseScan() {
+        if scanWaiters.isEmpty { scanInFlight = false }
+        else { scanWaiters.removeFirst().resume() }
+    }
+    var journalBaselines: [String: JournalBaseline] = [:]
 
     func currentMutationEpoch() -> Int { mutationEpoch }
 
@@ -256,6 +270,7 @@ actor LibraryIndexService {
         var albumStateChanged = false
         var pendingItems: Int?
         var pendingAlbums: Int?
+        var sidecarsRead: Int?
 
         /// Outcome of a pass that never got to look at the container.
         static let didNotScan = ReconcileOutcome()
@@ -264,7 +279,7 @@ actor LibraryIndexService {
     @discardableResult
     func reconcile(
         itemsDirectory: URL,
-        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) },
+        isPlaceholder: PlaceholderCheck? = nil,
         startedAtGeneration: Int? = nil,
         generationProbe: @Sendable @escaping () async -> Int = {
             await LibraryContainer.shared.rootGeneration
@@ -273,8 +288,13 @@ actor LibraryIndexService {
         // `rebuild` passes `false` so "Rebuild Index" means "distrust the
         // index" and never consults the very fingerprints it exists to
         // rebuild.
-        useFingerprints: Bool = true
+        useFingerprints: Bool = true,
+        progress: (@Sendable (Int) async -> Void)? = nil,
+        checkpointURL: URL? = nil
     ) async -> ReconcileOutcome {
+        await acquireScan()
+        defer { releaseScan() }
+        guard !Task.isCancelled else { return .didNotScan }
         // Load-bearing guard: a configured-but-LOCKED vault has no DEK, so a
         // store built with `crypto == nil` is a plain passthrough —
         // indistinguishable from `.notConfigured` — that would scan for
@@ -309,8 +329,19 @@ actor LibraryIndexService {
         // `LibraryContainer.shared.itemsDirectory()`); tests pass their own
         // `itemsDirectory` here and must scan THAT directory, so only the
         // atomically-derived crypto is taken from `ctx.store` — the caller-
-        // supplied directory is otherwise unchanged from before this fix.
-        let store = LibraryFileStore(itemsDirectory: itemsDirectory, crypto: ctx.store.crypto)
+        // supplied directory is otherwise unchanged. Preserve the custom-root
+        // storage policy too, so journal reads target the same directory.
+        let store = LibraryFileStore(itemsDirectory: itemsDirectory, crypto: ctx.store.crypto,
+                                     createsContainerDirectory: ctx.store.createsContainerDirectory)
+
+        let resolvedCheckpointURL = checkpointURL ?? (
+            modelContainer.configurations.allSatisfy(\.isStoredInMemoryOnly) ? nil :
+                LibraryScanCheckpoint.url(directory: itemsDirectory))
+        let checkpointRoot = itemsDirectory.standardizedFileURL.path + (store.isEncrypted ? "#encrypted" : "#plain")
+        let interruptedRebuild = await Self.scanIO {
+            LibraryScanCheckpoint.existing(at: resolvedCheckpointURL, root: checkpointRoot) != nil
+        }
+        let rebuilding = !useFingerprints || interruptedRebuild
 
         // The scan is a point-in-time snapshot of the container, read off the
         // actor. Direct mutations (add-to-album, saves, deletes) can land while
@@ -321,6 +352,7 @@ actor LibraryIndexService {
         // every epoch bump corresponds to a container file change, which
         // re-fires the metadata query and schedules another reconcile, so
         // giving up here never strands the index.
+        var publishedAlbumChanges = false
         for _ in 0..<3 {
             let epoch = currentMutationEpoch()
             // Read on the model actor, before the scan suspends: these are what
@@ -333,48 +365,42 @@ actor LibraryIndexService {
             // the scan itself must never reach into SwiftData. Empty when
             // `rebuild` called this (`useFingerprints == false`), so every
             // sidecar is re-read unconditionally.
-            let fingerprints = useFingerprints ? indexedFingerprints() : [:]
-            let scan = await Self.runScan(
-                store: store,
-                indexedItemIDs: known.items,
-                indexedAlbumIDs: known.albums,
-                isPlaceholder: isPlaceholder,
-                fingerprints: fingerprints
-            )
-
-            // A nil scan means the directory read *threw* (transient iCloud/filesystem
-            // error). Treating that as "empty" would prune the whole index, so we
-            // skip reconcile entirely and leave the index intact. A successfully-read
-            // but empty directory still prunes normally — that's a legitimate
-            // "every sidecar is gone" and the suite's reconcileDropsRowsWhoseSidecarVanished
-            // depends on it.
-            guard let scan else {
-                print("[LibraryIndex] container unreadable; skipping reconcile to preserve the index")
-                return .didNotScan
+            let fingerprints = rebuilding ? [:] : indexedFingerprints()
+            let journal = store.changeJournal
+            let journalStart = await Self.scanIO { () -> LibraryChangeJournal.Snapshot? in
+                guard let journal else { return nil }
+                do { try journal.prepare(); return try journal.snapshot() }
+                catch { return nil }
             }
-
-            // The root may have been switched while this scan ran on its own
-            // queue. Applying it now would write the OLD root's contents into
-            // the NEW root's index and prune everything else.
-            guard Self.shouldApplyScan(
-                startedAtGeneration: startedAtGeneration,
-                currentGeneration: await generationProbe()
-            ) else {
-                print("[LibraryIndex] Library root changed during the scan; discarding it")
-                return .didNotScan
+            let baselineKey = itemsDirectory.standardizedFileURL.path + "#\(startedAtGeneration)"
+            if !rebuilding, let journal, let snapshot = journalStart,
+               let outcome = await reconcileJournalChanges(
+                    journal: journal, snapshot: snapshot, key: baselineKey, store: store,
+                    epoch: epoch, startedAtGeneration: startedAtGeneration,
+                    generationProbe: generationProbe) { return outcome }
+            var outcome = await reconcileInBatches(
+                store: store, knownItems: known.items, knownAlbums: known.albums,
+                fingerprints: fingerprints, isPlaceholder: isPlaceholder,
+                epoch: epoch, startedAtGeneration: startedAtGeneration,
+                generationProbe: generationProbe, rebuilding: rebuilding,
+                progress: progress, checkpointURL: resolvedCheckpointURL,
+                finalizeCheck: {
+                    guard let journal, let journalStart else { return true }
+                    return await Self.scanIO { (try? journal.snapshot()) == journalStart }
+                })
+            publishedAlbumChanges = publishedAlbumChanges || outcome.albumStateChanged
+            outcome.albumStateChanged = publishedAlbumChanges
+            if outcome.pendingItems != nil, let journalStart, journalStart.isClean {
+                let journalEnd = await Self.scanIO { try? journal?.snapshot() }
+                if journalEnd == journalStart, currentMutationEpoch() == epoch {
+                    journalBaselines[baselineKey] = JournalBaseline(snapshot: journalStart, auditedAt: Date())
+                }
             }
-
-            if case .applied(let albumStateChanged) = applyScan(scan, ifEpochMatches: epoch) {
-                return ReconcileOutcome(
-                    albumStateChanged: albumStateChanged,
-                    pendingItems: scan.pendingItems,
-                    pendingAlbums: scan.pendingAlbums
-                )
-            }
+            if currentMutationEpoch() == epoch || Task.isCancelled { return outcome }
             print("[LibraryIndex] direct write landed during the container scan; rescanning")
         }
         print("[LibraryIndex] reconcile skipped: direct writes kept landing during scans")
-        return .didNotScan
+        return ReconcileOutcome(albumStateChanged: publishedAlbumChanges)
     }
 
     /// Pure decision extracted from `reconcile` so it's directly unit-testable
@@ -425,7 +451,7 @@ actor LibraryIndexService {
     /// Upserts `PersistedAlbum` rows from the scan and prunes rows whose album
     /// file vanished. Pure in-memory work on the model context; caller saves.
     /// Returns whether any album row was inserted, updated, or deleted.
-    private func applyAlbums(_ scan: ScanResult) -> Bool {
+    private func applyAlbums(_ scan: ScanResult, pruneMissing: Bool = true, deletedIDs: Set<UUID> = []) -> Bool {
         var changed = false
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
         var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -439,7 +465,7 @@ actor LibraryIndexService {
                 changed = true
             }
         }
-        for row in existing where !scan.seenAlbumIDs.contains(row.id) {
+        for row in existing where (pruneMissing && !scan.seenAlbumIDs.contains(row.id)) || deletedIDs.contains(row.id) {
             modelContext.delete(row)
             changed = true
         }
@@ -448,7 +474,8 @@ actor LibraryIndexService {
 
     /// One in-memory diff + a single batched save. Returns whether album-relevant
     /// state changed on success, or `nil` if the save failed.
-    private func reconcileBatched(_ scan: ScanResult) -> Bool? {
+    func reconcileBatched(_ scan: ScanResult, pruneMissing: Bool = true,
+                          deletedItemIDs: Set<Int> = [], deletedAlbumIDs: Set<UUID> = []) -> Bool? {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
 
@@ -491,11 +518,11 @@ actor LibraryIndexService {
         for update in scan.statusUpdates {
             byID[update.itemID]?.downloadStatus = update.status
         }
-        for item in existing where !scan.seenIDs.contains(item.itemID) {
+        for item in existing where (pruneMissing && !scan.seenIDs.contains(item.itemID)) || deletedItemIDs.contains(item.itemID) {
             if !item.albumIDsJoined.isEmpty { albumStateChanged = true }
             modelContext.delete(item)
         }
-        if applyAlbums(scan) { albumStateChanged = true }
+        if applyAlbums(scan, pruneMissing: pruneMissing, deletedIDs: deletedAlbumIDs) { albumStateChanged = true }
         do {
             try modelContext.save()
             return albumStateChanged
@@ -510,12 +537,12 @@ actor LibraryIndexService {
     /// entire batch down with it. Only runs when the fast path's save failed.
     /// Returns whether album-relevant state changed (same contract as
     /// `reconcileBatched`'s success case).
-    private func reconcilePerItem(_ scan: ScanResult) -> Bool {
+    func reconcilePerItem(_ scan: ScanResult, pruneMissing: Bool = true) -> Bool {
         let existing = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         var byID = Dictionary(existing.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
 
         var albumStateChanged = false
-        for item in existing where !scan.seenIDs.contains(item.itemID) {
+        for item in existing where pruneMissing && !scan.seenIDs.contains(item.itemID) {
             if !item.albumIDsJoined.isEmpty { albumStateChanged = true }
             modelContext.delete(item)
             if (try? modelContext.save()) == nil { modelContext.rollback() }
@@ -565,7 +592,7 @@ actor LibraryIndexService {
         // Albums are applied and saved as one batch even in the per-item path; the
         // only failure mode (a duplicate id) is already prevented by applyAlbums's
         // dictionary guard, so per-row saves aren't needed here.
-        let albumRowsChanged = applyAlbums(scan)
+        let albumRowsChanged = applyAlbums(scan, pruneMissing: pruneMissing)
         if (try? modelContext.save()) == nil {
             modelContext.rollback()
         } else if albumRowsChanged {
@@ -627,7 +654,7 @@ actor LibraryIndexService {
     /// `Data(contentsOf:)` / FileProvider syscalls off the Swift concurrency
     /// cooperative pool (see `reconcile`). Serial, so overlapping reconciles
     /// can never block more than one thread.
-    private static let scanQueue = DispatchQueue(
+    static let scanQueue = DispatchQueue(
         label: "com.achatessoftware.diffusely.library.scan",
         qos: .utility
     )
@@ -638,7 +665,7 @@ actor LibraryIndexService {
         store: LibraryFileStore,
         indexedItemIDs: Set<Int> = [],
         indexedAlbumIDs: Set<UUID> = [],
-        isPlaceholder: @escaping PlaceholderCheck = { isDatalessPlaceholder($0) },
+        isPlaceholder: PlaceholderCheck? = nil,
         fingerprints: [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)] = [:]
     ) async -> ScanResult? {
         await withCheckedContinuation { continuation in
@@ -670,6 +697,19 @@ actor LibraryIndexService {
         .fileSizeKey
     ]
 
+    nonisolated static func shouldCheckUbiquity(
+        directoryIsUbiquitous: Bool?, volumeIsLocal: Bool? = nil
+    ) -> Bool {
+        // iCloud placeholders are managed on the local filesystem. A network
+        // mount exposes ordinary files even if its backing server uses iCloud.
+        if volumeIsLocal == false { return false }
+        return directoryIsUbiquitous != false
+    }
+
+    nonisolated static func scanPrefetchKeys(checksUbiquity: Bool) -> [URLResourceKey] {
+        checksUbiquity ? scanPrefetchKeys : [.contentModificationDateKey, .fileSizeKey]
+    }
+
     /// Convenience for direct plaintext callers/tests that don't have a
     /// `LibraryFileStore` handy: builds a passthrough one (`crypto: nil`) over
     /// `itemsDirectory` and scans through it. Byte-identical to scanning that
@@ -689,6 +729,7 @@ actor LibraryIndexService {
     /// motivated this work came from a synthetic benchmark that disagreed with
     /// observed behaviour by more than 10x, and this is how that gets settled.
     struct ScanMetrics {
+        var checksUbiquity = true
         var listingSeconds = 0.0
         var sidecarsRead = 0
         var readSeconds = 0.0
@@ -702,7 +743,7 @@ actor LibraryIndexService {
                 listingSeconds, sidecarsRead, readSeconds,
                 sidecarsRead > 0 ? readSeconds * 1000 / Double(sidecarsRead) : 0,
                 decodeSeconds, statCount, statSeconds
-            )
+            ) + " | cloud checks \(checksUbiquity ? "on" : "off")"
         }
     }
 
@@ -734,12 +775,14 @@ actor LibraryIndexService {
     /// as a `LibraryAlbumFile` — content that doesn't decode that way (e.g. a
     /// future sort-assistant-state aux file) is silently skipped, not an error.
     ///
-    /// Deliberately does ONE `contentsOfDirectory` call for the whole scan —
+    /// Standalone calls do ONE `contentsOfDirectory` call for the whole scan —
     /// not one via this method plus another inside `store.enumerateMetadataFiles()`/
     /// `enumerateAuxFiles()` — because a second, separately-fetched listing
     /// wouldn't carry this call's prefetched resourceValues cache, reintroducing
     /// the per-file XPC round-trip this scan exists to avoid. `store.isMetadataFileName`/
     /// `isAuxFileName` classify names from the single listing captured here.
+    /// Production passes `listedContents` from the streaming cursor instead;
+    /// batches resolve media presence individually because their listing is partial.
     ///
     /// Restructured into three phases to split classification from reading:
     /// Phase A (serial) walks the sidecar URLs and classifies each into an
@@ -766,7 +809,7 @@ actor LibraryIndexService {
         store: LibraryFileStore,
         indexedItemIDs: Set<Int> = [],
         indexedAlbumIDs: Set<UUID> = [],
-        isPlaceholder: PlaceholderCheck = { isDatalessPlaceholder($0) },
+        isPlaceholder: PlaceholderCheck? = nil,
         // Task 4: sidecar fingerprints the index already holds, keyed by
         // sidecar filename — read on the model actor by `reconcile` before
         // the scan starts (`indexedFingerprints()`) and handed in here so
@@ -774,16 +817,31 @@ actor LibraryIndexService {
         // at all. Empty (the default) means "never skip" — every existing
         // call site (tests, `rebuild`) that doesn't pass this gets the exact
         // pre-Task-4 always-read behavior.
-        fingerprints: [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)] = [:]
+        fingerprints: [String: (modifiedAt: Date?, size: Int, itemID: Int, mediaFileName: String)] = [:],
+        listedContents: [URL]? = nil,
+        storageChecksUbiquity: Bool? = nil
     ) -> ScanResult? {
         let fileManager = FileManager.default
         let itemsDirectory = store.itemsDirectory
         var metrics = ScanMetrics()
         let listingStart = CFAbsoluteTimeGetCurrent()
-        guard let contents = try? fileManager.contentsOfDirectory(
+        // Probe the directory once. Requesting iCloud keys for every entry on
+        // an SMB/Cryptomator mount makes Foundation perform FileProvider
+        // heuristics (and remote getattr calls) for each file. Unknown status
+        // retains the conservative iCloud path so placeholders stay protected.
+        let directoryValues = storageChecksUbiquity == nil ? try? itemsDirectory.resourceValues(
+            forKeys: [.isUbiquitousItemKey, .volumeIsLocalKey]) : nil
+        let checksUbiquity = storageChecksUbiquity ?? shouldCheckUbiquity(
+            directoryIsUbiquitous: directoryValues?.isUbiquitousItem,
+            volumeIsLocal: directoryValues?.volumeIsLocal)
+        let isPlaceholder = isPlaceholder ?? { url in
+            checksUbiquity && isDatalessPlaceholder(url)
+        }
+        metrics.checksUbiquity = checksUbiquity
+        guard let contents = listedContents ?? (try? fileManager.contentsOfDirectory(
             at: itemsDirectory,
-            includingPropertiesForKeys: scanPrefetchKeys
-        ) else {
+            includingPropertiesForKeys: scanPrefetchKeys(checksUbiquity: checksUbiquity)
+        )) else {
             // Couldn't read the directory (transient iCloud/filesystem error).
             // Returning an empty scan would make reconcile prune the entire
             // index; signal failure so the caller leaves it intact instead.
@@ -802,7 +860,7 @@ actor LibraryIndexService {
         // Presence for every file this scan will look up is already known from
         // the single listing above — `downloadStatus` uses membership in this
         // set instead of a per-file `fileExists` round trip.
-        let presentNames = Set(urlsByName.keys)
+        let presentNames: Set<String>? = listedContents == nil ? Set(urlsByName.keys) : nil
 
         var seenIDs = Set<Int>()
         var items: [(
@@ -954,7 +1012,7 @@ actor LibraryIndexService {
                     plaintextExtension: URL(fileURLWithPath: known.mediaFileName).pathExtension)
                 let lookupURL = urlsByName[mediaURL.lastPathComponent] ?? mediaURL
                 let statStart = CFAbsoluteTimeGetCurrent()
-                let status = downloadStatus(for: lookupURL, fileManager: fileManager, presentNames: presentNames)
+                let status = downloadStatus(for: lookupURL, fileManager: fileManager, presentNames: presentNames, checksUbiquity: checksUbiquity)
                 // Task 4 correction: this branch resolves a real status from
                 // the listing for every skipped sidecar, but originally
                 // never counted it — an unchanged launch printed "0 stats"
@@ -1028,7 +1086,7 @@ actor LibraryIndexService {
             let mediaURL = store.mediaURL(itemID: metadata.itemID, plaintextExtension: metadata.mediaType.fileExtension)
             let lookupURL = urlsByName[mediaURL.lastPathComponent] ?? mediaURL
             let statStart = CFAbsoluteTimeGetCurrent()
-            let status = downloadStatus(for: lookupURL, fileManager: fileManager, presentNames: presentNames)
+            let status = downloadStatus(for: lookupURL, fileManager: fileManager, presentNames: presentNames, checksUbiquity: checksUbiquity)
             metrics.statSeconds += CFAbsoluteTimeGetCurrent() - statStart
             metrics.statCount += 1
             items.append((
@@ -1151,18 +1209,22 @@ actor LibraryIndexService {
     /// (healing field-level corruption), inserts brand-new sidecars, and deletes
     /// rows whose sidecar has vanished. That is a full rebuild from the source of
     /// truth, without the destructive empty window or the re-insert hazard.
+    /// Interrupted rebuilds resume only fingerprints committed by that rebuild;
+    /// after successful completion, the next explicit rebuild starts fresh.
     @discardableResult
     func rebuild(
         itemsDirectory: URL,
         startedAtGeneration: Int? = nil,
         generationProbe: @Sendable @escaping () async -> Int = {
             await LibraryContainer.shared.rootGeneration
-        }
+        },
+        progress: (@Sendable (Int) async -> Void)? = nil,
+        checkpointURL: URL? = nil
     ) async -> ReconcileOutcome {
         await reconcile(itemsDirectory: itemsDirectory,
                         startedAtGeneration: startedAtGeneration,
                         generationProbe: generationProbe,
-                        useFingerprints: false)
+                        useFingerprints: false, progress: progress, checkpointURL: checkpointURL)
     }
 
     /// Deletes every index row without reconciling. Used by Reset Library after
@@ -1460,7 +1522,8 @@ actor LibraryIndexService {
     /// whole scan). `nil` (every caller besides `scanContainer`) preserves the
     /// original `fileExists` behaviour exactly, byte-for-byte.
     static func downloadStatus(
-        for mediaURL: URL, fileManager: FileManager, presentNames: Set<String>? = nil
+        for mediaURL: URL, fileManager: FileManager, presentNames: Set<String>? = nil,
+        checksUbiquity: Bool = true
     ) -> LibraryDownloadStatus {
         let isPresent = presentNames?.contains(mediaURL.lastPathComponent)
             ?? fileManager.fileExists(atPath: mediaURL.path)
@@ -1469,6 +1532,7 @@ actor LibraryIndexService {
             // will materialize it when the user opens the item.
             return .evicted
         }
+        guard checksUbiquity else { return .downloaded }
         let values = try? mediaURL.resourceValues(forKeys: [
             .isUbiquitousItemKey,
             .ubiquitousItemDownloadingStatusKey

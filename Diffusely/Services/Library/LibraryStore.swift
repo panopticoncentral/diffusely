@@ -66,6 +66,11 @@ final class LibraryStore: ObservableObject {
     /// Change detection for a custom root, where there is no `NSMetadataQuery`.
     /// Exactly one of this and `metadataQuery` is ever active.
     private var folderWatcher: LibraryFolderWatcher?
+    private var journalAuditTask: Task<Void, Never>?
+    private var rebuildTask: Task<LibraryIndexService.ReconcileOutcome, Never>?
+    @Published private(set) var rebuildItemsProcessed: Int?
+    @Published private(set) var lastRebuildCompleted = false
+    @Published private(set) var lastRebuildWasCancelled = false
 
     /// Keeps `LibrarySaveService.isLibraryBrowsable` — the visibility gate on
     /// the feeds' "already in your library" badge — following the vault gate.
@@ -275,6 +280,16 @@ final class LibraryStore: ObservableObject {
             Task { @MainActor in self?.handleQueryUpdate() }
         }) else { return }
         folderWatcher = watcher
+        journalAuditTask?.cancel()
+        journalAuditTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                guard self != nil else { return }
+                if let self, !self.reconcileInFlight, self.rebuildTask == nil {
+                    self.reconcileScheduler?.schedule()
+                }
+            }
+        }
         didConfigureChangeDetection = true
     }
 
@@ -285,6 +300,9 @@ final class LibraryStore: ObservableObject {
     /// makes that pass's own re-checks a no-op instead.
     func quiesceForRootSwitch() async {
         changeDetectionEpoch += 1
+        journalAuditTask?.cancel()
+        journalAuditTask = nil
+        rebuildTask?.cancel()
         reconcileScheduler?.cancel()
         folderWatcher?.cancel()
         folderWatcher = nil
@@ -431,7 +449,7 @@ final class LibraryStore: ObservableObject {
             print("[LibraryStore] autonomous reconcile skipped; libraryGate=\(gate)")
             return
         }
-        guard !reconcileInFlight else {
+        guard !reconcileInFlight, rebuildTask == nil else {
             reconcileNeedsRerun = true
             return
         }
@@ -444,7 +462,8 @@ final class LibraryStore: ObservableObject {
             iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
             let outcome = await indexService.reconcile(
                 itemsDirectory: resolved.url,
-                startedAtGeneration: resolved.generation
+                startedAtGeneration: resolved.generation,
+                progress: { [weak self] _ in await self?.publishScanBatch() }
             )
             let albumStateChanged = outcome.albumStateChanged
             applyPendingDownloads(from: outcome)
@@ -460,7 +479,7 @@ final class LibraryStore: ObservableObject {
             // this signal. Conditional, so quiet reconciles (the common case
             // under iCloud churn) don't trigger pointless reloads.
             if albumStateChanged { notifyAlbumsChanged() }
-        } while reconcileNeedsRerun
+        } while reconcileNeedsRerun && rebuildTask == nil
     }
 
     /// Manual counterpart of `reconcileNow`'s gate: Settings → "Rebuild Index"
@@ -476,20 +495,48 @@ final class LibraryStore: ObservableObject {
     /// `LibrarySaveService.shared.indexService?.rebuild`, which never calls
     /// this method) is untouched and still runs while `.migrating`.
     func rebuildIndex() async {
+        guard rebuildTask == nil else { return }
+        lastRebuildCompleted = false
+        lastRebuildWasCancelled = false
         let gate = LibraryVaultProvider.shared.libraryGate
-        guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else {
-            print("[LibraryStore] manual rebuild skipped; libraryGate=\(gate)")
-            return
-        }
+        guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else { return }
         guard let resolved = await resolveItemsDirectoryReportingUnavailability() else { return }
-        let outcome = await indexService.rebuild(
-            itemsDirectory: resolved.url,
-            startedAtGeneration: resolved.generation
-        )
+        rebuildItemsProcessed = 0
+        let service = indexService
+        let task = Task { [weak self] in
+            // Let the startup refresh finish before beginning an explicit rebuild.
+            while self?.reconcileInFlight == true {
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return LibraryIndexService.ReconcileOutcome.didNotScan }
+            }
+            guard !Task.isCancelled else { return LibraryIndexService.ReconcileOutcome.didNotScan }
+            return await service.rebuild(
+                itemsDirectory: resolved.url, startedAtGeneration: resolved.generation,
+                progress: { [weak self] count in await self?.recordRebuildProgress(count) })
+        }
+        rebuildTask = task
+        let outcome = await task.value
+        lastRebuildWasCancelled = task.isCancelled
+        lastRebuildCompleted = outcome.pendingItems != nil
+        rebuildTask = nil
+        rebuildItemsProcessed = nil
         applyPendingDownloads(from: outcome)
         await refreshTotals()
         if outcome.albumStateChanged { notifyAlbumsChanged() }
+        if reconcileNeedsRerun { reconcileScheduler?.schedule() }
     }
+
+    private func recordRebuildProgress(_ count: Int) async {
+        rebuildItemsProcessed = count
+        await publishScanBatch()
+    }
+
+    private func publishScanBatch() async {
+        await refreshTotals()
+        notifyAlbumsChanged()
+    }
+
+    func cancelRebuild() { rebuildTask?.cancel() }
 
     // Both eviction entry points resolve the container first (fail fast, same
     // reasoning as `remove(itemID:)`) and then evict through the vault-aware

@@ -99,6 +99,15 @@ struct DiffuselyApp: App {
             PersistedLibraryItem.self,
             PersistedAlbum.self
         ])
+        // Hosted tests must never open or recover the user's on-disk index.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil {
+            return try! ModelContainer(
+                for: schema,
+                configurations: [ModelConfiguration(
+                    schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)]
+            )
+        }
         // Use an explicit store URL we fully control. The local SwiftData store is
         // a disposable cache (collections re-sync from Civitai, the personal
         // library rebuilds from the iCloud container), so we deliberately use a

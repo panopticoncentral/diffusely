@@ -235,9 +235,15 @@ struct SettingsView: View {
                         // of these, so the summary describes the pass that just
                         // finished rather than the state it started from.
                         let now = Date()
-                        rebuildIndexResult = libraryStore.downloadProgress
-                            .state(now: now)
-                            .rebuildSummary(indexedItems: libraryStore.itemCount, now: now)
+                        if !libraryStore.lastRebuildCompleted {
+                            rebuildIndexResult = libraryStore.lastRebuildWasCancelled
+                                ? "Rebuild stopped. Saved progress will be reused next time."
+                                : "Rebuild incomplete. Saved progress will be reused next time."
+                        } else {
+                            rebuildIndexResult = libraryStore.downloadProgress
+                                .state(now: now)
+                                .rebuildSummary(indexedItems: libraryStore.itemCount, now: now)
+                        }
                         isRebuildingIndex = false
                     }
                 }
@@ -245,7 +251,13 @@ struct SettingsView: View {
 
                 if isRebuildingIndex {
                     ProgressView().controlSize(.small)
+                    Button("Stop") { libraryStore.cancelRebuild() }
                 }
+            }
+            if let count = libraryStore.rebuildItemsProcessed {
+                Text("Processed \(count) items so far…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             // A rebuild that correctly changes nothing is indistinguishable

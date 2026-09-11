@@ -38,6 +38,47 @@ import Foundation
         ))
     }
 
+    @Test func onlyConfirmedNonCloudDirectoriesSkipUbiquityChecks() {
+        #expect(!LibraryIndexService.shouldCheckUbiquity(directoryIsUbiquitous: false))
+        #expect(LibraryIndexService.shouldCheckUbiquity(directoryIsUbiquitous: true))
+        #expect(LibraryIndexService.shouldCheckUbiquity(directoryIsUbiquitous: nil))
+        #expect(!LibraryIndexService.shouldCheckUbiquity(
+            directoryIsUbiquitous: nil, volumeIsLocal: false))
+        #expect(LibraryIndexService.shouldCheckUbiquity(
+            directoryIsUbiquitous: nil, volumeIsLocal: true))
+        let keys = LibraryIndexService.scanPrefetchKeys(checksUbiquity: false)
+        #expect(!keys.contains(.isUbiquitousItemKey))
+        #expect(!keys.contains(.ubiquitousItemDownloadingStatusKey))
+        #expect(keys.contains(.contentModificationDateKey))
+        #expect(keys.contains(.fileSizeKey))
+        #expect(LibraryIndexService.scanPrefetchKeys(checksUbiquity: true)
+            == LibraryIndexService.scanPrefetchKeys)
+    }
+
+    @Test func localScanKeepsFingerprints() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let data = try metadataJSON(itemID: 42, mediaFileName: "42.jpeg")
+        try data.write(to: dir.appendingPathComponent("42.json"))
+        try Data([1]).write(to: dir.appendingPathComponent("42.jpeg"))
+        let scan = try #require(LibraryIndexService.scanContainer(itemsDirectory: dir))
+        let item = try #require(scan.items.first)
+        #expect(item.metadata.itemID == 42)
+        #expect(item.status == .downloaded)
+        #expect(item.sidecarModifiedAt != nil)
+        #expect(item.sidecarByteSize == data.count)
+    }
+
+    @Test func nonCloudMediaStatusUsesOnlyListingPresence() {
+        let url = URL(fileURLWithPath: "/nonexistent-library/1.jpeg")
+        #expect(LibraryIndexService.downloadStatus(
+            for: url, fileManager: .default, presentNames: ["1.jpeg"], checksUbiquity: false
+        ) == .downloaded)
+        #expect(LibraryIndexService.downloadStatus(
+            for: url, fileManager: .default, presentNames: [], checksUbiquity: false
+        ) == .evicted)
+    }
+
     // MARK: - downloadStatus presence resolution
 
     /// The strongest form of "doesn't touch the filesystem": the file named
