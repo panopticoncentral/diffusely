@@ -89,7 +89,8 @@ extension LibraryIndexService {
         fingerprints: Fingerprints, isPlaceholder: PlaceholderCheck?,
         epoch: Int, startedAtGeneration: Int,
         generationProbe: @Sendable @escaping () async -> Int,
-        rebuilding: Bool, progress: (@Sendable (Int) async -> Void)?,
+        rebuilding: Bool,
+        progress: (@Sendable (_ processed: Int, _ hasVisibleChanges: Bool) async -> Void)?,
         checkpointURL: URL?, batchSize: Int = 256,
         finalizeCheck: @Sendable @escaping () async -> Bool = { true }
     ) async -> ReconcileOutcome {
@@ -165,7 +166,19 @@ extension LibraryIndexService {
                     catch { print("[LibraryIndex] checkpoint could not be saved: \(error)") }
                 }
             }
-            await progress?(processed)
+            // Fingerprint-matched sidecars still produce statusUpdates so their
+            // media availability stays current, but in the common case those
+            // updates write the same status already held by the index. Publishing
+            // every such batch made LibraryStore refresh totals and bump the
+            // Library view version every 256 files. On a large library that
+            // repeatedly refetched and sorted the entire grid on the main thread.
+            //
+            // A read sidecar may be new or may contain visible metadata changes;
+            // batchChanged covers album rows/membership. Callers still receive
+            // every processed count (needed by explicit-rebuild progress), plus
+            // this hint so automatic reconcile can suppress no-op UI publishes.
+            let hasVisibleChanges = !scan.items.isEmpty || batchChanged
+            await progress?(processed, hasVisibleChanges)
             if page.finished {
                 // A writer that changed the journal during enumeration makes
                 // absence ambiguous; keep published rows but defer pruning.

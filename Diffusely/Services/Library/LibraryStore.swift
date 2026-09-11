@@ -63,6 +63,12 @@ final class LibraryStore: ObservableObject {
     /// arrival is still picked up quickly.
     private var reconcileScheduler: ReconcileScheduler?
 
+    /// Coordinated deletion can take seconds on FileProvider-backed roots.
+    /// While one is active, autonomous scans are deferred: the index is updated
+    /// first for responsive UI, so scanning the not-yet-deleted sidecars in the
+    /// cleanup window would otherwise resurrect those rows temporarily.
+    private var deleteOperationsInFlight = 0
+
     /// Change detection for a custom root, where there is no `NSMetadataQuery`.
     /// Exactly one of this and `metadataQuery` is ever active.
     private var folderWatcher: LibraryFolderWatcher?
@@ -449,6 +455,10 @@ final class LibraryStore: ObservableObject {
             print("[LibraryStore] autonomous reconcile skipped; libraryGate=\(gate)")
             return
         }
+        guard deleteOperationsInFlight == 0 else {
+            reconcileNeedsRerun = true
+            return
+        }
         guard !reconcileInFlight, rebuildTask == nil else {
             reconcileNeedsRerun = true
             return
@@ -457,13 +467,20 @@ final class LibraryStore: ObservableObject {
         defer { reconcileInFlight = false }
 
         repeat {
+            guard deleteOperationsInFlight == 0 else {
+                reconcileNeedsRerun = true
+                return
+            }
             reconcileNeedsRerun = false
             guard let resolved = await resolveItemsDirectoryReportingUnavailability() else { return }
             iCloudStatus = await LibraryContainer.shared.isICloudBacked ? .available : .unavailable
             let outcome = await indexService.reconcile(
                 itemsDirectory: resolved.url,
                 startedAtGeneration: resolved.generation,
-                progress: { [weak self] _ in await self?.publishScanBatch() }
+                progress: { [weak self] _, hasVisibleChanges in
+                    guard hasVisibleChanges else { return }
+                    await self?.publishScanBatch()
+                }
             )
             let albumStateChanged = outcome.albumStateChanged
             applyPendingDownloads(from: outcome)
@@ -500,6 +517,7 @@ final class LibraryStore: ObservableObject {
         lastRebuildWasCancelled = false
         let gate = LibraryVaultProvider.shared.libraryGate
         guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else { return }
+        guard deleteOperationsInFlight == 0 else { return }
         guard let resolved = await resolveItemsDirectoryReportingUnavailability() else { return }
         rebuildItemsProcessed = 0
         let service = indexService
@@ -512,7 +530,9 @@ final class LibraryStore: ObservableObject {
             guard !Task.isCancelled else { return LibraryIndexService.ReconcileOutcome.didNotScan }
             return await service.rebuild(
                 itemsDirectory: resolved.url, startedAtGeneration: resolved.generation,
-                progress: { [weak self] count in await self?.recordRebuildProgress(count) })
+                progress: { [weak self] count, hasVisibleChanges in
+                    await self?.recordRebuildProgress(count, hasVisibleChanges: hasVisibleChanges)
+                })
         }
         rebuildTask = task
         let outcome = await task.value
@@ -526,9 +546,9 @@ final class LibraryStore: ObservableObject {
         if reconcileNeedsRerun { reconcileScheduler?.schedule() }
     }
 
-    private func recordRebuildProgress(_ count: Int) async {
+    private func recordRebuildProgress(_ count: Int, hasVisibleChanges: Bool) async {
         rebuildItemsProcessed = count
-        await publishScanBatch()
+        if hasVisibleChanges { await publishScanBatch() }
     }
 
     private func publishScanBatch() async {
@@ -585,22 +605,15 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// Coordinates deletion of both files for each item id via the store:
-    /// `store.removeItem(itemID:plaintextExtension:)` deletes that item's
-    /// metadata + media, whatever their on-disk names actually are (plaintext
-    /// `{id}.json`/`.jpeg`/`.mp4`, or the opaque encrypted `*.m`/`*.b` tokens).
-    /// Trying both "jpeg" and "mp4" per item mirrors today's brute-force
-    /// extension list — the caller doesn't know an item's actual media type,
-    /// and `removeItem` silently skips files that don't exist (and ignores
-    /// the extension entirely once encrypted, since the opaque media name
-    /// doesn't depend on it), so the second call is a harmless no-op either
-    /// way. Missing files are skipped. Shared by `remove(itemID:)` and
+    /// Coordinates deletion of both files for each item id via the store.
+    /// The caller doesn't know each item's media type, so the store probes both
+    /// supported plaintext extensions (encrypted stores deduplicate the opaque
+    /// media URL). The whole selection uses one durable journal transaction;
+    /// otherwise a bulk delete pays two coordinated journal rewrites per file.
+    /// Missing files are skipped. Shared by `remove(itemID:)` and
     /// `remove(itemIDs:)`.
     nonisolated static func deleteItemFiles(itemIDs: [Int], store: LibraryFileStore) {
-        for itemID in itemIDs {
-            store.removeItem(itemID: itemID, plaintextExtension: "jpeg")
-            store.removeItem(itemID: itemID, plaintextExtension: "mp4")
-        }
+        store.removeItems(itemIDs: itemIDs, plaintextExtensions: ["jpeg", "mp4"])
     }
 
     /// Directory-based convenience for callers/tests without a store handy —
@@ -701,23 +714,44 @@ final class LibraryStore: ObservableObject {
         // scratch fallback — same reasoning as `LibrarySaveService.performSave`.
         guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
         let store = await LibraryVaultProvider.shared.fileStore()
-        await Self.runDeleteItemFiles(itemIDs: [itemID], store: store)
+        beginDeleteOperation()
+        // The index is disposable; update it before the potentially slow
+        // FileProvider round trips so the Library responds immediately.
         await indexService.remove(itemID: itemID)
         await refreshTotals()
+        await Self.runDeleteItemFiles(itemIDs: [itemID], store: store)
+        finishDeleteOperation()
     }
 
     /// Batch delete for the Library multi-select action. Resolves the items
-    /// directory once, deletes all files, removes all index rows in a single
-    /// save, then refreshes totals once — so removing N items is not N directory
-    /// resolves and N totals refreshes. File coordination runs off the main
-    /// actor so a large multi-select can't hitch the UI.
+    /// directory once, removes all index rows in a single save, refreshes the UI,
+    /// then completes physical deletion on the background queue. Autonomous
+    /// reconciles are held until cleanup finishes so the still-present sidecars
+    /// cannot briefly restore the optimistically removed rows.
     func remove(itemIDs: [Int]) async {
         guard !itemIDs.isEmpty else { return }
         guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
         let store = await LibraryVaultProvider.shared.fileStore()
-        await Self.runDeleteItemFiles(itemIDs: itemIDs, store: store)
+        beginDeleteOperation()
         await indexService.remove(itemIDs: itemIDs)
         await refreshTotals()
+        await Self.runDeleteItemFiles(itemIDs: itemIDs, store: store)
+        finishDeleteOperation()
+    }
+
+    private func beginDeleteOperation() {
+        deleteOperationsInFlight += 1
+        // The following index removal rejects an older scan at its mutation-
+        // epoch fence. Also ensure a clean post-delete pass follows once all
+        // overlapping deletes finish.
+        reconcileNeedsRerun = true
+    }
+
+    private func finishDeleteOperation() {
+        deleteOperationsInFlight = max(0, deleteOperationsInFlight - 1)
+        if deleteOperationsInFlight == 0, reconcileNeedsRerun {
+            reconcileScheduler?.schedule()
+        }
     }
 
     /// Clears the Library and returns how many entries were left behind because

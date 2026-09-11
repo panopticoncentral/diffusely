@@ -35,7 +35,7 @@ import SwiftData
         let interrupted = await Task {
             await service.reconcileInBatches(store: store, knownItems: [], knownAlbums: [], fingerprints: [:],
                 isPlaceholder: nil, epoch: epoch, startedAtGeneration: 0, generationProbe: { 0 },
-                rebuilding: true, progress: { _ in
+                rebuilding: true, progress: { _, _ in
                     // The absent row survives until the complete walk, while a
                     // new row has already been published before scanning ends.
                     #expect(await service.itemCount() == 2)
@@ -56,6 +56,43 @@ import SwiftData
         #expect(complete.sidecarsRead == 3, "the committed unchanged sidecar must not be read again")
         #expect(await service.itemCount() == 4)
         #expect(!FileManager.default.fileExists(atPath: checkpoint.path))
+    }
+
+    @Test func progressDistinguishesUnchangedBatchesFromVisibleChanges() async throws {
+        let (directory, service) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try write(1, to: directory)
+
+        // Seed the row and its fingerprint. The next pass should only confirm
+        // the unchanged sidecar/status and must not ask LibraryStore to rebuild
+        // the visible Library for that batch.
+        await service.reconcile(itemsDirectory: directory, isPlaceholder: { _ in false })
+        let unchanged = BatchProgressRecorder()
+        await service.reconcile(
+            itemsDirectory: directory,
+            isPlaceholder: { _ in false },
+            progress: { count, hasVisibleChanges in
+                await unchanged.record(count: count, hasVisibleChanges: hasVisibleChanges)
+            }
+        )
+        let unchangedEvents = await unchanged.events
+        #expect(!unchangedEvents.isEmpty)
+        #expect(unchangedEvents.allSatisfy { !$0.hasVisibleChanges })
+
+        // A newly arrived sidecar must retain incremental publishing so it can
+        // appear before a long scan reaches the end.
+        try write(2, to: directory)
+        let changed = BatchProgressRecorder()
+        await service.reconcile(
+            itemsDirectory: directory,
+            isPlaceholder: { _ in false },
+            progress: { count, hasVisibleChanges in
+                await changed.record(count: count, hasVisibleChanges: hasVisibleChanges)
+            }
+        )
+        let changedEvents = await changed.events
+        #expect(changedEvents.contains { $0.hasVisibleChanges })
+        #expect(await service.itemCount() == 2)
     }
 
     @Test func journalDeltaUpdatesAndDeletesOnlyNamedRows() async throws {
@@ -108,7 +145,7 @@ import SwiftData
             store: LibraryFileStore(itemsDirectory: directory, crypto: nil), knownItems: [], knownAlbums: [],
             fingerprints: [:], isPlaceholder: nil, epoch: await service.currentMutationEpoch(),
             startedAtGeneration: 0, generationProbe: { await generation.value }, rebuilding: false,
-            progress: { _ in await generation.change() }, checkpointURL: nil, batchSize: 1)
+            progress: { _, _ in await generation.change() }, checkpointURL: nil, batchSize: 1)
         #expect(outcome.pendingItems == nil)
         #expect(await service.itemCount() == 2)
     }
@@ -138,6 +175,19 @@ import SwiftData
             rebuilding: false, progress: nil, checkpointURL: nil, batchSize: 1)
         #expect(outcome.pendingItems == nil)
         #expect(await service.itemCount() == 1)
+    }
+}
+
+private actor BatchProgressRecorder {
+    struct Event: Sendable {
+        let count: Int
+        let hasVisibleChanges: Bool
+    }
+
+    private(set) var events: [Event] = []
+
+    func record(count: Int, hasVisibleChanges: Bool) {
+        events.append(Event(count: count, hasVisibleChanges: hasVisibleChanges))
     }
 }
 

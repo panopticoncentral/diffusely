@@ -79,17 +79,50 @@ struct LibraryFileStore {
     /// metadata on its next run, rather than the orphan going permanently
     /// untracked.
     func removeItem(itemID: Int, plaintextExtension ext: String) {
-        let coordinator = NSFileCoordinator()
-        for url in [mediaURL(itemID: itemID, plaintextExtension: ext), metadataURL(itemID: itemID)] {
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            var err: NSError?
-            let deletion = {
+        removeURLs([
+            mediaURL(itemID: itemID, plaintextExtension: ext),
+            metadataURL(itemID: itemID)
+        ])
+    }
+
+    /// Bulk counterpart to `removeItem`. One journal transaction covers the
+    /// complete selection instead of durably rewriting and fsyncing the journal
+    /// before and after every individual file. The pending transaction still
+    /// names every file, so a crash anywhere in the loop forces readers to
+    /// inspect the same authoritative on-disk state as the per-file version.
+    func removeItems(itemIDs: [Int], plaintextExtensions: [String]) {
+        var urls: [URL] = []
+        urls.reserveCapacity(itemIDs.count * (plaintextExtensions.count + 1))
+        for itemID in itemIDs {
+            // Media stays before metadata for each item; see `removeItem`.
+            for ext in plaintextExtensions {
+                urls.append(mediaURL(itemID: itemID, plaintextExtension: ext))
+            }
+            urls.append(metadataURL(itemID: itemID))
+        }
+        removeURLs(urls)
+    }
+
+    private func removeURLs(_ candidateURLs: [URL]) {
+        var seen = Set<URL>()
+        let urls = candidateURLs.filter { url in
+            seen.insert(url).inserted && FileManager.default.fileExists(atPath: url.path)
+        }
+        guard !urls.isEmpty else { return }
+
+        let deletion = {
+            let coordinator = NSFileCoordinator()
+            for url in urls {
+                var err: NSError?
                 coordinator.coordinate(writingItemAt: url, options: .forDeleting, error: &err) { u in
                     try? FileManager.default.removeItem(at: u)
                 }
             }
-            if let journal = changeJournal { try? journal.withMutation(names: [url.lastPathComponent], deletion) }
-            else { deletion() }
+        }
+        if let journal = changeJournal {
+            try? journal.withMutation(names: urls.map(\.lastPathComponent), deletion)
+        } else {
+            deletion()
         }
     }
 

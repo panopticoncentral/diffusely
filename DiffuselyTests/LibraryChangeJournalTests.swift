@@ -46,6 +46,31 @@ import Foundation
         #expect(try journal.snapshot().changes(since: beforeLegacy) == ["album-test.json"])
     }
 
+    @Test func bulkDeleteUsesOneJournalTransactionForEveryFile() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = UUID().uuidString
+        let journal = LibraryChangeJournal(root: root, writerID: writer)
+        try journal.prepare()
+        let store = LibraryFileStore(itemsDirectory: root, crypto: nil,
+            createsContainerDirectory: false, journalWriterID: writer)
+        for itemID in [1, 2] {
+            try Data("metadata".utf8).write(to: store.metadataURL(itemID: itemID))
+            try Data([1]).write(to: store.mediaURL(itemID: itemID, plaintextExtension: "jpeg"))
+        }
+        let before = try journal.snapshot()
+
+        store.removeItems(itemIDs: [1, 2], plaintextExtensions: ["jpeg", "mp4"])
+
+        let after = try journal.snapshot()
+        let document = try #require(after.writers[writer + ".json"])
+        #expect(document.sequence == (before.writers[writer + ".json"]?.sequence ?? 0) + 1)
+        #expect(after.changes(since: before) == ["1.jpeg", "1.json", "2.jpeg", "2.json"])
+        #expect(document.pending.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: store.metadataURL(itemID: 1).path))
+        #expect(!FileManager.default.fileExists(atPath: store.mediaURL(itemID: 2, plaintextExtension: "jpeg").path))
+    }
+
     @Test func gapsCorruptionAndMissingWritersRequireAudit() throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }

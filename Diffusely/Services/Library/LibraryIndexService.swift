@@ -289,7 +289,7 @@ actor LibraryIndexService {
         // index" and never consults the very fingerprints it exists to
         // rebuild.
         useFingerprints: Bool = true,
-        progress: (@Sendable (Int) async -> Void)? = nil,
+        progress: (@Sendable (_ processed: Int, _ hasVisibleChanges: Bool) async -> Void)? = nil,
         checkpointURL: URL? = nil
     ) async -> ReconcileOutcome {
         await acquireScan()
@@ -1218,7 +1218,7 @@ actor LibraryIndexService {
         generationProbe: @Sendable @escaping () async -> Int = {
             await LibraryContainer.shared.rootGeneration
         },
-        progress: (@Sendable (Int) async -> Void)? = nil,
+        progress: (@Sendable (_ processed: Int, _ hasVisibleChanges: Bool) async -> Void)? = nil,
         checkpointURL: URL? = nil
     ) async -> ReconcileOutcome {
         await reconcile(itemsDirectory: itemsDirectory,

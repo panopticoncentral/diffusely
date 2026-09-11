@@ -1,10 +1,13 @@
 # Incremental library indexing
 
 Full scans enumerate the flat library in batches of at most 256 directory
-entries. Each batch publishes index rows and refreshes the library UI. Only a
-completed walk may prune missing rows. Cancellation, enumeration errors, root
-changes, or a changed journal defer that final prune. Direct index mutations
-invalidate the in-flight scan's epoch and trigger a bounded retry.
+entries. Each batch publishes index rows; only batches containing new or
+changed sidecars refresh the library UI. Fingerprint-matched batches still
+refresh download status in the index, but do not repeatedly refetch and sort
+the whole visible library. Only a completed walk may prune missing rows.
+Cancellation, enumeration errors, root changes, or a changed journal defer that
+final prune. Direct index mutations invalidate the in-flight scan's epoch and
+trigger a bounded retry.
 
 Settings → Rebuild Index displays progress and offers Stop. Completed batches
 are saved in SwiftData. A local checkpoint under Application Support records

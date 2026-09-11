@@ -256,10 +256,10 @@ struct LibraryView: View {
             ) {
                 Button("Delete", role: .destructive) {
                     let ids = Array(selectedIDs)
-                    Task {
-                        await store.remove(itemIDs: ids)
-                        exitSelection()
-                    }
+                    // Leave selection mode immediately. The store publishes the
+                    // index removal before slow coordinated file cleanup.
+                    exitSelection()
+                    Task { await store.remove(itemIDs: ids) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {

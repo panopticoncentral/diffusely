@@ -132,9 +132,11 @@ struct LibraryDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Remove", role: .destructive) {
+                // Navigation need not wait for slow FileProvider cleanup; the
+                // store removes the index row first and finishes I/O off-main.
+                dismiss()
                 Task {
                     await store.remove(itemID: itemID)
-                    dismiss()
                 }
             }
             Button("Cancel", role: .cancel) {}
