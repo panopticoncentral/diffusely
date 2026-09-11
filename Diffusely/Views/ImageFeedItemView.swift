@@ -18,7 +18,6 @@ struct ImageFeedItemView: View {
 
     @State private var isLoadingPost = false
     @State private var postLoadError = false
-    @State private var showingCollectionPicker = false
     @StateObject private var civitaiService = CivitaiService()
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
 
@@ -71,11 +70,6 @@ struct ImageFeedItemView: View {
             }
         }
         .background(Color(.systemBackground))
-        .sheet(isPresented: $showingCollectionPicker) {
-            ManageCollectionsSheet(target: .image(image)) {
-                showingCollectionPicker = false
-            }
-        }
         .alert("Couldn't Open Post", isPresented: $postLoadError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -127,7 +121,7 @@ struct ImageFeedItemView: View {
 
         if APIKeyManager.shared.hasAPIKey {
             Button(action: {
-                showingCollectionPicker = true
+                router.manageCollections(for: .image(image))
             }) {
                 Label("Manage Collections", systemImage: "folder")
             }

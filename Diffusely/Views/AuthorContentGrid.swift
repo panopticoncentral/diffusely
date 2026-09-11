@@ -44,7 +44,6 @@ struct PostThumbnailView: View {
     /// menu that mirrors `PostDetailView`'s "…" menu. Set only by the
     /// collection grid.
     var showsContextMenu: Bool = false
-    @State private var showingCollectionPicker = false
     @ObservedObject private var librarySaveService = LibrarySaveService.shared
     @EnvironmentObject private var router: NavigationRouter
     @Environment(\.zoomTransitionNamespace) private var zoomNamespace
@@ -99,11 +98,6 @@ struct PostThumbnailView: View {
         }
         // Origin of the iOS zoom push into the post detail view.
         .zoomTransitionSource(id: "post-\(post.id)", in: zoomNamespace)
-        .sheet(isPresented: $showingCollectionPicker) {
-            ManageCollectionsSheet(target: .post(post)) {
-                showingCollectionPicker = false
-            }
-        }
     }
 
     /// Mirrors `PostDetailView`'s ellipsis menu plus the optional Remove item.
@@ -121,7 +115,7 @@ struct PostThumbnailView: View {
 
         if APIKeyManager.shared.hasAPIKey {
             Button {
-                showingCollectionPicker = true
+                router.manageCollections(for: .post(post))
             } label: {
                 Label("Manage Collections", systemImage: "folder")
             }

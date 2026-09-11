@@ -44,6 +44,17 @@ enum Route: Hashable {
 final class NavigationRouter: ObservableObject {
     @Published var path: [Route] = []
 
+    /// Owned by the stack, not a thumbnail that a membership edit can remove.
+    struct CollectionRequest: Identifiable {
+        let id = UUID()
+        let target: ManageCollectionsTarget
+    }
+    @Published var collectionRequest: CollectionRequest?
+
+    func manageCollections(for target: ManageCollectionsTarget) {
+        collectionRequest = CollectionRequest(target: target)
+    }
+
     func push(_ route: Route) {
         path.append(route)
     }
@@ -154,9 +165,24 @@ struct RoutedNavigationStack<Root: View>: View {
             root()
                 .routeDestinations()
         }
+        .modifier(CollectionSheetPresenter(router: router))
         .environmentObject(router)
         // Powers the iOS zoom push (cell → detail). Applied to the stack so
         // both root cells and pushed destinations read the same namespace.
         .environment(\.zoomTransitionNamespace, zoomNamespace)
+    }
+}
+
+/// Keep the presenter alive when a collection reload removes its source cell,
+/// author group, or the entire grid (including the last-item empty state).
+struct CollectionSheetPresenter: ViewModifier {
+    @ObservedObject var router: NavigationRouter
+
+    func body(content: Content) -> some View {
+        content.sheet(item: $router.collectionRequest) { request in
+            ManageCollectionsSheet(target: request.target) {
+                router.collectionRequest = nil
+            }
+        }
     }
 }

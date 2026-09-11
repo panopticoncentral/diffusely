@@ -111,6 +111,7 @@ struct ContentView: View {
                 router.popToRoot()
             }
         }
+        .modifier(CollectionSheetPresenter(router: router))
         .environmentObject(router)
         .focusedSceneValue(\.sidebarSelection, $selectedSection)
         // Start the library subsystem at launch so its iCloud/totals state is
