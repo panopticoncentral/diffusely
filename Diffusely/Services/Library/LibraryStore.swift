@@ -63,11 +63,11 @@ final class LibraryStore: ObservableObject {
     /// arrival is still picked up quickly.
     private var reconcileScheduler: ReconcileScheduler?
 
-    /// Coordinated deletion can take seconds on FileProvider-backed roots.
-    /// While one is active, autonomous scans are deferred: the index is updated
-    /// first for responsive UI, so scanning the not-yet-deleted sidecars in the
-    /// cleanup window would otherwise resurrect those rows temporarily.
-    private var deleteOperationsInFlight = 0
+    /// Coordinated deletion and membership rewrites can take seconds on
+    /// FileProvider-backed roots. While one is active, autonomous scans are
+    /// deferred: the index is updated first for responsive UI, so scanning the
+    /// not-yet-updated sidecars would otherwise undo that result temporarily.
+    private var containerMutationsInFlight = 0
 
     /// Change detection for a custom root, where there is no `NSMetadataQuery`.
     /// Exactly one of this and `metadataQuery` is ever active.
@@ -455,7 +455,7 @@ final class LibraryStore: ObservableObject {
             print("[LibraryStore] autonomous reconcile skipped; libraryGate=\(gate)")
             return
         }
-        guard deleteOperationsInFlight == 0 else {
+        guard containerMutationsInFlight == 0 else {
             reconcileNeedsRerun = true
             return
         }
@@ -467,7 +467,7 @@ final class LibraryStore: ObservableObject {
         defer { reconcileInFlight = false }
 
         repeat {
-            guard deleteOperationsInFlight == 0 else {
+            guard containerMutationsInFlight == 0 else {
                 reconcileNeedsRerun = true
                 return
             }
@@ -517,7 +517,7 @@ final class LibraryStore: ObservableObject {
         lastRebuildWasCancelled = false
         let gate = LibraryVaultProvider.shared.libraryGate
         guard Self.shouldAutonomousReconcile(givenLibraryGate: gate) else { return }
-        guard deleteOperationsInFlight == 0 else { return }
+        guard containerMutationsInFlight == 0 else { return }
         guard let resolved = await resolveItemsDirectoryReportingUnavailability() else { return }
         rebuildItemsProcessed = 0
         let service = indexService
@@ -714,13 +714,13 @@ final class LibraryStore: ObservableObject {
         // scratch fallback — same reasoning as `LibrarySaveService.performSave`.
         guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
         let store = await LibraryVaultProvider.shared.fileStore()
-        beginDeleteOperation()
+        await beginContainerMutation()
         // The index is disposable; update it before the potentially slow
         // FileProvider round trips so the Library responds immediately.
         await indexService.remove(itemID: itemID)
         await refreshTotals()
         await Self.runDeleteItemFiles(itemIDs: [itemID], store: store)
-        finishDeleteOperation()
+        await finishContainerMutation()
     }
 
     /// Batch delete for the Library multi-select action. Resolves the items
@@ -732,24 +732,45 @@ final class LibraryStore: ObservableObject {
         guard !itemIDs.isEmpty else { return }
         guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
         let store = await LibraryVaultProvider.shared.fileStore()
-        beginDeleteOperation()
+        await beginContainerMutation()
         await indexService.remove(itemIDs: itemIDs)
         await refreshTotals()
         await Self.runDeleteItemFiles(itemIDs: itemIDs, store: store)
-        finishDeleteOperation()
+        await finishContainerMutation()
     }
 
-    private func beginDeleteOperation() {
-        deleteOperationsInFlight += 1
+    /// Applies one or more Manage Albums choices to the index immediately,
+    /// then brings the authoritative sidecars into line off the main actor.
+    /// Multiple choices are folded into one read/rewrite per selected item.
+    func setAlbumMembership(itemIDs: [Int], assignments: [UUID: Bool]) async {
+        guard !itemIDs.isEmpty, !assignments.isEmpty else { return }
+        guard LibraryVaultProvider.shared.libraryGate == .browsable else { return }
+        // Match deletion's fail-fast behavior: never publish an optimistic
+        // index change if the selected Library root cannot actually be reached.
+        guard (try? await LibraryContainer.shared.itemsDirectory()) != nil else { return }
+        await beginContainerMutation()
+        await indexService.applyAlbumMembership(itemIDs: itemIDs, assignments: assignments)
+        notifyAlbumsChanged()
+        await albumService.setMembership(itemIDs, assignments: assignments)
+        // The service may have restored an unchanged sidecar after a failed
+        // write, so publish the authoritative final state as well.
+        notifyAlbumsChanged()
+        await finishContainerMutation()
+    }
+
+    private func beginContainerMutation() async {
+        containerMutationsInFlight += 1
+        await indexService.beginCoordinatedMutation()
         // The following index removal rejects an older scan at its mutation-
-        // epoch fence. Also ensure a clean post-delete pass follows once all
-        // overlapping deletes finish.
+        // epoch fence. Also ensure a clean pass follows once all overlapping
+        // container mutations finish.
         reconcileNeedsRerun = true
     }
 
-    private func finishDeleteOperation() {
-        deleteOperationsInFlight = max(0, deleteOperationsInFlight - 1)
-        if deleteOperationsInFlight == 0, reconcileNeedsRerun {
+    private func finishContainerMutation() async {
+        await indexService.endCoordinatedMutation()
+        containerMutationsInFlight = max(0, containerMutationsInFlight - 1)
+        if containerMutationsInFlight == 0, reconcileNeedsRerun {
             reconcileScheduler?.schedule()
         }
     }

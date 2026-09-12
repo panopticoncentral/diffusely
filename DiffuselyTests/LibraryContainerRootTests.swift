@@ -131,6 +131,22 @@ final class LibraryContainerRootTests: XCTestCase {
                        "the re-check must not recreate the folder")
     }
 
+    func testCustomRootProbeTimesOutWhenTheFilesystemDoesNotRespond() async {
+        let startedAt = Date()
+        let isDirectory = await LibraryContainer.customRootIsDirectory(
+            tempRoot,
+            timeout: 0.02,
+            probe: { _ in
+                Thread.sleep(forTimeInterval: 0.3)
+                return true
+            }
+        )
+
+        XCTAssertFalse(isDirectory)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.2,
+                          "a blocked filesystem probe must not block Library startup")
+    }
+
     func testRootIsRestoredFromPersistence() async {
         let defaults = UserDefaults(suiteName: "LibraryContainerRootTests-restore")!
         defaults.removePersistentDomain(forName: "LibraryContainerRootTests-restore")

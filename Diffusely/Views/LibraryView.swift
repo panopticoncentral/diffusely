@@ -176,8 +176,7 @@ struct LibraryView: View {
                 onDeleteAlbum: { deleteAlbumTarget = AlbumRef(id: $0.id, name: $0.name) },
                 onDropItems: { itemIDs, albumID in
                     Task {
-                        await store.albumService.addItems(itemIDs, toAlbum: albumID)
-                        store.notifyAlbumsChanged()
+                        await store.setAlbumMembership(itemIDs: itemIDs, assignments: [albumID: true])
                     }
                 }
             )
@@ -446,10 +445,9 @@ struct LibraryView: View {
                 ToolbarItem(placement: .secondaryAction) {
                     Button {
                         let ids = Array(selectedIDs)
+                        exitSelection()
                         Task {
-                            await store.albumService.removeItems(ids, fromAlbum: albumID)
-                            store.notifyAlbumsChanged()
-                            exitSelection()
+                            await store.setAlbumMembership(itemIDs: ids, assignments: [albumID: false])
                         }
                     } label: {
                         Label("Remove from Album", systemImage: "rectangle.stack.badge.minus")
@@ -667,8 +665,7 @@ struct LibraryView: View {
                     if case .album(let albumID) = filter {
                         Button {
                             Task {
-                                await store.albumService.removeItems([item.itemID], fromAlbum: albumID)
-                                store.notifyAlbumsChanged()
+                                await store.setAlbumMembership(itemIDs: [item.itemID], assignments: [albumID: false])
                             }
                         } label: { Label("Remove from Album", systemImage: "rectangle.stack.badge.minus") }
                     }
@@ -1061,10 +1058,21 @@ struct LibraryView: View {
         // and `.onChange` guards.
         guard isBrowsable else { return }
         guard let sortService else { return }
-        // One fetch for content + album summaries + the not-in-any-album count,
-        // instead of three separate full-table fetches on the main thread.
-        let bundle = sortService.libraryContent(sort: selectedSort, filter: filter)
-        let newContent = bundle.content
+        let newContent: LibrarySortService.LibrarySortedContent
+        if filter == .all {
+            // The top-level Library can switch to the Albums browser without a
+            // new load, so keep all three values together in one fetch.
+            let bundle = sortService.libraryContent(sort: selectedSort, filter: filter)
+            newContent = bundle.content
+            albumSummaries = bundle.albumSummaries
+            notInAnyAlbumCount = bundle.notInAnyAlbumCount
+        } else {
+            // A scoped album never renders the Albums browser. Rebuilding every
+            // album's count and cover here was unrelated work on each automatic
+            // reload and showed up inside an 849 ms main-thread hang while this
+            // view was open. Manage Albums refreshes summaries on demand.
+            newContent = sortService.sortedLibraryContent(sort: selectedSort, filter: filter)
+        }
 
         // Seed all groups expanded on first grouped load, and auto-expand any
         // newly-seen groups on later reloads. Safe now that the square LazyVGrid
@@ -1086,8 +1094,6 @@ struct LibraryView: View {
         }
 
         content = newContent
-        albumSummaries = bundle.albumSummaries
-        notInAnyAlbumCount = bundle.notInAnyAlbumCount
     }
 
     /// Kick off the publish-date backfill at most once per app session if there

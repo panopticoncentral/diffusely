@@ -1,5 +1,25 @@
 import Foundation
 
+/// A one-shot continuation shared by the filesystem probe and its timeout.
+/// `stat(2)` can remain blocked indefinitely on a disconnected network/FUSE
+/// mount, so the timeout must be able to resume the caller independently.
+private final class LibraryRootProbeCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish(with result: Bool) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+}
+
 /// Resolves the on-disk directory that backs the personal library.
 ///
 /// The active `LibraryRoot` decides what that means:
@@ -21,6 +41,12 @@ actor LibraryContainer {
 
     static let containerIdentifier = "iCloud.AchatesSoftware.Diffusely"
     private static let itemsFolderName = "Items"
+
+    /// Keep custom-root probes off cooperative-executor threads. Each root gets
+    /// one serial queue, which bounds an unhealthy mount to one blocked thread
+    /// without preventing a newly selected, healthy root from being checked.
+    private static let customRootProbeQueuesLock = NSLock()
+    private static var customRootProbeQueues: [String: DispatchQueue] = [:]
 
     private let rootStore: LibraryRootStore
     private(set) var root: LibraryRoot
@@ -61,61 +87,105 @@ actor LibraryContainer {
 
     /// The directory containing `<id>.json` + `<id>.<ext>` pairs.
     /// Created if needed for `.iCloud`; required to already exist for `.custom`.
-    func itemsDirectory() throws -> URL {
-        if let cached = cachedItemsDirectory {
-            // A custom root lives on a volume the user can eject. Re-check it
-            // rather than handing back a path that no longer exists: nine other
-            // call sites build a file store straight from this URL and would
-            // recreate the folder tree at a dead mount point, manufacturing an
-            // empty Library that reconcile then reads as "everything was
-            // deleted". The iCloud container is app-owned and not ejectable, so
-            // it keeps the cheap unconditional cache.
-            if case .custom(let url) = root {
-                var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-                      isDirectory.boolValue else {
+    func itemsDirectory() async throws -> URL {
+        // The custom-root probe suspends this actor. If the root changes while
+        // it is in flight, retry instead of caching or returning the old URL.
+        while true {
+            let generation = rootGeneration
+            let currentRoot = root
+
+            if let cached = cachedItemsDirectory {
+                // A custom root lives on a volume the user can eject. Re-check it
+                // rather than handing back a path that no longer exists: nine other
+                // call sites build a file store straight from this URL and would
+                // recreate the folder tree at a dead mount point, manufacturing an
+                // empty Library that reconcile then reads as "everything was
+                // deleted". The iCloud container is app-owned and not ejectable, so
+                // it keeps the cheap unconditional cache.
+                if case .custom(let url) = currentRoot {
+                    let isDirectory = await Self.customRootIsDirectory(url)
+                    guard generation == rootGeneration else { continue }
+                    guard isDirectory else {
+                        cachedItemsDirectory = nil
+                        throw LibraryRootError.unavailable(url)
+                    }
+                }
+                return cached
+            }
+
+            let fileManager = FileManager.default
+            let resolved: URL
+
+            switch currentRoot {
+            case .custom(let url):
+                let isDirectory = await Self.customRootIsDirectory(url)
+                guard generation == rootGeneration else { continue }
+                guard isDirectory else {
                     cachedItemsDirectory = nil
                     throw LibraryRootError.unavailable(url)
                 }
-            }
-            return cached
-        }
-
-        let fileManager = FileManager.default
-        let resolved: URL
-
-        switch root {
-        case .custom(let url):
-            var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
-                // Deliberately NOT created. See the type doc.
-                throw LibraryRootError.unavailable(url)
-            }
-            resolved = url
-            resolvedICloud = false
-            cachedItemsDirectory = resolved
-            return resolved
-
-        case .iCloud:
-            if let ubiquityRoot = fileManager.url(forUbiquityContainerIdentifier: Self.containerIdentifier) {
-                resolved = ubiquityRoot
-                    .appendingPathComponent("Documents", isDirectory: true)
-                    .appendingPathComponent(Self.itemsFolderName, isDirectory: true)
-                resolvedICloud = true
-            } else {
-                resolved = try Self.localFallbackDirectory()
                 resolvedICloud = false
+                cachedItemsDirectory = url
+                return url
+
+            case .iCloud:
+                if let ubiquityRoot = fileManager.url(forUbiquityContainerIdentifier: Self.containerIdentifier) {
+                    resolved = ubiquityRoot
+                        .appendingPathComponent("Documents", isDirectory: true)
+                        .appendingPathComponent(Self.itemsFolderName, isDirectory: true)
+                    resolvedICloud = true
+                } else {
+                    resolved = try Self.localFallbackDirectory()
+                    resolvedICloud = false
+                }
+            }
+
+            try fileManager.createDirectory(at: resolved, withIntermediateDirectories: true)
+            cachedItemsDirectory = resolved
+
+            if resolvedICloud {
+                try? migrateLocalItems(into: resolved, fileManager: fileManager)
+            }
+            return resolved
+        }
+    }
+
+    /// Checks a custom root without letting a wedged FileProvider, SMB, or FUSE
+    /// mount keep Library bootstrap in `.loading` forever.
+    static func customRootIsDirectory(
+        _ url: URL,
+        timeout: TimeInterval = 5,
+        probe: @escaping @Sendable (URL) -> Bool = { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let completion = LibraryRootProbeCompletion(continuation)
+            let queue = customRootProbeQueue(for: url)
+
+            queue.async {
+                completion.finish(with: probe(url))
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                completion.finish(with: false)
             }
         }
+    }
 
-        try fileManager.createDirectory(at: resolved, withIntermediateDirectories: true)
-        cachedItemsDirectory = resolved
+    private static func customRootProbeQueue(for url: URL) -> DispatchQueue {
+        let key = url.standardizedFileURL.path
+        customRootProbeQueuesLock.lock()
+        defer { customRootProbeQueuesLock.unlock() }
 
-        if resolvedICloud {
-            try? migrateLocalItems(into: resolved, fileManager: fileManager)
-        }
-        return resolved
+        if let queue = customRootProbeQueues[key] { return queue }
+        let queue = DispatchQueue(
+            label: "AchatesSoftware.Diffusely.custom-root-probe.\(customRootProbeQueues.count)",
+            qos: .utility
+        )
+        customRootProbeQueues[key] = queue
+        return queue
     }
 
     /// The resolved items directory paired with the generation it belongs to,
@@ -130,8 +200,8 @@ actor LibraryContainer {
     ///
     /// Prefer this over calling `itemsDirectory()` and `rootGeneration`
     /// separately anywhere the pair is used to decide whether work is stale.
-    func resolveItemsDirectory() throws -> (url: URL, generation: Int) {
-        (url: try itemsDirectory(), generation: rootGeneration)
+    func resolveItemsDirectory() async throws -> (url: URL, generation: Int) {
+        (url: try await itemsDirectory(), generation: rootGeneration)
     }
 
     /// The iCloud items directory if it can be resolved right now, without
@@ -151,19 +221,19 @@ actor LibraryContainer {
     /// below is a property of the iCloud layout, and under a flat custom root it
     /// would resolve to the PARENT of the user's own folder. Custom roots are
     /// unconditionally plaintext, so no caller legitimately needs this there.
-    func vaultURLs() throws -> (vault: URL, backup: URL) {
+    func vaultURLs() async throws -> (vault: URL, backup: URL) {
         guard !root.isCustom else { throw LibraryRootError.encryptedLibrary }
-        let documents = try itemsDirectory().deletingLastPathComponent()
+        let documents = try await itemsDirectory().deletingLastPathComponent()
         return (documents.appendingPathComponent("vault.json"),
                 documents.appendingPathComponent("vault.backup.json"))
     }
 
-    func metadataURL(forItemID id: Int) throws -> URL {
-        try itemsDirectory().appendingPathComponent("\(id).json", isDirectory: false)
+    func metadataURL(forItemID id: Int) async throws -> URL {
+        try await itemsDirectory().appendingPathComponent("\(id).json", isDirectory: false)
     }
 
-    func mediaURL(forItemID id: Int, fileExtension ext: String) throws -> URL {
-        try itemsDirectory().appendingPathComponent("\(id).\(ext)", isDirectory: false)
+    func mediaURL(forItemID id: Int, fileExtension ext: String) async throws -> URL {
+        try await itemsDirectory().appendingPathComponent("\(id).\(ext)", isDirectory: false)
     }
 
     // MARK: - Local fallback

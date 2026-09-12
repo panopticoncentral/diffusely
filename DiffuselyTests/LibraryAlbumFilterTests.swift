@@ -73,6 +73,25 @@ import SwiftData
         #expect(summaries.first?.coverItem?.itemID == 2)   // most recent member
     }
 
+    @Test func albumSummaryCoverUsesDateThenIDAndIgnoresDanglingMemberships() throws {
+        let a = UUID()
+        let dangling = UUID()
+        let ctx = try makeContext(
+            items: [
+                make(1, albums: [a.uuidString], pub: 9),
+                make(8, albums: [a.uuidString, dangling.uuidString], pub: 9),
+                make(20, albums: [a.uuidString], pub: 2)
+            ],
+            albums: [PersistedAlbum(id: a, name: "A", createdAt: Date())])
+        let svc = LibrarySortService(modelContext: ctx)
+
+        let bundle = svc.libraryContent(sort: .dateNewest, filter: .all)
+
+        #expect(bundle.albumSummaries.first?.count == 3)
+        #expect(bundle.albumSummaries.first?.coverItem?.itemID == 8)
+        #expect(bundle.notInAnyAlbumCount == 0)
+    }
+
     /// `libraryContent` does in ONE pass (a single items fetch) what `LibraryView`
     /// previously got from three separate full-table fetches. Its three fields must
     /// match the standalone methods exactly so the reload refactor is behavior-preserving.

@@ -65,10 +65,11 @@ final class LibrarySortService {
         let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
         let known = Set(albums.map { $0.id.uuidString })
         let filtered = applyAlbumFilter(all, filter, knownAlbumIDs: known)
+        let albumData = albumAggregation(items: all, albums: albums, knownAlbumIDs: known)
         return LibraryContent(
             content: sortContent(filtered, sort: sort),
-            albumSummaries: albumSummaries(items: all, albums: albums),
-            notInAnyAlbumCount: notInAnyAlbumCount(items: all, knownAlbumIDs: known)
+            albumSummaries: albumData.summaries,
+            notInAnyAlbumCount: albumData.notInAnyAlbumCount
         )
     }
 
@@ -150,16 +151,24 @@ final class LibrarySortService {
     /// sink to the tail in both directions; ties (including the nil bucket)
     /// break by `itemID` descending for stability.
     private func sortByDate(_ items: [PersistedLibraryItem], ascending: Bool) -> [PersistedLibraryItem] {
-        items.sorted { lhs, rhs in
-            switch (lhs.publishedAt, rhs.publishedAt) {
-            case let (a?, b?):
-                if a == b { return lhs.itemID > rhs.itemID }
-                return ascending ? a < b : a > b
-            case (nil, _?): return false
-            case (_?, nil): return true
-            case (nil, nil): return lhs.itemID > rhs.itemID
+        // SwiftData property access is materially more expensive than a stored
+        // Swift value. A comparison sort reads each key O(n log n) times; the
+        // Library's live Time Profiler trace showed those getters occupying a
+        // large part of an 849 ms main-thread reload. Decorate once, sort the
+        // values, then return the original model objects.
+        items
+            .map { (item: $0, publishedAt: $0.publishedAt, itemID: $0.itemID) }
+            .sorted { lhs, rhs in
+                switch (lhs.publishedAt, rhs.publishedAt) {
+                case let (a?, b?):
+                    if a == b { return lhs.itemID > rhs.itemID }
+                    return ascending ? a < b : a > b
+                case (nil, _?): return false
+                case (_?, nil): return true
+                case (nil, nil): return lhs.itemID > rhs.itemID
+                }
             }
-        }
+            .map { $0.item }
     }
 
     /// Same nil-sink + id-descending tie-break used for flat date sorts, but
@@ -298,32 +307,87 @@ final class LibrarySortService {
     func albumSummaries() -> [AlbumSummary] {
         let albums = (try? modelContext.fetch(FetchDescriptor<PersistedAlbum>())) ?? []
         let all = (try? modelContext.fetch(FetchDescriptor<PersistedLibraryItem>())) ?? []
-        return albumSummaries(items: all, albums: albums)
+        let known = Set(albums.map { $0.id.uuidString })
+        return albumAggregation(items: all, albums: albums, knownAlbumIDs: known).summaries
     }
 
-    private func albumSummaries(items: [PersistedLibraryItem], albums: [PersistedAlbum]) -> [AlbumSummary] {
-        var membersByAlbum: [String: [PersistedLibraryItem]] = [:]
+    private struct AlbumAccumulator {
+        var count = 0
+        var coverItem: PersistedLibraryItem?
+        var coverPublishedAt: Date?
+        var coverItemID: Int?
+    }
+
+    /// Produces both album-browser values in one membership pass. The previous
+    /// implementation built an array for every album and sorted every one just
+    /// to select its first element, then split every item's membership string a
+    /// second time to calculate the not-in-any-album count.
+    private func albumAggregation(
+        items: [PersistedLibraryItem],
+        albums: [PersistedAlbum],
+        knownAlbumIDs: Set<String>
+    ) -> (summaries: [AlbumSummary], notInAnyAlbumCount: Int) {
+        var byAlbum: [String: AlbumAccumulator] = [:]
+        var notInAnyAlbumCount = 0
+
         for item in items {
-            for albumID in item.albumIDs {
-                membersByAlbum[albumID, default: []].append(item)
+            let joinedIDs = item.albumIDsJoined
+            let albumIDs = joinedIDs.isEmpty
+                ? []
+                : joinedIDs.components(separatedBy: PersistedLibraryItem.albumDelimiter)
+            if albumIDs.allSatisfy({ !knownAlbumIDs.contains($0) }) {
+                notInAnyAlbumCount += 1
+            }
+
+            // Read the SwiftData-backed sort keys once per item, not once per
+            // membership and comparison.
+            let publishedAt = item.publishedAt
+            let itemID = item.itemID
+            for albumID in albumIDs where knownAlbumIDs.contains(albumID) {
+                var accumulator = byAlbum[albumID] ?? AlbumAccumulator()
+                accumulator.count += 1
+                if accumulator.coverItem == nil || Self.isNewer(
+                    publishedAt: publishedAt,
+                    itemID: itemID,
+                    than: accumulator.coverPublishedAt,
+                    itemID: accumulator.coverItemID ?? .min
+                ) {
+                    accumulator.coverItem = item
+                    accumulator.coverPublishedAt = publishedAt
+                    accumulator.coverItemID = itemID
+                }
+                byAlbum[albumID] = accumulator
             }
         }
-        return albums
+
+        let summaries = albums
             .map { album in
-                let members = newestFirst(membersByAlbum[album.id.uuidString] ?? [])
+                let accumulator = byAlbum[album.id.uuidString] ?? AlbumAccumulator()
                 return AlbumSummary(id: album.id, name: album.name,
-                                    count: members.count, coverItem: members.first)
+                                    count: accumulator.count, coverItem: accumulator.coverItem)
             }
             .sorted { $0.name.lowercased() < $1.name.lowercased() }
+        return (summaries, notInAnyAlbumCount)
+    }
+
+    private static func isNewer(
+        publishedAt lhsDate: Date?,
+        itemID lhsID: Int,
+        than rhsDate: Date?,
+        itemID rhsID: Int
+    ) -> Bool {
+        switch (lhsDate, rhsDate) {
+        case let (lhs?, rhs?):
+            return lhs == rhs ? lhsID > rhsID : lhs > rhs
+        case (_?, nil): return true
+        case (nil, _?): return false
+        case (nil, nil): return lhsID > rhsID
+        }
     }
 
     /// Count of items in zero existing albums — the "Not in any Album" badge.
     func notInAnyAlbumCount() -> Int {
         fetchAll(filter: .notInAnyAlbum).count
-    }
-
-    private func notInAnyAlbumCount(items: [PersistedLibraryItem], knownAlbumIDs: Set<String>) -> Int {
-        items.filter { item in item.albumIDs.allSatisfy { !knownAlbumIDs.contains($0) } }.count
     }
 
     /// For the given selection, how many of those items belong to each album.

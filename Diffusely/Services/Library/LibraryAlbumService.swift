@@ -117,14 +117,28 @@ final class LibraryAlbumService {
     // MARK: - Membership
 
     func addItems(_ itemIDs: [Int], toAlbum id: UUID) async {
-        await mutateMembership(itemIDs) { current in
-            current.contains(id.uuidString) ? current : current + [id.uuidString]
-        }
+        await setMembership(itemIDs, assignments: [id: true])
     }
 
     func removeItems(_ itemIDs: [Int], fromAlbum id: UUID) async {
+        await setMembership(itemIDs, assignments: [id: false])
+    }
+
+    /// Applies several album choices in one pass, so a Manage Albums session
+    /// reads and rewrites each selected sidecar only once even when the user
+    /// both adds and removes albums.
+    func setMembership(_ itemIDs: [Int], assignments: [UUID: Bool]) async {
         await mutateMembership(itemIDs) { current in
-            current.filter { $0 != id.uuidString }
+            var result = current
+            for (albumID, shouldBelong) in assignments {
+                let key = albumID.uuidString
+                if shouldBelong {
+                    if !result.contains(key) { result.append(key) }
+                } else {
+                    result.removeAll { $0 == key }
+                }
+            }
+            return result
         }
     }
 
@@ -139,13 +153,22 @@ final class LibraryAlbumService {
             for itemID in itemIDs {
                 guard let meta = writer.readMetadata(itemID: itemID) else { continue }
                 let newIDs = transform(meta.albumIDs)
-                guard newIDs != meta.albumIDs else { continue }   // already in desired state — nothing to do
-                // The sidecar is the source of truth: only record the new ids for
-                // the index once the file rewrite actually succeeded. On failure we
-                // leave both file and index untouched (the next reconcile re-derives
-                // membership from the sidecar anyway).
-                guard (try? writer.rewriteMetadata(meta.settingAlbumIDs(newIDs))) != nil else { continue }
-                results.append((itemID, newIDs))
+                guard newIDs != meta.albumIDs else {
+                    // Include no-ops so an optimistic index update is healed
+                    // from the authoritative sidecar too.
+                    results.append((itemID, meta.albumIDs))
+                    continue
+                }
+                // The sidecar is the source of truth: publish the new ids after
+                // a successful rewrite, or its unchanged ids after a failure so
+                // a caller's optimistic index update is rolled back.
+                if (try? writer.rewriteMetadata(meta.settingAlbumIDs(newIDs))) != nil {
+                    results.append((itemID, newIDs))
+                } else {
+                    // A failed rewrite leaves the sidecar unchanged; restore
+                    // that authoritative value in the optimistic index.
+                    results.append((itemID, meta.albumIDs))
+                }
             }
             return results
         }

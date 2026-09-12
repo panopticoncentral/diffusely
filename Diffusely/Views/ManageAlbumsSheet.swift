@@ -3,8 +3,8 @@ import SwiftUI
 /// Sheet for managing which albums the given item IDs belong to. Each album row
 /// shows a tri-state checkmark — none / some / all of the selection is in that
 /// album. Tapping a row adds the whole selection to the album, or removes the
-/// whole selection when every item is already a member. Mutations apply
-/// immediately through `LibraryStore.albumService`; "Done" just dismisses.
+/// whole selection when every item is already a member. The working state
+/// updates immediately; dismissing applies all choices as one persistence batch.
 ///
 /// With empty `itemIDs` (the Albums browser "New Album" tile) the sheet is a
 /// create-only flow: albums are listed for reference but have no checkmarks,
@@ -31,6 +31,11 @@ struct ManageAlbumsSheet: View {
     @State private var creatingNew = false
     @State private var newName = ""
     @State private var didChange = false
+    /// Explicit choices made during this presentation. They are submitted as
+    /// one batch when the sheet closes, avoiding a full sidecar pass for every
+    /// album row the user toggles.
+    @State private var pendingMembershipAssignments: [UUID: Bool] = [:]
+    @State private var didSubmitChanges = false
 
     init(
         itemIDs: [Int],
@@ -59,10 +64,13 @@ struct ManageAlbumsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                // Changes apply immediately, so Done is the confirming action
-                // (bold, trailing) rather than a cancel.
+                // Done submits the working choices and dismisses. Swipe-down
+                // submits through onDisappear as well.
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        submitChanges()
+                        dismiss()
+                    }
                 }
                 // Always-visible create affordance, so a new album can be made
                 // even when no albums exist yet (the list would otherwise be empty).
@@ -83,9 +91,7 @@ struct ManageAlbumsSheet: View {
         }
         // Fire on any dismissal path (Done button or swipe-down) so the
         // presenter exits select mode whenever changes were actually made.
-        .onDisappear {
-            if didChange { onChanged() }
-        }
+        .onDisappear { submitChanges() }
         // macOS sheets don't impose a size, so a `List` inside collapses to zero
         // content height and renders no rows. Give the sheet a concrete size so the
         // album list has room to lay out. (iOS sheets size themselves correctly.)
@@ -181,19 +187,25 @@ struct ManageAlbumsSheet: View {
     }
 
     /// None/some → add the whole selection; all → remove the whole selection.
-    /// Local state updates optimistically; the service applies the same
-    /// idempotent mutation to the sidecars and index.
+    /// Local state updates optimistically; dismissal applies every explicit
+    /// choice in one sidecar pass.
     private func toggleMembership(_ albumID: UUID, allCurrentlyIn: Bool) {
-        memberCounts[albumID] = allCurrentlyIn ? 0 : itemIDs.count
+        let shouldBelong = !allCurrentlyIn
+        memberCounts[albumID] = shouldBelong ? itemIDs.count : 0
+        pendingMembershipAssignments[albumID] = shouldBelong
         didChange = true
-        Task {
-            if allCurrentlyIn {
-                await store.albumService.removeItems(itemIDs, fromAlbum: albumID)
-            } else {
-                await store.albumService.addItems(itemIDs, toAlbum: albumID)
+    }
+
+    private func submitChanges() {
+        guard !didSubmitChanges, didChange else { return }
+        didSubmitChanges = true
+        let assignments = pendingMembershipAssignments
+        if !assignments.isEmpty {
+            Task {
+                await store.setAlbumMembership(itemIDs: itemIDs, assignments: assignments)
             }
-            store.notifyAlbumsChanged()
         }
+        onChanged()
     }
 
     private func createAlbum() {
@@ -208,8 +220,7 @@ struct ManageAlbumsSheet: View {
                 dismiss()
                 return
             }
-            await store.albumService.addItems(itemIDs, toAlbum: id)
-            store.notifyAlbumsChanged()
+            await store.setAlbumMembership(itemIDs: itemIDs, assignments: [id: true])
             didChange = true
             // Stay open with the new album shown as a fully-checked row, so the
             // user can keep adjusting other memberships.

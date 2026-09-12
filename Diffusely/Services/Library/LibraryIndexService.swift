@@ -16,6 +16,11 @@ actor LibraryIndexService {
     /// stale container snapshot from overwriting newer rows (the
     /// "items reappear in Not in any Album" bug).
     private var mutationEpoch = 0
+    /// A local operation has deliberately published its index result before
+    /// finishing slow coordinated container I/O. Reconcile must not read the
+    /// temporarily stale sidecars during that window and undo the responsive
+    /// UI update.
+    private var coordinatedMutationsInFlight = 0
     private var scanInFlight = false
     private var scanWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -32,6 +37,18 @@ actor LibraryIndexService {
     var journalBaselines: [String: JournalBaseline] = [:]
 
     func currentMutationEpoch() -> Int { mutationEpoch }
+
+    func beginCoordinatedMutation() {
+        coordinatedMutationsInFlight += 1
+        bumpMutationEpoch()
+    }
+
+    func endCoordinatedMutation() {
+        coordinatedMutationsInFlight = max(0, coordinatedMutationsInFlight - 1)
+        // Reject a scan that began while the container write was still in
+        // progress, even if the final index values happened to be unchanged.
+        bumpMutationEpoch()
+    }
 
     /// Every mutator whose effect a stale scan could wrongly undo calls this
     /// on entry — unconditional (even if the mutation turns out to be a no-op):
@@ -210,6 +227,35 @@ actor LibraryIndexService {
         if changed { try? modelContext.save() }
     }
 
+    /// Applies explicit album membership choices directly to the disposable
+    /// index. The container sidecars remain authoritative and are rewritten by
+    /// `LibraryAlbumService`, but doing this first lets an open album grid react
+    /// without waiting for FileProvider coordination on every selected item.
+    func applyAlbumMembership(
+        itemIDs: [Int],
+        assignments: [UUID: Bool]
+    ) {
+        guard !itemIDs.isEmpty, !assignments.isEmpty else { return }
+        bumpMutationEpoch()
+        var changed = false
+        for itemID in itemIDs {
+            guard let row = fetchItem(itemID: itemID) else { continue }
+            var ids = row.albumIDs
+            for (albumID, shouldBelong) in assignments {
+                let key = albumID.uuidString
+                if shouldBelong {
+                    if !ids.contains(key) { ids.append(key) }
+                } else {
+                    ids.removeAll { $0 == key }
+                }
+            }
+            guard ids != row.albumIDs else { continue }
+            row.albumIDsJoined = PersistedLibraryItem.join(ids)
+            changed = true
+        }
+        if changed { try? modelContext.save() }
+    }
+
     private func fetchAlbum(id: UUID) -> PersistedAlbum? {
         var d = FetchDescriptor<PersistedAlbum>(predicate: #Predicate { $0.id == id })
         d.fetchLimit = 1
@@ -354,6 +400,13 @@ actor LibraryIndexService {
         // giving up here never strands the index.
         var publishedAlbumChanges = false
         for _ in 0..<3 {
+            // A coordinated local mutation has already updated the index but
+            // is still bringing its sidecars into line. Reading them now would
+            // restore the old membership/deleted rows, so let the store's
+            // post-operation reconcile handle the stable container instead.
+            guard coordinatedMutationsInFlight == 0 else {
+                return ReconcileOutcome(albumStateChanged: publishedAlbumChanges)
+            }
             let epoch = currentMutationEpoch()
             // Read on the model actor, before the scan suspends: these are what
             // let the scan recognize an evicted encrypted file as belonging to a
@@ -433,7 +486,8 @@ actor LibraryIndexService {
     /// rejected (`.rejectedStaleEpoch`; the caller rescans). Internal rather than
     /// private so tests can drive the write-during-scan race deterministically.
     func applyScan(_ scan: ScanResult, ifEpochMatches epoch: Int) -> ScanApplication {
-        guard currentMutationEpoch() == epoch else { return .rejectedStaleEpoch }
+        guard coordinatedMutationsInFlight == 0,
+              currentMutationEpoch() == epoch else { return .rejectedStaleEpoch }
 
         // Fast path: upsert everything from an in-memory map and save once
         // (one query + one save instead of N + N). If that batched save throws,

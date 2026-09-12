@@ -43,4 +43,36 @@ import SwiftData
         let row = try #require(ctx.fetch(FetchDescriptor<PersistedLibraryItem>()).first)
         #expect(row.albumIDs == ["A", "B"])
     }
+
+    @Test func applyAlbumMembershipPublishesCombinedChoicesImmediately() async throws {
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        let current = UUID()
+        let added = UUID()
+        await ingest(index, id: 5, albums: [current.uuidString, "untouched"])
+
+        await index.applyAlbumMembership(
+            itemIDs: [5],
+            assignments: [current: false, added: true]
+        )
+
+        let row = try #require(ModelContext(container)
+            .fetch(FetchDescriptor<PersistedLibraryItem>()).first)
+        #expect(!row.albumIDs.contains(current.uuidString))
+        #expect(row.albumIDs.contains(added.uuidString))
+        #expect(row.albumIDs.contains("untouched"))
+    }
+
+    @Test func coordinatedMutationRejectsMatchingEpochScanUntilContainerCatchesUp() async throws {
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        await index.beginCoordinatedMutation()
+        let epoch = await index.currentMutationEpoch()
+
+        let result = await index.applyScan(
+            LibraryIndexService.emptyScan(), ifEpochMatches: epoch)
+
+        #expect(result == .rejectedStaleEpoch)
+        await index.endCoordinatedMutation()
+    }
 }

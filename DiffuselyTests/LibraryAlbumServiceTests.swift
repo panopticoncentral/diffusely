@@ -59,6 +59,28 @@ import SwiftData
         #expect(row.albumIDs == [])
     }
 
+    @Test func combinedMembershipChoicesRewriteEachItemToFinalState() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let container = try makeContainer()
+        let index = LibraryIndexService(modelContainer: container)
+        try commitItem(13, in: dir)
+        await index.reconcile(itemsDirectory: dir)
+        let svc = LibraryAlbumService(index: index, itemsDirectory: { dir })
+        let removed = UUID()
+        let added = UUID()
+        await svc.addItems([13], toAlbum: removed)
+
+        await svc.setMembership([13], assignments: [removed: false, added: true])
+
+        let ids = try #require(LibraryFileWriter(itemsDirectory: dir)
+            .readMetadata(itemID: 13)).albumIDs
+        #expect(!ids.contains(removed.uuidString))
+        #expect(ids.contains(added.uuidString))
+        let row = try #require(ModelContext(container)
+            .fetch(FetchDescriptor<PersistedLibraryItem>()).first)
+        #expect(row.albumIDs == ids)
+    }
+
     @Test func deleteAlbumRemovesFileButKeepsItemMedia() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let container = try makeContainer()
