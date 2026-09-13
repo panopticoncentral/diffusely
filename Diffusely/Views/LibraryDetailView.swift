@@ -15,6 +15,10 @@ struct LibraryDetailView: View {
     @State private var loadFailed = false
     @State private var showingRemoveConfirm = false
     @State private var embedded: EmbeddedMetadata?
+    /// The actual file backing this item, including the opaque filename used
+    /// by an encrypted Library. Kept separate from `mediaFileName`, which is
+    /// the item's logical/plaintext name and may not exist on disk.
+    @State private var storageURL: URL?
     /// Sniffed from the decrypted bytes when embedded metadata loads, so ⌘C and
     /// export can advertise the real container instead of the cosmetic `.jpeg`.
     @State private var container: MediaContainer?
@@ -72,6 +76,11 @@ struct LibraryDetailView: View {
                         Text("Saved \(metadata.savedAt.formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                        if let storageURL {
+                            Divider()
+                            storagePathView(storageURL)
+                        }
 
                         if let genData = metadata.generationData {
                             Divider()
@@ -195,6 +204,49 @@ struct LibraryDetailView: View {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
             }
+            if let storageURL {
+                Divider()
+                Button {
+                    Clipboard.copy(storageURL.path)
+                } label: {
+                    Label("Copy Storage Path", systemImage: "doc.on.doc")
+                }
+                #if os(macOS)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([storageURL])
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+                #endif
+            }
+        }
+    }
+
+    private func storagePathView(_ url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Storage Path")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(url.path)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+
+            HStack(spacing: 12) {
+                Button {
+                    Clipboard.copy(url.path)
+                } label: {
+                    Label("Copy Path", systemImage: "doc.on.doc")
+                }
+                #if os(macOS)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+                #endif
+            }
         }
     }
 
@@ -272,6 +324,8 @@ struct LibraryDetailView: View {
             loadFailed = true
             return
         }
+        let ext = (decoded.mediaFileName as NSString).pathExtension
+        storageURL = fileStore.mediaURL(itemID: decoded.itemID, plaintextExtension: ext)
         metadata = decoded
         await loadEmbeddedMetadata(for: decoded)
         await store.indexService.recordAccess(itemID: itemID)
