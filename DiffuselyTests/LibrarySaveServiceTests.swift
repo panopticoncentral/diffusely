@@ -36,6 +36,29 @@ import CryptoKit
 
     private let author = LibraryAuthor(id: nil, username: nil, avatarURL: nil)
 
+    // MARK: - Save I/O executor
+
+    @Test func runIOExecutesAwayFromMainThread() async throws {
+        let ranOnMainThread = try await LibrarySaveService.runIO {
+            Thread.isMainThread
+        }
+
+        #expect(!ranOnMainThread)
+    }
+
+    @Test func runIOPropagatesErrors() async {
+        do {
+            try await LibrarySaveService.runIO {
+                throw LibrarySaveError.downloadFailed
+            }
+            Issue.record("expected LibrarySaveError.downloadFailed")
+        } catch LibrarySaveError.downloadFailed {
+            // Expected: the queue bridge preserves the original error.
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     // MARK: - Locked vault: refused
 
     @Test func performSaveRefusesAndWritesNothingWhenLocked() async throws {

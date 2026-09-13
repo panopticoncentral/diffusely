@@ -103,6 +103,34 @@ struct LibraryFileWriter {
 final class LibrarySaveService: ObservableObject {
     static let shared = LibrarySaveService()
 
+    /// Save-time work that is synchronous by API and may block for seconds:
+    /// file coordination, hashing, encryption, and Nuke disk-cache encoding.
+    ///
+    /// `LibrarySaveService` is main-actor isolated because its published state
+    /// drives the feed UI. Running those calls directly from `performSave`
+    /// therefore blocks event handling even though the surrounding operation is
+    /// an async `Task`. A dedicated serial queue keeps that work off both the
+    /// main actor and Swift's cooperative pool. Serial execution also prevents
+    /// the per-image tasks created by `savePost` from concurrently rewriting the
+    /// same custom-root change journal.
+    private static let ioQueue = DispatchQueue(
+        label: "com.achatessoftware.diffusely.library.saveIO",
+        qos: .userInitiated
+    )
+
+    /// Internal so the executor guarantee can be covered by a focused test.
+    nonisolated static func runIO<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            ioQueue.async {
+                do {
+                    continuation.resume(returning: try work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     @Published private(set) var inFlight: Set<Int> = []
     @Published var lastError: LibrarySaveError?
 
@@ -297,7 +325,7 @@ final class LibrarySaveService: ObservableObject {
         }
         let writer = LibraryFileWriter(store: vaultContext.store)
 
-        if writer.itemExists(itemID: itemID) {
+        if try await Self.runIO({ writer.itemExists(itemID: itemID) }) {
             throw LibrarySaveError.alreadySaved
         }
 
@@ -311,9 +339,11 @@ final class LibrarySaveService: ObservableObject {
             throw LibrarySaveError.downloadFailed
         }
 
-        let attrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path)
-        let byteSize = (attrs?[.size] as? Int) ?? 0
-        let sha = Self.sha256Hex(ofFileAt: tempURL) ?? ""
+        let (byteSize, sha) = try await Self.runIO {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path)
+            let byteSize = (attrs?[.size] as? Int) ?? 0
+            return (byteSize, Self.sha256Hex(ofFileAt: tempURL) ?? "")
+        }
 
         // Generation data is best-effort — the media is already downloaded and
         // failing the whole save over optional metadata would be a far worse
@@ -361,7 +391,9 @@ final class LibrarySaveService: ObservableObject {
         )
 
         do {
-            try writer.commit(metadata: metadata, mediaTempURL: tempURL)
+            try await Self.runIO {
+                try writer.commit(metadata: metadata, mediaTempURL: tempURL)
+            }
         } catch {
             try? FileManager.default.removeItem(at: tempURL)
             throw LibrarySaveError.writeFailed(error)
@@ -376,7 +408,9 @@ final class LibrarySaveService: ObservableObject {
 
         // Prime Nuke's cache now, while the original is local — free, no extra
         // download. The first grid appearance then hits the cache instead of the
-        // CDN-first tier. Off the main actor (ImageIO / AVAssetImageGenerator).
+        // CDN-first tier. Thumbnail generation is already asynchronous, but
+        // `storeCachedImage(..., caches: .all)` synchronously JPEG-encodes for
+        // the disk cache, so that call must use the save I/O queue as well.
         // Resolved via the writer/store (not a bare itemsDirectory + filename
         // join) so this still finds the file when the store is encrypted and
         // the on-disk name is an opaque token rather than "<id>.<ext>".
@@ -387,8 +421,10 @@ final class LibrarySaveService: ObservableObject {
             let request = LibraryImageRequest.request(
                 itemID: metadata.itemID, mediaFileName: metadata.mediaFileName,
                 isVideo: isVideo, maxDimension: LibraryImageRequest.gridDimension)
-            ImagePipeline.shared.cache.storeCachedImage(
-                ImageContainer(image: thumb), for: request, caches: .all)
+            try await Self.runIO {
+                ImagePipeline.shared.cache.storeCachedImage(
+                    ImageContainer(image: thumb), for: request, caches: .all)
+            }
         }
     }
 
