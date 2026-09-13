@@ -7,49 +7,94 @@ import ImageIO
 enum EmbeddedMetadataReader {
     private static let pngSignature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 
-    /// Extracts uncompressed `tEXt` chunks (keyword -> text) from PNG `data`, walking
-    /// chunks until the first `IDAT` (generation text precedes image data in practice).
-    /// Returns empty for non-PNG data. `iTXt`/`zTXt` are skipped (compressed/encoded);
-    /// the tools we target write the generation record as plain `tEXt`.
+    /// Extracts uncompressed `tEXt` chunks (keyword -> text) from PNG `data`, including
+    /// chunks written after `IDAT`. Returns empty for non-PNG data. `iTXt`/`zTXt` are
+    /// skipped (compressed/encoded); the tools we target write the generation record
+    /// as plain `tEXt`.
     static func pngTextChunks(in data: Data) -> [String: String] {
         guard data.count > 8, Array(data.prefix(8)) == pngSignature else { return [:] }
 
         var result: [String: String] = [:]
         var offset = 8
-        // Copies the entire input. Callers are responsible for bounding input size; this
-        // function does not cap it. The file-reading entry point reads only a bounded prefix.
-        let bytes = [UInt8](data)
 
-        while offset + 8 <= bytes.count {
-            let length = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16
-                       | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+        while offset <= data.count - 8 {
+            let length = Int(data[offset]) << 24 | Int(data[offset + 1]) << 16
+                       | Int(data[offset + 2]) << 8 | Int(data[offset + 3])
             let typeStart = offset + 4
-            guard typeStart + 4 <= bytes.count else { break }
-            let type = String(bytes: bytes[typeStart..<typeStart + 4], encoding: .ascii) ?? ""
+            let type = String(bytes: data[typeStart..<typeStart + 4], encoding: .ascii) ?? ""
             let dataStart = typeStart + 4
-            guard dataStart + length <= bytes.count else { break }
+            // Every chunk also has a four-byte CRC. Express the bounds check as
+            // subtraction so a corrupt length cannot overflow the addition.
+            guard length <= data.count - dataStart - 4 else { break }
 
-            if type == "IDAT" || type == "IEND" { break }
-
-            if type == "tEXt" {
-                let payload = Array(bytes[dataStart..<dataStart + length])
-                if let nullIndex = payload.firstIndex(of: 0) {
-                    let keyword = String(bytes: payload[..<nullIndex], encoding: .isoLatin1) ?? ""
-                    let textBytes = payload[(nullIndex + 1)...]
-                    let text = String(bytes: textBytes, encoding: .utf8)
-                        ?? String(bytes: textBytes, encoding: .isoLatin1) ?? ""
-                    if !keyword.isEmpty { result[keyword] = text }
-                }
+            if type == "tEXt", length <= maxTextChunkSize {
+                addPNGTextPayload(data[dataStart..<dataStart + length], to: &result)
             }
 
             offset = dataStart + length + 4 // skip data + 4-byte CRC
+            if type == "IEND" { break }
         }
         return result
     }
 
-    /// Caps how many bytes we read from a file header looking for text. The
-    /// generation `tEXt` chunk sits right after IHDR, and a JPEG's APP1 segment
-    /// is at most 64 KiB, so this is ample and avoids loading pixel data.
+    /// A corrupt or hostile PNG must not make metadata inspection allocate an
+    /// unbounded text buffer. Real ComfyUI graphs are comfortably below this.
+    private static let maxTextChunkSize = 16 << 20 // 16 MiB
+
+    private static func addPNGTextPayload(_ payload: Data.SubSequence,
+                                          to result: inout [String: String]) {
+        guard let nullIndex = payload.firstIndex(of: 0) else { return }
+        let keyword = String(data: payload[..<nullIndex], encoding: .isoLatin1) ?? ""
+        let textBytes = payload[payload.index(after: nullIndex)...]
+        let text = String(data: textBytes, encoding: .utf8)
+            ?? String(data: textBytes, encoding: .isoLatin1) ?? ""
+        if !keyword.isEmpty { result[keyword] = text }
+    }
+
+    /// File-backed counterpart to `pngTextChunks(in:)`. It reads text payloads but
+    /// seeks over image data, so finding a trailing workflow does not load the PNG's
+    /// compressed pixels into memory.
+    private static func pngTextChunks(from handle: FileHandle) -> [String: String] {
+        guard (try? handle.seek(toOffset: 0)) != nil,
+              let signature = readExactly(8, from: handle),
+              Array(signature) == pngSignature else { return [:] }
+
+        var result: [String: String] = [:]
+        while let header = readExactly(8, from: handle) {
+            let length = Int(header[0]) << 24 | Int(header[1]) << 16
+                       | Int(header[2]) << 8 | Int(header[3])
+            let type = String(bytes: header[4..<8], encoding: .ascii) ?? ""
+
+            if type == "tEXt", length <= maxTextChunkSize {
+                guard let payload = readExactly(length, from: handle),
+                      readExactly(4, from: handle) != nil else { break }
+                addPNGTextPayload(payload[...], to: &result)
+            } else {
+                guard skip(UInt64(length) + 4, on: handle) else { break }
+            }
+            if type == "IEND" { break }
+        }
+        return result
+    }
+
+    private static func readExactly(_ count: Int, from handle: FileHandle) -> Data? {
+        var data = Data()
+        data.reserveCapacity(count)
+        while data.count < count {
+            guard let next = try? handle.read(upToCount: count - data.count),
+                  !next.isEmpty else { return nil }
+            data.append(next)
+        }
+        return data
+    }
+
+    private static func skip(_ count: UInt64, on handle: FileHandle) -> Bool {
+        guard let current = try? handle.offset(), current <= UInt64.max - count else { return false }
+        return (try? handle.seek(toOffset: current + count)) != nil
+    }
+
+    /// Caps how many bytes we read from non-PNG file headers looking for EXIF.
+    /// A JPEG's APP1 segment is at most 64 KiB, so this is ample.
     private static let headerPrefixCap = 1 << 20 // 1 MiB
 
     /// Reads embedded metadata from a local file. Coordinates the read with
@@ -68,7 +113,7 @@ enum EmbeddedMetadataReader {
             let container = MediaContainer.detect(prefix)
             switch container {
             case .png:
-                result = metadata(fields: pngTextChunks(in: prefix), container: .png)
+                result = metadata(fields: pngTextChunks(from: handle), container: .png)
             default:
                 let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else { return }
@@ -90,7 +135,7 @@ enum EmbeddedMetadataReader {
         let container = MediaContainer.detect(data)
         switch container {
         case .png:
-            return metadata(fields: pngTextChunks(in: Data(data.prefix(headerPrefixCap))), container: .png)
+            return metadata(fields: pngTextChunks(in: data), container: .png)
         default:
             let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
             guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }

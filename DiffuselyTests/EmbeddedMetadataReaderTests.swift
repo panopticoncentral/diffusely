@@ -6,8 +6,9 @@ import CoreGraphics
 
 @Suite struct EmbeddedMetadataReaderTests {
     /// Builds a minimal PNG byte stream: signature + IHDR + the given tEXt chunks +
-    /// IDAT + IEND. CRC values are filler (our walker skips CRC), lengths are correct.
-    static func makePNG(textChunks: [(keyword: String, text: String)], includeIDATBeforeText: Bool = false) -> Data {
+    /// IDAT + IEND. When `imageDataBeforeText` is nonzero, IDAT precedes the text,
+    /// matching PNGs whose metadata was appended after encoding. CRC values are filler.
+    static func makePNG(textChunks: [(keyword: String, text: String)], imageDataBeforeText: Int = 0) -> Data {
         var data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
         func appendChunk(type: String, payload: Data) {
@@ -19,7 +20,9 @@ import CoreGraphics
         }
 
         appendChunk(type: "IHDR", payload: Data(repeating: 0, count: 13))
-        if includeIDATBeforeText { appendChunk(type: "IDAT", payload: Data([1, 2, 3])) }
+        if imageDataBeforeText > 0 {
+            appendChunk(type: "IDAT", payload: Data(repeating: 1, count: imageDataBeforeText))
+        }
         for chunk in textChunks {
             var payload = Data(chunk.keyword.utf8)
             payload.append(0) // null separator
@@ -43,11 +46,10 @@ import CoreGraphics
         #expect(chunks["workflow"] == "{\"nodes\":[]}")
     }
 
-    @Test func stopsAtIDATSoTextAfterImageDataIsIgnored() {
-        // A text chunk placed after IDAT must not be read (we stop at IDAT).
-        let png = Self.makePNG(textChunks: [("parameters", "should be ignored")], includeIDATBeforeText: true)
+    @Test func extractsTextAfterImageData() {
+        let png = Self.makePNG(textChunks: [("parameters", "found after IDAT")], imageDataBeforeText: 3)
         let chunks = EmbeddedMetadataReader.pngTextChunks(in: png)
-        #expect(chunks["parameters"] == nil)
+        #expect(chunks["parameters"] == "found after IDAT")
     }
 
     @Test func returnsEmptyForNonPNG() {
@@ -142,6 +144,21 @@ import CoreGraphics
         #expect(meta?.parameters?.negativePrompt == "bad")
     }
 
+    @Test func readsTrailingWorkflowBeyondHeaderPrefixFromPNGFile() throws {
+        let png = Self.makePNG(
+            textChunks: [("workflow", Self.minimalWorkflowJSON)],
+            imageDataBeforeText: (1 << 20) + 1
+        )
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("emd-\(UUID().uuidString).jpeg")
+        try png.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let meta = EmbeddedMetadataReader.read(fileURL: url)
+        #expect(meta?.container == .png)
+        #expect(meta?.format == .comfyUI)
+        #expect(meta?.comfy?.workflowJSON == Self.minimalWorkflowJSON)
+    }
+
     @Test func readsUserCommentFromJPEGFile() throws {
         let url = try Self.makeJPEGWithUserComment("a bare prompt from civitai generator")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -214,6 +231,17 @@ import CoreGraphics
         #expect(meta?.fields["parameters"] != nil)
         #expect(meta?.parameters?.prompt == "a prompt")
         #expect(meta?.parameters?.negativePrompt == "bad")
+    }
+
+    @Test func dataReadExtractsWorkflowAfterImageData() {
+        let png = Self.makePNG(
+            textChunks: [("workflow", Self.minimalWorkflowJSON)],
+            imageDataBeforeText: (1 << 20) + 1
+        )
+        let meta = EmbeddedMetadataReader.read(data: png)
+        #expect(meta?.container == .png)
+        #expect(meta?.format == .comfyUI)
+        #expect(meta?.comfy?.workflowJSON == Self.minimalWorkflowJSON)
     }
 
     @Test func dataReadExtractsUserCommentFromJPEGBytes() throws {
