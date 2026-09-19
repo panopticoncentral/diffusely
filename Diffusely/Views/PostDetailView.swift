@@ -30,74 +30,60 @@ struct PostDetailView: View {
         router.push(.user(post.user))
     }
 
-    var body: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
+    private var detailInformation: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            FeedItemStats(
+                likeCount: post.safeStats.likeCount,
+                heartCount: post.safeStats.heartCount,
+                laughCount: post.safeStats.laughCount,
+                cryCount: post.safeStats.cryCount,
+                commentCount: post.safeStats.commentCount,
+                dislikeCount: post.safeStats.dislikeCount
+            )
 
-            VStack(spacing: 0) {
-                // Carousel + stats - scrollable; media fits the window on macOS
-                GeometryReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if !post.safeImages.isEmpty {
-                            MediaCarousel(
-                                images: post.safeImages,
-                                currentIndex: $currentImageIndex,
-                                maxHeight: proxy.size.height
-                            ) {
-                                postMenuContent
-                            }
-                        }
+            Divider()
 
-                        // Stats and generation data
-                        VStack(alignment: .leading, spacing: 12) {
-                            FeedItemStats(
-                                likeCount: post.safeStats.likeCount,
-                                heartCount: post.safeStats.heartCount,
-                                laughCount: post.safeStats.laughCount,
-                                cryCount: post.safeStats.cryCount,
-                                commentCount: post.safeStats.commentCount,
-                                dislikeCount: post.safeStats.dislikeCount
-                            )
+            // Generation data section
+            if isLoadingGenData {
+                ProgressView()
+                    .padding()
+            } else if let genData = generationData {
+                GenerationDataView(data: genData)
+            }
 
-                            Divider()
-
-                            // Generation data section
-                            if isLoadingGenData {
-                                ProgressView()
-                                    .padding()
-                            } else if let genData = generationData {
-                                GenerationDataView(data: genData)
-                            }
-
-                            // Tags section for the current carousel image
-                            // (hidden entirely when there are no tags).
-                            if !tags.isEmpty {
-                                Divider()
-                                TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
-                                    router.push(.tag(
-                                        id: tag.id,
-                                        name: tag.name,
-                                        videos: currentImage?.isVideo ?? false
-                                    ))
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                }
-                .background(Color(.systemBackground))
+            // Tags section for the current carousel image
+            // (hidden entirely when there are no tags).
+            if !tags.isEmpty {
+                Divider()
+                TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
+                    router.push(
+                        .tag(
+                            id: tag.id,
+                            name: tag.name,
+                            videos: currentImage?.isVideo ?? false
+                        ))
                 }
             }
         }
+    }
+
+    var body: some View {
+        MediaDetailLayout { height in
+            if !post.safeImages.isEmpty {
+                MediaCarousel(images: post.safeImages, currentIndex: $currentImageIndex, maxHeight: height) {
+                    postMenuContent
+                }
+            }
+        } details: {
+            detailInformation
+        }
         .toolbar { detailToolbar }
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
         #endif
         #if os(macOS)
-        // Esc pops the pushed post view, matching the toolbar back button.
-        .onExitCommand { dismiss() }
+            // Esc pops the pushed post view, matching the toolbar back button.
+            .onExitCommand { dismiss() }
         #endif
         .onChange(of: currentImageIndex) {
             showAllTags = false
@@ -129,7 +115,8 @@ struct PostDetailView: View {
         if let currentImage = currentImage {
             let isSavingCurrent = librarySaveService.isSaving(itemID: currentImage.id)
             Button(action: {
-                librarySaveService.save(currentImage, knownPostTitle: post.title, knownPublishedAt: post.publishedAtDate)
+                librarySaveService.save(
+                    currentImage, knownPostTitle: post.title, knownPublishedAt: post.publishedAtDate)
             }) {
                 Label(
                     isSavingCurrent ? "Saving Image…" : "Save Image to Library",
@@ -177,15 +164,9 @@ struct PostDetailView: View {
         ToolbarItem(placement: .principal) {
             VStack(spacing: 0) {
                 if let username = post.user.username {
-                    Menu {
-                        Button(action: { openUserContent() }) {
-                            Label("View \(username)'s content", systemImage: "person.crop.circle")
-                        }
-                    } label: {
-                        Text(username)
-                            .font(.headline)
+                    Button(action: openUserContent) {
+                        Text(username).font(.headline).lineLimit(1)
                     }
-                    .fixedSize()
                     .help("\(username) — click for actions")
                 }
                 if let title = post.title {
@@ -194,6 +175,19 @@ struct PostDetailView: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            if let currentImage {
+                SaveMediaButton(image: currentImage) {
+                    librarySaveService.save(
+                        currentImage, knownPostTitle: post.title, knownPublishedAt: post.publishedAtDate)
+                }
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            if let url = URL(string: "https://civitai.com/posts/\(post.id)") {
+                ShareLink(item: url) { Label("Share Post Link", systemImage: "square.and.arrow.up") }
             }
         }
         ToolbarItem(placement: .primaryAction) {

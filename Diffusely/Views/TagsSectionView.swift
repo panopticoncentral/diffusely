@@ -43,6 +43,8 @@ struct TagsSectionView: View {
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .comfortableHitTarget()
+                    .accessibilityValue(followed ? "Following" : "Not followed")
                     // Tap still opens the tag feed; following is the secondary
                     // action (long-press on iOS, right-click on macOS).
                     .contextMenu {
@@ -85,7 +87,7 @@ struct FlowLayout: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
         Self.flowSize(
-            subviewSizes: subviews.map { $0.sizeThatFits(.unspecified) },
+            subviewSizes: subviews.map { $0.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) },
             proposedWidth: proposal.width,
             spacing: spacing
         )
@@ -132,7 +134,7 @@ struct FlowLayout: Layout {
         var rowHeight: CGFloat = 0
 
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
             if x + size.width > bounds.maxX && x > bounds.minX {
                 x = bounds.minX
                 y += rowHeight + spacing

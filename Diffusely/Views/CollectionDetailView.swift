@@ -4,6 +4,11 @@ import SwiftData
 struct CollectionDetailView: View {
     let collection: CivitaiCollection
 
+    init(collection: CivitaiCollection) {
+        self.collection = collection
+        _selectedSort = AppStorage(wrappedValue: .authorAscending, "collectionSort.\(collection.id)")
+    }
+
     @Environment(\.modelContext) private var modelContext
     @StateObject private var civitaiService = CivitaiService()
     @State private var persistenceService: CollectionPersistenceService?
@@ -11,12 +16,13 @@ struct CollectionDetailView: View {
 
     // Sorted content state
     @State private var content: CollectionPersistenceService.SortedCollectionContent = .grouped([])
-    @State private var selectedSort: CollectionSort = .authorAscending
+    @AppStorage private var selectedSort: CollectionSort
     // Guards the one-time auto-sync that backfills publish dates for
     // collections cached before date sorting existed.
     @State private var didRequestDateBackfill = false
     @State private var expandedAuthors: Set<Int> = []
     @State private var isInitialLoad = true
+    @State private var focusedMediaID: Int?
 
     // Author drill-ins push Routes onto the enclosing stack (this view is
     // itself pushed via a value-based NavigationLink from CollectionsView, so
@@ -24,7 +30,7 @@ struct CollectionDetailView: View {
     @EnvironmentObject private var router: NavigationRouter
 
     var body: some View {
-        ZStack {
+        ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
                     // Sync progress indicator
@@ -46,6 +52,7 @@ struct CollectionDetailView: View {
                 }
                 .padding(.bottom, 20)
             }
+            .onChange(of: focusedMediaID) { if let focusedMediaID { proxy.scrollTo(focusedMediaID, anchor: .center) } }
             .refreshable {
                 await refreshContent()
             }
@@ -149,6 +156,7 @@ struct CollectionDetailView: View {
             authorGroupedContent(groups)
         case .flatImages(let images):
             AuthorContentGrid(
+                onFocus: { focusedMediaID = $0 },
                 images: images,
                 posts: [],
                 collectionType: "Image",
@@ -157,6 +165,7 @@ struct CollectionDetailView: View {
             .padding(.bottom, 8)
         case .flatPosts(let posts):
             AuthorContentGrid(
+                onFocus: { focusedMediaID = $0 },
                 images: [],
                 posts: posts,
                 collectionType: "Post",
@@ -178,6 +187,7 @@ struct CollectionDetailView: View {
                 Section {
                     if expandedAuthors.contains(group.id) {
                         AuthorContentGrid(
+                onFocus: { focusedMediaID = $0 },
                             images: group.images,
                             posts: group.posts,
                             collectionType: collection.type ?? "Image",

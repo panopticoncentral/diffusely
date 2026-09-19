@@ -14,10 +14,13 @@ struct SortAssistantSheet: View {
         NavigationStack {
             Group {
                 if !openRouterConfig.hasAPIKey {
+                    VStack(spacing: 12) {
                     ContentUnavailableView(
                         "OpenRouter Key Needed",
                         systemImage: "key",
                         description: Text("Add your OpenRouter API key in Settings to use the Sort Assistant."))
+                    SettingsAccessButton(title: "Open Settings").buttonStyle(.borderedProminent)
+                    }
                 } else if let service {
                     SortAssistantFlowView(service: service)
                 } else {
@@ -127,14 +130,17 @@ private struct SortAssistantFlowView: View {
                         .frame(minHeight: 80)
                 }
             }
-            Section {
-                Button("Continue") { service.beginClassification() }
-                    .frame(maxWidth: .infinity)
-            }
         }
         // The default macOS form style doesn't scroll; grouped matches the
         // iOS appearance and scrolls when the sheet bounds the height.
         .formStyle(.grouped)
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Spacer()
+                Button("Continue") { service.beginClassification() }.buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }.padding().background(.bar)
+        }
         // No toolbar Continue: it would sit beside the sheet's Done (both are
         // .confirmationAction). The in-form Continue above is the single
         // forward action; scroll to it when the album list is long.

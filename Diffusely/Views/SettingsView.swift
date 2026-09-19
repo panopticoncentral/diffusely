@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("autoplayPreviews") private var autoplayPreviews = true
+    @State private var selectedPane: SettingsPane = .account
     @StateObject private var apiKeyManager = APIKeyManager.shared
     @StateObject private var openRouterConfig = OpenRouterConfig.shared
     @ObservedObject private var domainManager = DomainManager.shared
@@ -8,7 +11,6 @@ struct SettingsView: View {
     @EnvironmentObject private var libraryStore: LibraryStore
     @State private var apiKeyInput = ""
     @State private var openRouterKeyInput = ""
-    @State private var showingAPIKeyInfo = false
     @State private var showingResetConfirmation = false
     @State private var showingLibraryEncryption = false
     /// Resume direction for an interrupted migration (or `nil` when complete),
@@ -35,11 +37,6 @@ struct SettingsView: View {
 
     var body: some View {
         settingsContent
-            .alert("Get API Key", isPresented: $showingAPIKeyInfo) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text("To get your Civitai API Key:\n\n1. Go to \(domainManager.domain.rawValue)\n2. Sign in to your account\n3. Go to Account Settings\n4. Navigate to the API Keys section\n5. Generate a new API key\n6. Copy and paste it here")
-            }
             .alert("Reset Library", isPresented: $showingResetConfirmation) {
                 Button("Delete Everything", role: .destructive) {
                     Task {
@@ -68,22 +65,64 @@ struct SettingsView: View {
             }
     }
 
+    private enum SettingsPane: String, CaseIterable, Identifiable {
+        case account = "Account", browsing = "Browsing", library = "Library", assistant = "Sort Assistant", advanced = "Advanced"
+        var id: Self { self }
+        var icon: String {
+            switch self {
+            case .account: "person.crop.circle"
+            case .browsing: "photo.on.rectangle"
+            case .library: "externaldrive"
+            case .assistant: "sparkles"
+            case .advanced: "gearshape.2"
+            }
+        }
+    }
+
     @ViewBuilder
     private var settingsContent: some View {
         #if os(macOS)
-        Form {
-            formSections
+        TabView(selection: $selectedPane) {
+            ForEach(SettingsPane.allCases) { pane in
+                paneForm(pane)
+                    .tabItem { Label(pane.rawValue, systemImage: pane.icon) }
+                    .tag(pane)
+            }
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 460, idealWidth: 520)
+        .frame(width: 580, height: 600)
         #else
         NavigationStack {
             Form {
-                formSections
+                ForEach(SettingsPane.allCases) { pane in
+                    NavigationLink {
+                        paneForm(pane).navigationTitle(pane.rawValue)
+                    } label: { Label(pane.rawValue, systemImage: pane.icon) }
+                }
+                aboutSection
             }
             .navigationTitle("Settings")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         #endif
+    }
+
+    private func paneForm(_ pane: SettingsPane) -> some View {
+        Form {
+            switch pane {
+            case .account: accountSection
+            case .browsing: browsingSection
+            case .library: librarySection
+            case .assistant: sortAssistantSection
+            case .advanced:
+                diagnosticsSection
+                Section("Delete Library") {
+                    Button("Reset Library…", role: .destructive) { showingResetConfirmation = true }
+                        .disabled(libraryStore.itemCount == 0)
+                }
+                aboutSection
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var sortAssistantSection: some View {
@@ -121,9 +160,9 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var formSections: some View {
+    private var browsingSection: some View {
         Section {
+            Toggle("Autoplay Video Previews", isOn: $autoplayPreviews)
             Picker("Source", selection: $domainManager.domain) {
                 ForEach(CivitaiDomain.allCases) { domain in
                     Text(domain.displayName).tag(domain)
@@ -136,12 +175,15 @@ struct SettingsView: View {
                 .font(.caption)
         }
 
+    }
+
+    private var accountSection: some View {
         Section {
             if apiKeyManager.hasAPIKey {
                 HStack {
                     Text("API Key")
                     Spacer()
-                    Text("Connected")
+                    Text("Key saved")
                         .foregroundColor(.green)
                 }
 
@@ -170,14 +212,15 @@ struct SettingsView: View {
         } header: {
             Text("Authentication")
         } footer: {
-            Button("How to get an API Key") {
-                showingAPIKeyInfo = true
+            VStack(alignment: .leading, spacing: 8) {
+                Text("In your Civitai account settings, open API Keys, generate a key, and paste it here. Collections and followed creators use this key.")
+                Link("Open Civitai", destination: URL(string: "https://\(domainManager.domain.rawValue)")!)
             }
-            .font(.caption)
         }
 
-        sortAssistantSection
+    }
 
+    private var librarySection: some View {
         Section {
             #if os(macOS)
             LibraryLocationRow(libraryStore: libraryStore)
@@ -307,10 +350,6 @@ struct SettingsView: View {
             }
             #endif
 
-            Button("Reset Library", role: .destructive) {
-                showingResetConfirmation = true
-            }
-            .disabled(libraryStore.itemCount == 0)
         } header: {
             Text("Personal Library")
         } footer: {
@@ -341,9 +380,6 @@ struct SettingsView: View {
             rootCapabilities = root.capabilities
         }
 
-        diagnosticsSection
-
-        aboutSection
     }
 
     // MARK: - Diagnostics

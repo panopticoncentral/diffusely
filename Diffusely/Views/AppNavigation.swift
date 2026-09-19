@@ -138,6 +138,7 @@ struct RouteDestinationView: View {
             LibraryDetailView(itemID: id)
         case .libraryScope(let filter, let title):
             LibraryView(filter: filter, scopeTitle: title)
+                .id(filter)
         }
     }
 }

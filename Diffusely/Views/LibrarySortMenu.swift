@@ -38,7 +38,7 @@ struct LibrarySortMenu: View {
             // Hosted in a toolbar on both platforms, which sizes the label
             // natively (and scales with Dynamic Type) — matching FeedFilterMenu,
             // unlike the old fixed 24pt iOS glyph.
-            Label("Sort", systemImage: "arrow.up.arrow.down.circle")
+            Label("Sort", systemImage: "arrow.up.arrow.down")
         }
         .accessibilityLabel("Sort")
     }

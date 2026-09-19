@@ -8,10 +8,12 @@ import SwiftUI
 struct TagsView: View {
     @ObservedObject private var store = FollowedTagsStore.shared
     @State private var showingAddTag = false
+    @State private var query = ""
 
     var body: some View {
         content
-            .navigationTitle("Tags")
+            .navigationTitle("Following")
+            .searchable(text: $query, prompt: "Search followed tags")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -42,7 +44,7 @@ struct TagsView: View {
 
     private var listView: some View {
         List {
-            ForEach(store.tags) { tag in
+            ForEach(store.tags.filter { $0.name.matchesSearch(query) }) { tag in
                 // Opens on images; the feed itself has an Images/Videos toggle.
                 NavigationLink(value: Route.tag(id: tag.id, name: tag.name, videos: false)) {
                     FollowedTagRowView(tag: tag)
@@ -65,6 +67,7 @@ struct TagsView: View {
             }
         }
         .listStyle(.plain)
+        .overlay { if !query.isEmpty && store.tags.filter { $0.name.matchesSearch(query) }.isEmpty { ContentUnavailableView.search(text: query) } }
     }
 }
 

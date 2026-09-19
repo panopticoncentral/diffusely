@@ -1,7 +1,9 @@
+import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
+
 #if os(macOS)
-import AppKit
+    import AppKit
 #endif
 
 struct LibraryDetailView: View {
@@ -12,6 +14,12 @@ struct LibraryDetailView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var metadata: LibraryItemMetadata?
+    @Environment(\.modelContext) private var modelContext
+    @State private var albumRequest: LibraryView.AddToAlbumRequest?
+    @State private var exportDocument: DataDocument?
+    @State private var showingExporter = false
+    @State private var exporting = false
+    @State private var exportError: String?
     @State private var loadFailed = false
     @State private var showingRemoveConfirm = false
     @State private var embedded: EmbeddedMetadata?
@@ -23,124 +31,175 @@ struct LibraryDetailView: View {
     /// export can advertise the real container instead of the cosmetic `.jpeg`.
     @State private var container: MediaContainer?
 
-    var body: some View {
-        GeometryReader { proxy in
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if let metadata {
-                    media(for: metadata, maxHeight: proxy.size.height)
+    private func detailInformation(for metadata: LibraryItemMetadata) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let username = metadata.author.username {
+                Text(username)
+                    .font(.headline)
+            }
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let username = metadata.author.username {
-                            Text(username)
-                                .font(.headline)
-                        }
+            if let title = metadata.sourcePostTitle, !title.isEmpty {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
 
-                        if let title = metadata.sourcePostTitle, !title.isEmpty {
-                            Text(title)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
+            if let genData = metadata.generationData {
+                Divider()
+                GenerationDataView(data: genData)
+            }
 
-                        if let url = URL(string: metadata.canonicalPageURL) {
-                            HStack(spacing: 12) {
-                                Button {
-                                    openURL(url)
-                                } label: {
-                                    Label("Open Image on Civitai", systemImage: "safari")
-                                }
-                                Button {
-                                    Clipboard.copy(metadata.canonicalPageURL)
-                                } label: {
-                                    Label("Copy Link", systemImage: "doc.on.doc")
-                                }
-                            }
-                        }
-
-                        if let postURLString = metadata.canonicalPostURL,
-                           let postURL = URL(string: postURLString) {
-                            HStack(spacing: 12) {
-                                Button {
-                                    openURL(postURL)
-                                } label: {
-                                    Label("Open Post on Civitai", systemImage: "photo.stack")
-                                }
-                                Button {
-                                    Clipboard.copy(postURLString)
-                                } label: {
-                                    Label("Copy Link", systemImage: "doc.on.doc")
-                                }
-                            }
-                        }
-
-                        Text("Saved \(metadata.savedAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        if let storageURL {
-                            Divider()
-                            storagePathView(storageURL)
-                        }
-
-                        if let genData = metadata.generationData {
-                            Divider()
-                            GenerationDataView(data: genData)
-                        }
-
-                        if let embedded {
-                            Divider()
-                            let ext = (metadata.mediaFileName as NSString).pathExtension
-                            let id = metadata.itemID
-                            EmbeddedMetadataView(metadata: embedded, itemID: id) {
-                                await Self.readOriginalBytes(itemID: id, ext: ext)
-                            }
-                        }
-                    }
-                    .padding()
-                } else if loadFailed {
-                    ContentUnavailableView {
-                        Label("Couldn't load item", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text("The item couldn't be loaded from iCloud.")
-                    } actions: {
-                        Button("Retry") {
-                            loadFailed = false
-                            Task { await loadMetadata() }
-                        }
-                    }
-                    .padding(.top, 80)
-                } else {
-                    ProgressView().padding(.top, 80)
+            if let embedded {
+                Divider()
+                let ext = (metadata.mediaFileName as NSString).pathExtension
+                let id = metadata.itemID
+                EmbeddedMetadataView(metadata: embedded, itemID: id) {
+                    await Self.readOriginalBytes(itemID: id, ext: ext)
                 }
             }
+            DisclosureGroup("File Details") {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let url = URL(string: metadata.canonicalPageURL) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button {
+                                openURL(url)
+                            } label: {
+                                Label("Open Image on Civitai", systemImage: "safari")
+                            }
+                            Button {
+                                Clipboard.copy(metadata.canonicalPageURL)
+                            } label: {
+                                Label("Copy Link", systemImage: "doc.on.doc")
+                            }
+                        }
+                    }
+
+                    if let postURLString = metadata.canonicalPostURL,
+                        let postURL = URL(string: postURLString)
+                    {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button {
+                                openURL(postURL)
+                            } label: {
+                                Label("Open Post on Civitai", systemImage: "photo.stack")
+                            }
+                            Button {
+                                Clipboard.copy(postURLString)
+                            } label: {
+                                Label("Copy Link", systemImage: "doc.on.doc")
+                            }
+                        }
+                    }
+
+                    Text("Saved \(metadata.savedAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    if let storageURL {
+                        Divider()
+                        storagePathView(storageURL)
+                    }
+
+                }.padding(.top, 8)
+            }
         }
-        .navigationTitle("")
+    }
+
+    var body: some View {
+        Group {
+            if let metadata {
+                MediaDetailLayout { height in
+                    media(for: metadata, maxHeight: height)
+                } details: {
+                    detailInformation(for: metadata)
+                }
+            } else if loadFailed {
+                ContentUnavailableView {
+                    Label("Couldn't Load Item", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("Check your Library location and connection, then try again.")
+                } actions: {
+                    Button("Retry") {
+                        loadFailed = false
+                        Task { await loadMetadata() }
+                    }
+                }
+            } else {
+                ProgressView("Loading item…")
+            }
+        }
+        .navigationTitle(metadata?.author.username ?? "Saved Item")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
         #endif
         #if os(macOS)
-        // Esc pops the pushed library item, matching the toolbar back button.
-        .onExitCommand { dismiss() }
-        // ⌘C copies the displayed image. Responder-chain based, so it doesn't
-        // steal Copy from selected generation-metadata text.
-        .onCopyCommand { imageItemProviders() }
+            // Esc pops the pushed library item, matching the toolbar back button.
+            .onExitCommand { dismiss() }
+            // ⌘C copies the displayed image. Responder-chain based, so it doesn't
+            // steal Copy from selected generation-metadata text.
+            .onCopyCommand { imageItemProviders() }
         #endif
         .toolbar {
-            ToolbarItem(placement: .destructiveAction) {
-                Button(role: .destructive) {
-                    showingRemoveConfirm = true
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    let service = LibrarySortService(modelContext: modelContext)
+                    albumRequest = LibraryView.AddToAlbumRequest(
+                        itemIDs: [itemID], summaries: service.albumSummaries(),
+                        membershipCounts: service.albumMembershipCounts(for: [itemID]))
                 } label: {
-                    Image(systemName: "trash")
+                    Label("Manage Albums", systemImage: "rectangle.stack")
                 }
-                .accessibilityLabel("Remove from Library")
+                .disabled(metadata == nil)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                if let metadata, let url = URL(string: metadata.canonicalPageURL) {
+                    ShareLink(item: url) { Label("Share Link", systemImage: "square.and.arrow.up") }
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Export Original…", systemImage: "square.and.arrow.up") { exportOriginal() }
+                        .disabled(metadata == nil || exporting)
+                    #if os(macOS)
+                        if let storageURL {
+                            Button("Reveal in Finder", systemImage: "folder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([storageURL])
+                            }
+                        }
+                    #endif
+                    Divider()
+                    Button("Delete from Library…", systemImage: "trash", role: .destructive) {
+                        showingRemoveConfirm = true
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+                .disabled(metadata == nil)
             }
         }
+        .sheet(item: $albumRequest) { request in
+            ManageAlbumsSheet(
+                itemIDs: request.itemIDs, summaries: request.summaries, membershipCounts: request.membershipCounts)
+        }
+        .fileExporter(
+            isPresented: $showingExporter, document: exportDocument,
+            contentType: exportDocument?.contentType ?? .data, defaultFilename: "\(itemID)"
+        ) { result in
+            if case .failure = result { exportError = "The file couldn't be exported. Try another destination." }
+        }
+        .alert(
+            "Couldn't Export", isPresented: Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "")
+        }
         .confirmationDialog(
-            "Remove from Library?",
+            "Delete from Library?",
             isPresented: $showingRemoveConfirm,
             titleVisibility: .visible
         ) {
-            Button("Remove", role: .destructive) {
+            Button("Delete", role: .destructive) {
                 // Navigation need not wait for slow FileProvider cleanup; the
                 // store removes the index row first and finishes I/O off-main.
                 dismiss()
@@ -150,9 +209,28 @@ struct LibraryDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes your saved copy and its metadata from iCloud.")
+            Text(
+                LibraryRootStore.standard.load().deletionMessage(
+                    plural: false, localOnly: store.iCloudStatus == .unavailable))
         }
         .task { await loadMetadata() }
+    }
+
+    private func exportOriginal() {
+        guard let metadata, !exporting else { return }
+        exporting = true
+        Task {
+            defer { exporting = false }
+            let ext = (metadata.mediaFileName as NSString).pathExtension
+            guard let bytes = await Self.readOriginalBytes(itemID: itemID, ext: ext) else {
+                exportError = "The original file is unavailable. Check your connection and try again."
+                return
+            }
+            exportDocument = DataDocument(
+                data: bytes,
+                contentType: metadata.mediaType == .video
+                    ? (UTType(filenameExtension: ext) ?? .mpeg4Movie) : MediaContainer.detect(bytes).utType)
+            showingExporter = true
         }
     }
 
@@ -187,19 +265,25 @@ struct LibraryDetailView: View {
         }
         .contextMenu {
             #if os(macOS)
-            if metadata.mediaType == .image {
-                Button {
-                    copyCurrentImage()
-                } label: { Label("Copy Image", systemImage: "doc.on.doc") }
-            }
+                if metadata.mediaType == .image {
+                    Button {
+                        copyCurrentImage()
+                    } label: {
+                        Label("Copy Image", systemImage: "doc.on.doc")
+                    }
+                }
             #endif
             if let url = URL(string: metadata.canonicalPageURL) {
                 Button {
                     openURL(url)
-                } label: { Label("Open on Civitai", systemImage: "safari") }
+                } label: {
+                    Label("Open on Civitai", systemImage: "safari")
+                }
                 Button {
                     Clipboard.copy(metadata.canonicalPageURL)
-                } label: { Label("Copy Link", systemImage: "doc.on.doc") }
+                } label: {
+                    Label("Copy Link", systemImage: "doc.on.doc")
+                }
                 ShareLink(item: url) {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
@@ -212,11 +296,11 @@ struct LibraryDetailView: View {
                     Label("Copy Storage Path", systemImage: "doc.on.doc")
                 }
                 #if os(macOS)
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([storageURL])
-                } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
-                }
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([storageURL])
+                    } label: {
+                        Label("Reveal in Finder", systemImage: "folder")
+                    }
                 #endif
             }
         }
@@ -233,75 +317,79 @@ struct LibraryDetailView: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
 
-            HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 Button {
                     Clipboard.copy(url.path)
                 } label: {
                     Label("Copy Path", systemImage: "doc.on.doc")
                 }
                 #if os(macOS)
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
-                }
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    } label: {
+                        Label("Reveal in Finder", systemImage: "folder")
+                    }
                 #endif
             }
         }
     }
 
     #if os(macOS)
-    /// Reads the item's original file off the main actor and writes it to the
-    /// general pasteboard as an image, so ⌘C / "Copy Image" pastes it elsewhere.
-    /// Images only — the file is already materialized because the detail view is
-    /// displaying it. Silently no-ops if the read fails.
-    private func copyCurrentImage() {
-        guard let metadata, metadata.mediaType == .image else { return }
-        let itemID = metadata.itemID
-        let ext = (metadata.mediaFileName as NSString).pathExtension
-        Task {
-            let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
-            guard state != .locked else { return }
-            let nsImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
-                guard let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext) else { return nil }
-                return NSImage(data: data)
-            }.value
-            guard let nsImage else { return }
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.writeObjects([nsImage])
-        }
-    }
-
-    /// Item providers backing the standard Copy command (⌘C / Edit ▸ Copy).
-    /// Going through `.onCopyCommand` (rather than a view-level keyboard
-    /// shortcut) keeps Copy on selected prompt text working — the command only
-    /// reaches here when no text field is the first responder. The provider
-    /// streams the original file bytes lazily, so no work happens unless Copy
-    /// actually fires.
-    private func imageItemProviders() -> [NSItemProvider] {
-        guard let metadata, metadata.mediaType == .image else { return [] }
-        let itemID = metadata.itemID
-        let ext = (metadata.mediaFileName as NSString).pathExtension
-        // Library files are named `.jpeg` regardless of content; advertise what
-        // the bytes actually are once they've been sniffed.
-        let typeID = container?.utType.identifier
-            ?? UTType(filenameExtension: ext)?.identifier
-            ?? UTType.image.identifier
-        let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: typeID, visibility: .all) { completion in
-            Task.detached(priority: .userInitiated) {
+        /// Reads the item's original file off the main actor and writes it to the
+        /// general pasteboard as an image, so ⌘C / "Copy Image" pastes it elsewhere.
+        /// Images only — the file is already materialized because the detail view is
+        /// displaying it. Silently no-ops if the read fails.
+        private func copyCurrentImage() {
+            guard let metadata, metadata.mediaType == .image else { return }
+            let itemID = metadata.itemID
+            let ext = (metadata.mediaFileName as NSString).pathExtension
+            Task {
                 let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
-                guard state != .locked else {
-                    completion(nil, CocoaError(.fileNoSuchFile)); return
-                }
-                let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext)
-                completion(data, data == nil ? CocoaError(.fileReadCorruptFile) : nil)
+                guard state != .locked else { return }
+                let nsImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+                    guard let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext) else {
+                        return nil
+                    }
+                    return NSImage(data: data)
+                }.value
+                guard let nsImage else { return }
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.writeObjects([nsImage])
             }
-            return nil
         }
-        return [provider]
-    }
+
+        /// Item providers backing the standard Copy command (⌘C / Edit ▸ Copy).
+        /// Going through `.onCopyCommand` (rather than a view-level keyboard
+        /// shortcut) keeps Copy on selected prompt text working — the command only
+        /// reaches here when no text field is the first responder. The provider
+        /// streams the original file bytes lazily, so no work happens unless Copy
+        /// actually fires.
+        private func imageItemProviders() -> [NSItemProvider] {
+            guard let metadata, metadata.mediaType == .image else { return [] }
+            let itemID = metadata.itemID
+            let ext = (metadata.mediaFileName as NSString).pathExtension
+            // Library files are named `.jpeg` regardless of content; advertise what
+            // the bytes actually are once they've been sniffed.
+            let typeID =
+                container?.utType.identifier
+                ?? UTType(filenameExtension: ext)?.identifier
+                ?? UTType.image.identifier
+            let provider = NSItemProvider()
+            provider.registerDataRepresentation(forTypeIdentifier: typeID, visibility: .all) { completion in
+                Task.detached(priority: .userInitiated) {
+                    let (state, fileStore) = await LibraryVaultProvider.shared.reconcileContext()
+                    guard state != .locked else {
+                        completion(nil, CocoaError(.fileNoSuchFile))
+                        return
+                    }
+                    let data = await fileStore.readMediaAsync(itemID: itemID, plaintextExtension: ext)
+                    completion(data, data == nil ? CocoaError(.fileReadCorruptFile) : nil)
+                }
+                return nil
+            }
+            return [provider]
+        }
     #endif
 
     private func loadMetadata() async {
@@ -336,7 +424,8 @@ struct LibraryDetailView: View {
         // this item so the API cost is justified. Updates the displayed
         // metadata if the fetch succeeded.
         if decoded.publishedAt == nil,
-           let updated = await store.attemptPublishDateCatchup(for: decoded) {
+            let updated = await store.attemptPublishDateCatchup(for: decoded)
+        {
             metadata = updated
         }
     }

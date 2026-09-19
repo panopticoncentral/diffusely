@@ -6,6 +6,8 @@ import SwiftUI
 /// looping preview; un-hovering removes it (pausing the cached player). iOS: no
 /// hover — the poster stays and the caller's tap opens the detail view.
 struct FeedGridMedia: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("autoplayPreviews") private var autoplayPreviews = true
     let image: CivitaiImage
     let width: CGFloat
     let height: CGFloat
@@ -22,7 +24,7 @@ struct FeedGridMedia: View {
             poster
 
             #if os(macOS)
-            if image.isVideo && hover.isArmed {
+            if image.isVideo && hover.isArmed && autoplayPreviews && !reduceMotion {
                 CachedVideoPlayer(
                     url: image.detailURL,
                     autoPlay: true,
@@ -50,7 +52,7 @@ struct FeedGridMedia: View {
         // Signal the cell is clickable — without this the only hover affordance
         // is the video preview, so image cells give no pointer feedback at all.
         .pointerStyle(.link)
-        .animation(.easeInOut(duration: 0.2), value: hover.isArmed)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hover.isArmed)
         .onHover { hovering in
             guard image.isVideo else { return }
             if hovering { hover.begin() } else { hover.cancel() }

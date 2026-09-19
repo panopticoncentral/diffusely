@@ -47,10 +47,11 @@ struct SortReviewGroupView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .overlay {
-            if let item = previewItem {
-                previewOverlay(item)
-            }
+        .sheet(item: $previewItem) { item in
+            previewOverlay(item)
+                #if os(macOS)
+                .frame(minWidth: 640, idealWidth: 900, minHeight: 500, idealHeight: 700)
+                #endif
         }
         // The commit action lives in an always-visible bottom bar — toolbar
         // items on views pushed inside a sheet are unreliable on macOS, and an
@@ -58,11 +59,11 @@ struct SortReviewGroupView: View {
         // intentionally discards the selection).
         .safeAreaInset(edge: .bottom) {
             if isActionable {
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("\(selectedIDs.count) of \(group.entries.count) selected")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Spacer()
+                    Text("Unselected suggestions will be rejected.").font(.caption).foregroundStyle(.secondary)
                     Button(acceptTitle) { acceptSelection() }
                         .buttonStyle(.borderedProminent)
                         .disabled(isAccepting)
@@ -74,7 +75,9 @@ struct SortReviewGroupView: View {
         .toolbar {
             if isActionable {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Accept (\(selectedIDs.count))") { acceptSelection() }
+                    Button(selectedIDs.count == group.entries.count ? "Deselect All" : "Select All") {
+                        selectedIDs = selectedIDs.count == group.entries.count ? [] : Set(group.entries.map(\.itemID))
+                    }
                         .disabled(isAccepting)
                 }
             }
@@ -82,7 +85,7 @@ struct SortReviewGroupView: View {
         .sheet(item: $manageRequest) { request in
             ManageAlbumsSheet(
                 itemIDs: request.itemIDs,
-                summaries: LibrarySortService(modelContext: modelContext).albumSummaries(),
+                summaries: request.summaries,
                 membershipCounts: request.membershipCounts,
                 onChanged: {})
                 .environmentObject(store)
@@ -168,10 +171,11 @@ struct SortReviewGroupView: View {
             // the iOS context-menu long-press).
             .contextMenu {
                 Button {
+                    let sortService = LibrarySortService(modelContext: modelContext)
                     manageRequest = LibraryView.AddToAlbumRequest(
                         itemIDs: [item.itemID],
-                        membershipCounts: LibrarySortService(modelContext: modelContext)
-                            .albumMembershipCounts(for: [item.itemID]))
+                        summaries: sortService.albumSummaries(),
+                        membershipCounts: sortService.albumMembershipCounts(for: [item.itemID]))
                 } label: { Label("Manage Albums", systemImage: "rectangle.stack") }
                 Button {
                     previewItem = item
@@ -194,7 +198,11 @@ struct SortReviewGroupView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Preview")
             }
-            .accessibilityLabel(item.isVideo ? "Video" : "Photo")
+            .accessibilityLabel(item.mediaAccessibilityLabel)
+            .accessibilityAction {
+                guard isActionable else { previewItem = item; return }
+                if selectedIDs.contains(item.itemID) { selectedIDs.remove(item.itemID) } else { selectedIDs.insert(item.itemID) }
+            }
             .accessibilityAddTraits(isActionable ? .isButton : [])
             .accessibilityAddTraits(isActionable && isSelected ? .isSelected : [])
     }
@@ -211,12 +219,16 @@ struct SortReviewGroupView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { previewItem = nil }
 
-            LibraryAsyncImage(
-                itemID: item.itemID,
-                mediaFileName: item.mediaFileName,
-                isVideo: item.isVideo,
-                maxDimension: 1600,
-                contentMode: .fit)
+            Group {
+                if item.isVideo {
+                    LibraryVideoPlayer(itemID: item.itemID, mediaFileName: item.mediaFileName, autoPlay: true, isMuted: true)
+                } else {
+                    ZoomableView {
+                        LibraryAsyncImage(itemID: item.itemID, mediaFileName: item.mediaFileName,
+                                          maxDimension: 2048, contentMode: .fit)
+                    }
+                }
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal, 20)
                 .padding(.top, 64)   // clear the top bar

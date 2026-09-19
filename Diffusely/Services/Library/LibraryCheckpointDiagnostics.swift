@@ -3,12 +3,9 @@ import Foundation
 /// Read-only diagnostic for the "Other" / "Videos" buckets in the
 /// checkpoint-grouped Library.
 ///
-/// `groupByCheckpoint` puts an item in a named group only when its index row
-/// carries a `checkpointName`, which is denormalized in exactly one way (see
-/// `PersistedLibraryItem.init(metadata:downloadStatus:)` and the mirror in
-/// `LibraryIndexService.apply`): the FIRST sidecar resource whose `modelType`
-/// is exactly `"Checkpoint"`. Everything else falls into "Videos" (video) or
-/// "Other" (image).
+/// `groupByCheckpoint` puts an item in a named group when the sidecar has either
+/// an explicit Checkpoint resource or an unambiguous Civitai `baseModel`
+/// ecosystem fallback. Everything else falls into "Videos" or "Other".
 ///
 /// A nil `checkpointName` therefore has several very different causes that the
 /// UI collapses into one bucket, and they call for opposite fixes:
@@ -41,6 +38,7 @@ enum LibraryCheckpointDiagnostics {
     /// Why one sidecar does or doesn't yield a checkpoint name.
     enum Kind: String, CaseIterable, Sendable {
         case hasCheckpoint
+        case hasInferredBaseModel
         case checkpointNameBlank
         case noCheckpointResource
         case noResources
@@ -49,6 +47,7 @@ enum LibraryCheckpointDiagnostics {
         var label: String {
             switch self {
             case .hasCheckpoint:         return "Grouped under a checkpoint"
+            case .hasInferredBaseModel:  return "Grouped by inferred base model"
             case .checkpointNameBlank:   return "Checkpoint resource with a blank name"
             case .noCheckpointResource:  return "Resources present, none typed \"Checkpoint\""
             case .noResources:           return "Generation data present, zero resources"
@@ -63,7 +62,7 @@ enum LibraryCheckpointDiagnostics {
         let savedAt: Date
         let kind: Kind
         /// The name the index *should* hold, derived exactly as the real
-        /// denormalization does. Nil for every kind but `.hasCheckpoint`.
+        /// denormalization does. Nil for ungrouped kinds.
         let checkpointName: String?
         /// Distinct `modelType`s on the sidecar's resources, sorted. Shows at a
         /// glance whether Civitai matched only LoRAs, or used a casing we
@@ -72,7 +71,9 @@ enum LibraryCheckpointDiagnostics {
 
         /// True when this item lands in "Videos" or "Other" rather than a
         /// named checkpoint group.
-        var isUngrouped: Bool { kind != .hasCheckpoint }
+        var isUngrouped: Bool {
+            kind != .hasCheckpoint && kind != .hasInferredBaseModel
+        }
     }
 
     /// Pure classifier. Its `checkpointName` is contractually identical to
@@ -89,6 +90,12 @@ enum LibraryCheckpointDiagnostics {
         guard let generationData = metadata.generationData else {
             return base(.noGenerationData, nil, [])
         }
+        let grouping = PersistedLibraryItem.checkpointGrouping(for: metadata)
+        if let name = grouping.name {
+            let kind: Kind = grouping.isInferred ? .hasInferredBaseModel : .hasCheckpoint
+            let types = Set(generationData.resources?.compactMap(\.modelType) ?? []).sorted()
+            return base(kind, name, types)
+        }
         guard let resources = generationData.resources, !resources.isEmpty else {
             return base(.noResources, nil, [])
         }
@@ -98,11 +105,8 @@ enum LibraryCheckpointDiagnostics {
         guard let checkpoint = resources.first(where: { $0.modelType == "Checkpoint" }) else {
             return base(.noCheckpointResource, nil, types)
         }
-        guard let name = checkpoint.modelName,
-              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return base(.checkpointNameBlank, nil, types)
-        }
-        return base(.hasCheckpoint, name, types)
+        _ = checkpoint
+        return base(.checkpointNameBlank, nil, types)
     }
 
     // MARK: - Report
@@ -258,6 +262,7 @@ enum LibraryCheckpointDiagnostics {
 
         lines.append("Grouping outcome")
         row("Grouped under a checkpoint", report.count(of: .hasCheckpoint))
+        row("Grouped by inferred base model", report.count(of: .hasInferredBaseModel))
         row("\"Other\" bucket (images)", report.otherBucketCount)
         row("\"Videos\" bucket (videos)", report.videosBucketCount)
         lines.append("")
@@ -308,7 +313,7 @@ enum LibraryCheckpointDiagnostics {
         }
 
         lines.append("Sample ids to probe against image.getGenerationData")
-        for kind in Kind.allCases where kind != .hasCheckpoint {
+        for kind in Kind.allCases where kind != .hasCheckpoint && kind != .hasInferredBaseModel {
             let ids = report.sampleIDs(of: kind)
             guard !ids.isEmpty else { continue }
             lines.append("  \(kind.label):")

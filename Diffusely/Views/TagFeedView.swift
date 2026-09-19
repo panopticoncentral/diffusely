@@ -8,9 +8,12 @@ import SwiftUI
 /// tapped from, or images when opened from the Tags list, which has no such
 /// context — and is then switchable in the toolbar.
 struct TagFeedView: View {
+    @EnvironmentObject private var router: NavigationRouter
+    @State private var focusedMediaID: Int?
     let tagId: Int
     let tagName: String
 
+    @ObservedObject private var followedTags = FollowedTagsStore.shared
     @State private var videos: Bool
 
     init(tagId: Int, tagName: String, videos: Bool) {
@@ -33,56 +36,78 @@ struct TagFeedView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                feedContent
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                ModeControl(title: "Media", selection: $videos) {
+                    Text("Images").tag(false)
+                    Text("Videos").tag(true)
+                }
+                ScrollView {
+                    FeedFilterSummary(period: selectedPeriod, sort: selectedSort)
+                    feedContent
 
-                if civitaiService.isLoading {
-                    ProgressView()
-                        .padding()
-                }
+                    if civitaiService.isLoading {
+                        ProgressView()
+                            .padding()
+                    }
 
-                if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
-                    emptyStateView
+                    if let error = civitaiService.error {
+                        FeedStatusView(videos: videos, error: error) { Task { await refreshContent() } }
+                    } else if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
+                        emptyStateView
+                    }
+                }
+                .refreshable {
+                    await refreshContent()
                 }
             }
-            .refreshable {
-                await refreshContent()
-            }
-        }
-        .background(Color(.systemBackground))
-        .navigationTitle(tagName)
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Picker("Media", selection: $videos) {
-                    Label("Images", systemImage: "photo").tag(false)
-                    Label("Videos", systemImage: "video").tag(true)
+            .background(Color(.systemBackground))
+            .navigationTitle(tagName)
+            #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        if followedTags.isFollowing(id: tagId) {
+                            followedTags.unfollow(id: tagId)
+                        } else {
+                            followedTags.follow(FollowedTag(id: tagId, name: tagName))
+                        }
+                    } label: {
+                        Label(
+                            followedTags.isFollowing(id: tagId) ? "Following" : "Follow Tag",
+                            systemImage: followedTags.isFollowing(id: tagId) ? "checkmark" : "plus")
+                    }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                ToolbarItem(placement: .primaryAction) {
+                    FeedFilterMenu(selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
+                }
             }
-            ToolbarItem(placement: .primaryAction) {
-                FeedFilterMenu(selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
+            #if os(macOS)
+                .focusedSceneValue(\.refreshFeed, RefreshFeedAction { Task { await refreshContent() } })
+            #endif
+            .task {
+                await loadContent()
+                hasLoadedOnce = true
             }
-        }
-        .task {
-            await loadContent()
-            hasLoadedOnce = true
-        }
-        .onChange(of: videos) { _, _ in
-            Task { await refreshContent() }
-        }
-        .onChange(of: selectedPeriod) { _, _ in
-            Task { await refreshContent() }
-        }
-        .onChange(of: selectedSort) { _, _ in
-            Task { await refreshContent() }
-        }
-        .onChange(of: domainManager.domain) { _, _ in
-            Task { await refreshContent() }
+            .onChange(of: videos) { _, _ in
+                civitaiService.clear()
+                Task { await refreshContent() }
+            }
+            .onChange(of: selectedPeriod) { _, _ in
+                Task { await refreshContent() }
+            }
+            .onChange(of: selectedSort) { _, _ in
+                Task { await refreshContent() }
+            }
+            .onChange(of: domainManager.domain) { _, _ in
+                civitaiService.clear()
+                Task { await refreshContent() }
+            }
+            .onChange(of: focusedMediaID) {
+                if let focusedMediaID { proxy.scrollTo(focusedMediaID, anchor: .center) }
+            }
         }
     }
 
@@ -91,7 +116,8 @@ struct TagFeedView: View {
     private var masonryFeed: some View {
         MasonryGrid(
             items: civitaiService.images,
-            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+            aspectRatio: { ImageFeedItemView.displayAspectRatio(width: $0.width, height: $0.height) },
+            onActivate: { router.push(.image($0)) }, onFocus: { focusedMediaID = $0 }
         ) { image in
             ImageFeedItemView(
                 image: image,
@@ -109,36 +135,27 @@ struct TagFeedView: View {
     @ViewBuilder
     private var feedContent: some View {
         #if os(macOS)
-        masonryFeed
-        #else
-        if isGridLayout {
             masonryFeed
-        } else {
-            LazyVStack(spacing: 0) {
-                ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: false)
-                        .onAppear {
-                            if image.id == civitaiService.images.last?.id {
-                                Task { await loadMore() }
+        #else
+            if isGridLayout {
+                masonryFeed
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(civitaiService.images) { image in
+                        ImageFeedItemView(image: image, isGridMode: false)
+                            .onAppear {
+                                if image.id == civitaiService.images.last?.id {
+                                    Task { await loadMore() }
+                                }
                             }
-                        }
+                    }
                 }
             }
-        }
         #endif
     }
 
-    @ViewBuilder
     private var emptyStateView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: videos ? "video" : "photo")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-            Text("No \(videos ? "videos" : "images") found")
-                .font(.headline)
-                .foregroundColor(.secondary)
-        }
-        .padding(.top, 60)
+        FeedStatusView(videos: videos, error: nil) { Task { await refreshContent() } }
     }
 
     private func loadContent() async {
@@ -160,7 +177,7 @@ struct TagFeedView: View {
     }
 
     private func refreshContent() async {
-        civitaiService.clear()
-        await loadContent()
+        await civitaiService.fetchImages(
+            videos: videos, period: selectedPeriod, sort: selectedSort, tags: [tagId], replacing: true)
     }
 }

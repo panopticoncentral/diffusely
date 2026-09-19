@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ImageFeedItemView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("autoplayPreviews") private var autoplayPreviews = true
     let image: CivitaiImage
     var isGridMode: Bool = false
     var preserveAspectRatio: Bool = false
@@ -11,7 +13,11 @@ struct ImageFeedItemView: View {
     /// When true, the item gains a right-click / long-press context menu
     /// that mirrors the ellipsis overlay. Set only by collection-grid callers;
     /// false elsewhere keeps the main feed and author profile context-menu-free.
+    #if os(macOS)
+    var showsContextMenu: Bool = true
+    #else
     var showsContextMenu: Bool = false
+    #endif
     /// Draws the keyboard-focus ring (macOS grid arrow-key navigation). Set by
     /// the feed grid only; defaults off everywhere else.
     var keyboardFocused: Bool = false
@@ -179,6 +185,7 @@ struct ImageFeedItemView: View {
                     .background(Color.black.opacity(0.5))
                     .clipShape(Circle())
             }
+            .comfortableHitTarget()
             .accessibilityLabel("More actions")
         }
     }
@@ -216,7 +223,7 @@ struct ImageFeedItemView: View {
                     HStack {
                         Spacer()
                         if image.isVideo {
-                            Image(systemName: "video.fill")
+                            Image(systemName: "play.fill")
                                 .font(.caption)
                                 .foregroundColor(.white)
                                 .padding(6)
@@ -289,7 +296,7 @@ struct ImageFeedItemView: View {
                     ZStack {
                         CachedVideoPlayer(
                             url: image.detailURL,
-                            autoPlay: true,
+                            autoPlay: autoplayPreviews && !reduceMotion,
                             isMuted: true
                         )
                         .frame(width: geometry.size.width, height: geometry.size.width / aspectRatio)
@@ -297,18 +304,20 @@ struct ImageFeedItemView: View {
 
                         Color.clear
                             .contentShape(Rectangle())
-                            .onTapGesture {
-                                openImageDetail()
-                            }
+                            .onTapGesture { openImageDetail() }
+                            .accessibilityLabel("Video by \(image.user?.username ?? "Unknown Creator")")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { openImageDetail() }
                     }
                 }
                 .aspectRatio(aspectRatio, contentMode: .fit)
             } else {
                 CachedAsyncImage(url: image.detailURL)
                     .aspectRatio(contentMode: .fit)
-                    .onTapGesture {
-                        openImageDetail()
-                    }
+                    .onTapGesture { openImageDetail() }
+                    .accessibilityLabel("Image by \(image.user?.username ?? "Unknown Creator")")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { openImageDetail() }
             }
 
             // Ellipsis menu overlay, with the saved marker alongside it.

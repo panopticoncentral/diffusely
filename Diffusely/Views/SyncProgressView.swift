@@ -15,8 +15,8 @@ struct SyncProgressView: View {
         if isRetryable {
             Button { onRetry?() } label: { rowContent }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Sync error. Tap to retry.")
-        } else {
+                .accessibilityLabel("Sync error. Retry.")
+        } else if !progress.isComplete {
             rowContent
         }
     }
@@ -45,7 +45,7 @@ struct SyncProgressView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else if progress.lastError != nil {
-                Text(isRetryable ? "Sync error — tap to retry" : "Sync error")
+                Text(isRetryable ? "Sync error — retry" : "Sync error")
                     .font(.caption)
                     .foregroundColor(.orange)
             } else if progress.isComplete {

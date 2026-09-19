@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct AuthorContentGrid: View {
+    @EnvironmentObject private var router: NavigationRouter
+    var onFocus: (Int) -> Void = { _ in }
     let images: [CivitaiImage]
     let posts: [CivitaiPost]
     let collectionType: String
@@ -12,7 +14,8 @@ struct AuthorContentGrid: View {
         if collectionType == "Image" {
             MasonryGrid(
                 items: images,
-                aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+                aspectRatio: { ImageFeedItemView.displayAspectRatio(width: $0.width, height: $0.height) },
+                onActivate: { router.push(.image($0)) }, onFocus: onFocus
             ) { image in
                 ImageFeedItemView(
                     image: image,
@@ -27,7 +30,7 @@ struct AuthorContentGrid: View {
                 aspectRatio: { post in
                     guard let first = post.safeImages.first, first.height > 0 else { return 1 }
                     return CGFloat(first.width) / CGFloat(first.height)
-                }
+                }, onActivate: { router.push(.post($0)) }, onFocus: onFocus
             ) { post in
                 PostThumbnailView(
                     post: post,
@@ -96,6 +99,10 @@ struct PostThumbnailView: View {
         .onTapGesture {
             router.push(.post(post))
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Post by \(post.user.username ?? "Unknown Creator"), \(post.imageCount) images")
+        .accessibilityAction { router.push(.post(post)) }
         // Origin of the iOS zoom push into the post detail view.
         .zoomTransitionSource(id: "post-\(post.id)", in: zoomNamespace)
     }

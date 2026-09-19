@@ -29,8 +29,12 @@ struct CollectionsView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var persistenceService: CollectionPersistenceService?
     @State private var listSyncService: CollectionListSyncService?
+    #if os(macOS)
+    @Environment(\.openSettings) private var openSettings
+    #endif
     @State private var showingSettings = false
     @State private var showingCreateCollection = false
+    @State private var query = ""
     @State private var collections: [CivitaiCollection] = []  // from local cache
     @State private var previewImages: [Int: CivitaiImage] = [:]  // collectionId -> preview image
 
@@ -38,7 +42,7 @@ struct CollectionsView: View {
     var filteredCollections: [CivitaiCollection] {
         collections.filter { collection in
             if let type = collection.type {
-                return type == "Image" || type == "Post"
+                return (type == "Image" || type == "Post") && collection.name.matchesSearch(query)
             }
             return false
         }
@@ -48,11 +52,19 @@ struct CollectionsView: View {
     // Two flexible columns would let each square stretch to half the window
     // width on a wide Mac, producing huge tiles.
     private let columns = [
-        GridItem(.adaptive(minimum: 160, maximum: 220), spacing: 12)
+        GridItem(.adaptive(minimum: 160, maximum: 220), spacing: AppUI.gridSpacing, alignment: .top)
     ]
 
     // The enclosing NavigationStack is provided by the host on both platforms
     // now (the routed tab stack on iOS, the split-view detail column on macOS).
+    private func openAppSettings() {
+        #if os(macOS)
+        openSettings()
+        #else
+        showingSettings = true
+        #endif
+    }
+
     var body: some View {
         collectionsInner
     }
@@ -78,7 +90,7 @@ struct CollectionsView: View {
                             .padding(.horizontal)
 
                         Button(action: {
-                            showingSettings = true
+                            openAppSettings()
                         }) {
                             Label("Open Settings", systemImage: "gear")
                         }
@@ -86,6 +98,8 @@ struct CollectionsView: View {
                         .controlSize(.large)
                     }
                     .padding()
+                } else if !query.isEmpty && filteredCollections.isEmpty {
+                    ContentUnavailableView.search(text: query)
                 } else if !filteredCollections.isEmpty {
                     // Cache-first: render the cached list instantly. A
                     // background/pull refresh shows a subtle inline indicator
@@ -149,11 +163,11 @@ struct CollectionsView: View {
                             .font(.system(size: 60))
                             .foregroundColor(.secondary)
 
-                        Text("No Collections")
+                        Text(query.isEmpty ? "No Collections" : "No Matching Collections")
                             .font(.title2)
                             .fontWeight(.semibold)
 
-                        Text("You don't have any image or post collections yet")
+                        Text(query.isEmpty ? "Create a Civitai collection to organize images or posts." : "Try a different collection name.")
                             .font(.body)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -165,6 +179,7 @@ struct CollectionsView: View {
                 }
             }
             .navigationTitle("Collections")
+            .searchable(text: $query, prompt: "Search collections")
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
@@ -174,6 +189,9 @@ struct CollectionsView: View {
                 }
             }
             .toolbar {
+                #if os(iOS)
+                ToolbarItem(placement: .topBarTrailing) { SettingsAccessButton() }
+                #endif
                 if apiKeyManager.hasAPIKey {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -231,7 +249,7 @@ struct CollectionsView: View {
                 apiKeyManager.hasAPIKey ? RefreshFeedAction { forceListRefresh() } : nil
             )
             #endif
-            .task {
+            .task(id: apiKeyManager.apiKey) {
                 guard apiKeyManager.hasAPIKey else { return }
                 initializeServices()
                 loadFromCache()
@@ -359,79 +377,28 @@ struct CollectionCard: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Background image or placeholder
-            GeometryReader { geometry in
-                if let imageURL = displayImageURL {
-                    CachedAsyncImage(url: imageURL)
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-                } else {
-                    // Gradient placeholder when no cover image
-                    LinearGradient(
-                        colors: [typeColor.opacity(0.3), typeColor.opacity(0.6)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .overlay(
-                        Image(systemName: typeIcon)
-                            .font(.system(size: 40))
-                            .foregroundColor(.white.opacity(0.5))
-                    )
-                }
-            }
-
-            // Bottom gradient overlay for text readability
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.7), .black.opacity(0.85)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 100)
-
-            // Content overlay
-            VStack(alignment: .leading, spacing: 4) {
-                Spacer()
-
-                Text(collection.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-
-                HStack(spacing: 8) {
-                    // Type badge
-                    HStack(spacing: 3) {
-                        Image(systemName: typeIcon)
-                            .font(.system(size: 9))
-                        Text(collection.type ?? "")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(typeColor.opacity(0.9))
-                    .foregroundColor(.white)
-                    .cornerRadius(4)
-
-                    // Image count
-                    if let imageCount = collection.imageCount, imageCount > 0 {
-                        HStack(spacing: 3) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 9))
-                            Text("\(imageCount)")
-                                .font(.system(size: 10, weight: .medium))
+        VStack(alignment: .leading, spacing: 6) {
+            Color(.secondarySystemBackground)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    if let url = displayImageURL {
+                        GeometryReader { geometry in
+                            CachedAsyncImage(url: url)
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .clipped()
                         }
-                        .foregroundColor(.white.opacity(0.8))
+                    } else {
+                        Image(systemName: typeIcon).font(.largeTitle).foregroundStyle(.secondary)
                     }
-
-                    Spacer()
                 }
-            }
-            .padding(10)
+                .clipShape(RoundedRectangle(cornerRadius: AppUI.cornerRadius))
+            Text(collection.name).font(.subheadline.weight(.medium)).lineLimit(2)
+                .foregroundStyle(.primary)
+            Text("\(collection.type == "Post" ? "Posts" : "Photos & Videos") · \(collection.imageCount ?? 0)")
+                .font(.caption).foregroundStyle(.secondary)
         }
-        .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }

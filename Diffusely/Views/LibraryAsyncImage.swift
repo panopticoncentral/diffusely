@@ -28,7 +28,7 @@ struct LibraryAsyncImage: View {
                 Button {
                     reloadToken += 1
                 } label: {
-                    placeholder.overlay(
+                    placeholder(showsProgress: false).overlay(
                         Image(systemName: "exclamationmark.triangle")
                             .font(.title3)
                             .foregroundColor(.orange)
@@ -37,7 +37,7 @@ struct LibraryAsyncImage: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Failed to load. \(CachedAsyncImage.retryPrompt).")
             } else {
-                placeholder
+                placeholder(showsProgress: true)
             }
         }
         .id(reloadToken)
@@ -49,10 +49,10 @@ struct LibraryAsyncImage: View {
             isVideo: isVideo, maxDimension: maxDimension)
     }
 
-    private var placeholder: some View {
+    private func placeholder(showsProgress: Bool) -> some View {
         ZStack {
             Rectangle().fill(Color.gray.opacity(0.1))
-            ProgressView()
+            if showsProgress { ProgressView() }
         }
     }
 }

@@ -90,6 +90,26 @@ private func gen(checkpointModelType: String? = "Checkpoint",
 }
 
 @Suite struct PersistedLibraryItemDenormalizationTests {
+    @Test func decodesCivitaiBaseModelFields() throws {
+        let json = Data(
+            #"""
+            {
+              "type":"image",
+              "meta":{"baseModel":"Krea 2"},
+              "resources":[{
+                "modelId":9,"modelName":"Krea style","modelType":"LORA",
+                "versionId":1,"versionName":"v1","baseModel":"Krea 2","strength":0.8
+              }]
+            }
+            """#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(GenerationData.self, from: json)
+
+        #expect(decoded.meta?.baseModel == "Krea 2")
+        #expect(decoded.resources?.first?.baseModel == "Krea 2")
+    }
+
     @Test func denormalizesPublishedAtAvatarAndCheckpoint() {
         let pub = Date(timeIntervalSince1970: 1_700_000_000)
         let meta = makeMeta(
@@ -113,6 +133,47 @@ private func gen(checkpointModelType: String? = "Checkpoint",
         )
         let row = PersistedLibraryItem(metadata: meta, downloadStatus: .downloaded)
         #expect(row.checkpointName == nil)
+        #expect(!row.checkpointIsInferred)
+    }
+
+    @Test func infersBaseModelFromLoraWhenCheckpointIsAbsent() {
+        let lora = GenerationResource(
+            modelId: 9, modelName: "Krea style", modelType: "LORA",
+            versionId: 1, versionName: "v1", baseModel: "Krea 2", strength: 0.5)
+        let meta = makeMeta(
+            itemID: 46,
+            generationData: GenerationData(type: "image", meta: nil, resources: [lora]))
+
+        let row = PersistedLibraryItem(metadata: meta, downloadStatus: .downloaded)
+
+        #expect(row.checkpointName == "Krea 2")
+        #expect(row.checkpointIsInferred)
+    }
+
+    @Test func infersSharedBaseModelFromMultipleLorasButRejectsDisagreement() {
+        func lora(_ id: Int, _ baseModel: String) -> GenerationResource {
+            GenerationResource(
+                modelId: id, modelName: "Lora \(id)", modelType: "LORA",
+                versionId: id, versionName: "v1", baseModel: baseModel, strength: 1)
+        }
+
+        let shared = makeMeta(
+            itemID: 47,
+            generationData: GenerationData(
+                type: "image", meta: nil,
+                resources: [lora(1, "Krea 2"), lora(2, "krea 2")]))
+        let sharedRow = PersistedLibraryItem(metadata: shared, downloadStatus: .downloaded)
+        #expect(sharedRow.checkpointName == "Krea 2")
+        #expect(sharedRow.checkpointIsInferred)
+
+        let mixed = makeMeta(
+            itemID: 48,
+            generationData: GenerationData(
+                type: "image", meta: nil,
+                resources: [lora(1, "Krea 2"), lora(2, "Z Image")]))
+        let mixedRow = PersistedLibraryItem(metadata: mixed, downloadStatus: .downloaded)
+        #expect(mixedRow.checkpointName == nil)
+        #expect(!mixedRow.checkpointIsInferred)
     }
 
     @Test func picksFirstCheckpointResourceWhenMultiple() {
@@ -206,6 +267,7 @@ private func gen(checkpointModelType: String? = "Checkpoint",
         author: String?,
         avatar: String? = nil,
         checkpoint: String? = nil,
+        checkpointIsInferred: Bool = false,
         mediaType: LibraryMediaType = .image
     ) {
         let row = PersistedLibraryItem(
@@ -221,6 +283,7 @@ private func gen(checkpointModelType: String? = "Checkpoint",
             savedAt: Date(),
             publishedAt: publishedAt,
             checkpointName: checkpoint,
+            checkpointIsInferred: checkpointIsInferred,
             lastAccessedAt: Date(),
             downloadStatus: .downloaded,
             needsDateBackfill: publishedAt == nil
@@ -308,8 +371,12 @@ private func gen(checkpointModelType: String? = "Checkpoint",
             Issue.record("expected grouped"); return
         }
         #expect(groups.count == 4)
-        if case .checkpoint(let n) = groups[0].kind { #expect(n == "Anime") }
-        if case .checkpoint(let n) = groups[1].kind { #expect(n == "Realistic") }
+        if case .checkpoint(let n, let inferred) = groups[0].kind {
+            #expect(n == "Anime"); #expect(!inferred)
+        }
+        if case .checkpoint(let n, let inferred) = groups[1].kind {
+            #expect(n == "Realistic"); #expect(!inferred)
+        }
         if case .bucket(let b) = groups[2].kind { #expect(b == .videos) }
         if case .bucket(let b) = groups[3].kind { #expect(b == .other) }
     }
@@ -326,10 +393,25 @@ private func gen(checkpointModelType: String? = "Checkpoint",
         guard case .grouped(let groups) = svc.sortedLibraryContent(sort: .checkpointDescending) else {
             Issue.record("expected grouped"); return
         }
-        if case .checkpoint(let n) = groups[0].kind { #expect(n == "Realistic") }
-        if case .checkpoint(let n) = groups[1].kind { #expect(n == "Anime") }
+        if case .checkpoint(let n, _) = groups[0].kind { #expect(n == "Realistic") }
+        if case .checkpoint(let n, _) = groups[1].kind { #expect(n == "Anime") }
         if case .bucket(let b) = groups[2].kind { #expect(b == .videos) }
         if case .bucket(let b) = groups[3].kind { #expect(b == .other) }
+    }
+
+    @MainActor
+    @Test func inferredBaseModelDoesNotMergeWithSameNamedExplicitCheckpoint() throws {
+        let (svc, ctx) = try makeService()
+        let now = Date()
+        insert(ctx, id: 1, publishedAt: now, author: "a", checkpoint: "Krea 2")
+        insert(ctx, id: 2, publishedAt: now, author: "a", checkpoint: "Krea 2",
+               checkpointIsInferred: true)
+
+        guard case .grouped(let groups) = svc.sortedLibraryContent(sort: .checkpointAscending) else {
+            Issue.record("expected grouped"); return
+        }
+        #expect(groups.count == 2)
+        #expect(Set(groups.map(\.id)) == ["checkpoint:explicit:Krea 2", "checkpoint:inferred:Krea 2"])
     }
 
     @MainActor
@@ -356,4 +438,5 @@ private func gen(checkpointModelType: String? = "Checkpoint",
         insert(ctx, id: 3, publishedAt: nil,    author: "b")
         #expect(svc.countItemsNeedingDateBackfill() == 2)
     }
+
 }

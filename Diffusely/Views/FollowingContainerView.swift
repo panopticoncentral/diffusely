@@ -23,17 +23,12 @@ struct FollowingContainerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Section", selection: $segment) {
+            ModeControl(title: "Section", selection: $segment) {
                 ForEach(FollowingSegment.allCases) { segment in
                     Text(segment.rawValue).tag(segment)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal)
-            .padding(.vertical, 8)
 
-            Divider()
 
             switch segment {
             case .users:
@@ -42,5 +37,9 @@ struct FollowingContainerView: View {
                 TagsView()
             }
         }
+        .navigationTitle("Following")
+        #if os(iOS)
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsAccessButton() } }
+        #endif
     }
 }

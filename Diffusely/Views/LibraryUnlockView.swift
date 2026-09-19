@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication
 
 /// Locked-library gate. Shown by `LibraryView` whenever
 /// `LibraryVaultProvider.state` is `.locked`; offers password, Face ID/Touch
@@ -16,6 +17,7 @@ struct LibraryUnlockView: View {
     @State private var recoveryKey = ""
     @State private var error: String?
     @State private var busy = false
+    @State private var biometricTitle: String?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -46,16 +48,17 @@ struct LibraryUnlockView: View {
             } else {
                 SecureField("Password", text: $password)
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit { if !busy && !password.isEmpty { Task { await unlock(recovery: false) } } }
 
                 Button("Unlock") {
                     Task { await unlock(recovery: false) }
                 }
                 .disabled(busy || password.isEmpty)
 
-                Button("Use Face ID") {
-                    Task { await biometrics() }
+                if let biometricTitle {
+                    Button(biometricTitle) { Task { await biometrics() } }
+                        .disabled(busy)
                 }
-                .disabled(busy)
 
                 Button("Forgot password? Use recovery key") {
                     recoveryMode = true
@@ -63,6 +66,8 @@ struct LibraryUnlockView: View {
                 }
                 .font(.footnote)
             }
+
+            if busy { ProgressView("Unlocking…") }
 
             if let error {
                 Text(error)
@@ -72,7 +77,13 @@ struct LibraryUnlockView: View {
         }
         .padding()
         .frame(maxWidth: 320)
-        .task { await biometrics() }
+        .task {
+            let context = LAContext()
+            if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+                biometricTitle = context.biometryType == .faceID ? "Use Face ID" : "Use Touch ID"
+                await biometrics()
+            }
+        }
     }
 
     /// Auto-attempted on appear, and re-attempted from the "Use Face ID"

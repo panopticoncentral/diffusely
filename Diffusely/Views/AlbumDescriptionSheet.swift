@@ -93,13 +93,16 @@ struct AlbumDescriptionSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(isSaving || isGenerating)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(isSaving)
+                        .disabled(isSaving || isGenerating)
                 }
             }
         }
+        .interactiveDismissDisabled(isSaving || isGenerating || descriptionText != (request.userDescription ?? "") || profileText != (request.profileText ?? ""))
         #if os(macOS)
         // macOS sheets size to ideal content height; keep this one bounded
         // (same lesson as SortAssistantSheet).

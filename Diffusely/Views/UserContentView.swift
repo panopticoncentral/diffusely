@@ -6,6 +6,8 @@ enum UserContentType: String, CaseIterable {
 }
 
 struct UserContentView: View {
+    @EnvironmentObject private var router: NavigationRouter
+    @State private var focusedMediaID: Int?
     let user: CivitaiUser
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -17,6 +19,7 @@ struct UserContentView: View {
     @State private var isFollowing: Bool = false
     @State private var isFollowLoading: Bool = false
     @State private var followError: String?
+    @State private var hasLoadedOnce = false
 
     private var hasAPIKey: Bool {
         APIKeyManager.shared.hasAPIKey
@@ -27,92 +30,92 @@ struct UserContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                #if os(iOS)
+                    // The avatar + name live in the toolbar's principal slot (shared
+                    // with macOS); the full-width Follow button stays in-content on
+                    // iOS where the large tap target suits the platform.
+                    if hasAPIKey {
+                        followButton
+                            .padding(.top, 8)
+                    }
+                #endif
+
+                ModeControl(title: "Media", selection: $selectedContentType) {
+                    ForEach(UserContentType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+
+                // Content Feed
+                ScrollView {
+                    FeedFilterSummary(period: selectedPeriod, sort: selectedSort)
+                    feedContent
+
+                    if civitaiService.isLoading {
+                        ProgressView()
+                            .padding()
+                    }
+
+                    if let error = civitaiService.error {
+                        FeedStatusView(videos: selectedContentType == .videos, error: error) {
+                            Task { await refreshContent() }
+                        }
+                    } else if civitaiService.images.isEmpty && !civitaiService.isLoading && hasLoadedOnce {
+                        emptyStateView
+                    }
+                }
+                .refreshable {
+                    await refreshContent()
+                }
+            }
+            .background(Color(.systemBackground))
             #if os(iOS)
-            // The avatar + name live in the toolbar's principal slot (shared
-            // with macOS); the full-width Follow button stays in-content on
-            // iOS where the large tap target suits the platform.
-            if hasAPIKey {
-                followButton
-                    .padding(.top, 8)
-            }
+                .navigationBarTitleDisplayMode(.inline)
             #endif
-
-            // Segmented Picker
-            Picker("Content Type", selection: $selectedContentType) {
-                ForEach(UserContentType.allCases, id: \.self) { type in
-                    Text(type.rawValue).tag(type)
-                }
+            .toolbar { contentToolbar }
+            .alert(
+                "Couldn't update follow",
+                isPresented: Binding(
+                    get: { followError != nil },
+                    set: { if !$0 { followError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { followError = nil }
+            } message: {
+                Text(followError ?? "")
             }
-            .pickerStyle(.segmented)
             #if os(macOS)
-            // A 3-column segmented control stretched across a desktop window
-            // looks ridiculous; constrain it and center it.
-            .frame(maxWidth: 320)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-            #else
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+                .focusedSceneValue(\.refreshFeed, RefreshFeedAction { Task { await refreshContent() } })
             #endif
-
-            // Content Feed
-            ScrollView {
-                feedContent
-
-                if civitaiService.isLoading {
-                    ProgressView()
-                        .padding()
-                }
-
-                if civitaiService.images.isEmpty && !civitaiService.isLoading {
-                    emptyStateView
+            .task {
+                await loadContent()
+                hasLoadedOnce = true
+                await checkFollowStatus()
+            }
+            .onChange(of: selectedContentType) { _, _ in
+                civitaiService.clear()
+                Task {
+                    await refreshContent()
                 }
             }
-            .refreshable {
-                await refreshContent()
+            .onChange(of: selectedPeriod) { _, _ in
+                Task {
+                    await refreshContent()
+                }
             }
-        }
-        .background(Color(.systemBackground))
-        #if os(macOS)
-        .navigationTitle(user.username ?? "Unknown")
-        #else
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
-        .toolbar { contentToolbar }
-        .alert(
-            "Couldn't update follow",
-            isPresented: Binding(
-                get: { followError != nil },
-                set: { if !$0 { followError = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { followError = nil }
-        } message: {
-            Text(followError ?? "")
-        }
-        .task {
-            await loadContent()
-            await checkFollowStatus()
-        }
-        .onChange(of: selectedContentType) { _, _ in
-            Task {
-                await refreshContent()
+            .onChange(of: selectedSort) { _, _ in
+                Task {
+                    await refreshContent()
+                }
             }
-        }
-        .onChange(of: selectedPeriod) { _, _ in
-            Task {
-                await refreshContent()
+            .onChange(of: domainManager.domain) { _, _ in
+                civitaiService.clear()
+                Task {
+                    await refreshContent()
+                }
             }
-        }
-        .onChange(of: selectedSort) { _, _ in
-            Task {
-                await refreshContent()
-            }
-        }
-        .onChange(of: domainManager.domain) { _, _ in
-            Task {
-                await refreshContent()
+            .onChange(of: focusedMediaID) {
+                if let focusedMediaID { proxy.scrollTo(focusedMediaID, anchor: .center) }
             }
         }
     }
@@ -122,7 +125,8 @@ struct UserContentView: View {
     private var masonryFeed: some View {
         MasonryGrid(
             items: civitaiService.images,
-            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+            aspectRatio: { ImageFeedItemView.displayAspectRatio(width: $0.width, height: $0.height) },
+            onActivate: { router.push(.image($0)) }, onFocus: { focusedMediaID = $0 }
         ) { image in
             ImageFeedItemView(
                 image: image,
@@ -130,11 +134,11 @@ struct UserContentView: View {
                 preserveAspectRatio: true,
                 showsUsername: false
             )
-                .onAppear {
-                    if image.id == civitaiService.images.last?.id {
-                        Task { await loadMore() }
-                    }
+            .onAppear {
+                if image.id == civitaiService.images.last?.id {
+                    Task { await loadMore() }
                 }
+            }
         }
     }
 
@@ -144,22 +148,22 @@ struct UserContentView: View {
         // (the feed is filtered by username), so the overlay would be redundant
         // and tapping it would push a duplicate of this profile.
         #if os(macOS)
-        masonryFeed
-        #else
-        if isGridLayout {
             masonryFeed
-        } else {
-            LazyVStack(spacing: 0) {
-                ForEach(civitaiService.images) { image in
-                    ImageFeedItemView(image: image, isGridMode: false, showsUsername: false)
-                        .onAppear {
-                            if image.id == civitaiService.images.last?.id {
-                                Task { await loadMore() }
+        #else
+            if isGridLayout {
+                masonryFeed
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(civitaiService.images) { image in
+                        ImageFeedItemView(image: image, isGridMode: false, showsUsername: false)
+                            .onAppear {
+                                if image.id == civitaiService.images.last?.id {
+                                    Task { await loadMore() }
+                                }
                             }
-                        }
+                    }
                 }
             }
-        }
         #endif
     }
 
@@ -170,35 +174,18 @@ struct UserContentView: View {
         AvatarImage(urlString: user.image, size: size)
     }
 
-    @ViewBuilder
     private var followButton: some View {
         Button {
-            Task {
-                await toggleFollow()
-            }
+            Task { await toggleFollow() }
         } label: {
-            Group {
-                if isFollowLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    HStack(spacing: 6) {
-                        Image(systemName: isFollowing ? "checkmark" : "plus")
-                        Text(isFollowing ? "Following" : "Follow")
-                    }
-                    .font(.subheadline.weight(.semibold))
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 22)
-            .padding(.vertical, 10)
-            .foregroundColor(isFollowing ? .primary : .white)
-            .background(isFollowing ? Color(.secondarySystemBackground) : Color.blue)
-            .cornerRadius(12)
+            Label(isFollowing ? "Following" : "Follow", systemImage: isFollowing ? "checkmark" : "plus")
+                .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.borderedProminent)
+        .tint(isFollowing ? .secondary : .accentColor)
+        .controlSize(.large)
         .disabled(isFollowLoading)
         .padding(.horizontal, 16)
-        .padding(.bottom, 4)
     }
 
     /// Toolbar shared by both platforms: avatar + name in the principal slot,
@@ -217,11 +204,11 @@ struct UserContentView: View {
             }
         }
         #if os(macOS)
-        if hasAPIKey {
-            ToolbarItem(placement: .primaryAction) {
-                macFollowButton
+            if hasAPIKey {
+                ToolbarItem(placement: .primaryAction) {
+                    macFollowButton
+                }
             }
-        }
         #endif
         ToolbarItem(placement: .primaryAction) {
             FeedFilterMenu(selectedPeriod: $selectedPeriod, selectedSort: $selectedSort)
@@ -229,37 +216,28 @@ struct UserContentView: View {
     }
 
     #if os(macOS)
-    /// Compact Follow/Following button for the macOS toolbar. Unlike the iOS
-    /// full-width version, this renders as a normal toolbar button — sized to
-    /// its label, not the window. Word-only (no glyph) because a bare `+` in
-    /// the toolbar reads as "add" rather than "follow".
-    @ViewBuilder
-    private var macFollowButton: some View {
-        Button {
-            Task { await toggleFollow() }
-        } label: {
-            if isFollowLoading {
-                ProgressView().controlSize(.small)
-            } else {
-                Text(isFollowing ? "Following" : "Follow")
+        /// Compact Follow/Following button for the macOS toolbar. Unlike the iOS
+        /// full-width version, this renders as a normal toolbar button — sized to
+        /// its label, not the window. Word-only (no glyph) because a bare `+` in
+        /// the toolbar reads as "add" rather than "follow".
+        @ViewBuilder
+        private var macFollowButton: some View {
+            Button {
+                Task { await toggleFollow() }
+            } label: {
+                if isFollowLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text(isFollowing ? "Following" : "Follow")
+                }
             }
+            .disabled(isFollowLoading)
+            .help(isFollowing ? "Unfollow this user" : "Follow this user")
         }
-        .disabled(isFollowLoading)
-        .help(isFollowing ? "Unfollow this user" : "Follow this user")
-    }
     #endif
 
-    @ViewBuilder
     private var emptyStateView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: selectedContentType == .images ? "photo" : "video")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-            Text("No \(selectedContentType.rawValue.lowercased()) found")
-                .font(.headline)
-                .foregroundColor(.secondary)
-        }
-        .padding(.top, 60)
+        FeedStatusView(videos: selectedContentType == .videos, error: nil) { Task { await refreshContent() } }
     }
 
     private func loadContent() async {
@@ -287,8 +265,10 @@ struct UserContentView: View {
     }
 
     private func refreshContent() async {
-        civitaiService.clear()
-        await loadContent()
+        guard let username = user.username else { return }
+        await civitaiService.fetchImages(
+            videos: selectedContentType == .videos, period: selectedPeriod,
+            sort: selectedSort, username: username, replacing: true)
     }
 
     private func checkFollowStatus() async {
@@ -312,7 +292,8 @@ struct UserContentView: View {
             isFollowing.toggle()
         } catch {
             print("toggleFollow failed: \(error)")
-            followError = "The request didn't go through. Check your connection and that your API key is set in Settings, then try again."
+            followError =
+                "The request didn't go through. Check your connection and that your API key is set in Settings, then try again."
         }
         isFollowLoading = false
     }

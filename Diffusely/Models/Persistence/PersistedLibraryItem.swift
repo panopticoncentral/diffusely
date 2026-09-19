@@ -37,6 +37,9 @@ final class PersistedLibraryItem {
     /// Nullable when generation data is missing or has no checkpoint
     /// (typical for videos and bare uploads).
     var checkpointName: String?
+    /// True when `checkpointName` is an ecosystem inferred from Civitai's
+    /// `baseModel` metadata rather than an explicitly listed Checkpoint.
+    var checkpointIsInferred: Bool = false
     var lastAccessedAt: Date
     var downloadStatusRaw: String
     /// True while this item still needs a publish-date backfill: it has no
@@ -87,6 +90,7 @@ final class PersistedLibraryItem {
         savedAt: Date,
         publishedAt: Date?,
         checkpointName: String?,
+        checkpointIsInferred: Bool = false,
         lastAccessedAt: Date,
         downloadStatus: LibraryDownloadStatus,
         needsDateBackfill: Bool,
@@ -110,6 +114,7 @@ final class PersistedLibraryItem {
         self.savedAt = savedAt
         self.publishedAt = publishedAt
         self.checkpointName = checkpointName
+        self.checkpointIsInferred = checkpointIsInferred
         self.lastAccessedAt = lastAccessedAt
         self.downloadStatusRaw = downloadStatus.rawValue
         self.needsDateBackfill = needsDateBackfill
@@ -138,6 +143,42 @@ final class PersistedLibraryItem {
         metadata.generationData == nil && metadata.generationDataBackfillAttemptedAt == nil
     }
 
+    struct CheckpointGrouping: Equatable {
+        let name: String?
+        let isInferred: Bool
+    }
+
+    /// Resolve the most honest checkpoint-like grouping available. An explicit
+    /// Checkpoint resource always wins. Otherwise Civitai's generation-level
+    /// base model, or one unambiguous resource base model, identifies the
+    /// ecosystem without pretending that we know the exact checkpoint version.
+    static func checkpointGrouping(for metadata: LibraryItemMetadata) -> CheckpointGrouping {
+        guard let generationData = metadata.generationData else {
+            return CheckpointGrouping(name: nil, isInferred: false)
+        }
+        if let explicit = generationData.resources?
+            .first(where: { $0.modelType == "Checkpoint" })?
+            .modelName.flatMap(nonBlank) {
+            return CheckpointGrouping(name: explicit, isInferred: false)
+        }
+        if let baseModel = generationData.meta?.baseModel.flatMap(nonBlank) {
+            return CheckpointGrouping(name: baseModel, isInferred: true)
+        }
+
+        let resourceBaseModels = generationData.resources?
+            .compactMap { $0.baseModel.flatMap(nonBlank) } ?? []
+        guard let first = resourceBaseModels.first,
+              resourceBaseModels.allSatisfy({ $0.caseInsensitiveCompare(first) == .orderedSame })
+        else {
+            return CheckpointGrouping(name: nil, isInferred: false)
+        }
+        return CheckpointGrouping(name: first, isInferred: true)
+    }
+
+    private static func nonBlank(_ value: String) -> String? {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
+    }
+
     convenience init(
         metadata: LibraryItemMetadata,
         downloadStatus: LibraryDownloadStatus,
@@ -145,10 +186,7 @@ final class PersistedLibraryItem {
         sidecarModifiedAt: Date? = nil,
         sidecarByteSize: Int = 0
     ) {
-        let checkpoint = metadata.generationData?
-            .resources?
-            .first(where: { $0.modelType == "Checkpoint" })?
-            .modelName
+        let checkpoint = Self.checkpointGrouping(for: metadata)
         self.init(
             itemID: metadata.itemID,
             mediaType: metadata.mediaType.rawValue,
@@ -163,7 +201,8 @@ final class PersistedLibraryItem {
             fileByteSize: metadata.fileByteSize,
             savedAt: metadata.savedAt,
             publishedAt: metadata.publishedAt,
-            checkpointName: checkpoint,
+            checkpointName: checkpoint.name,
+            checkpointIsInferred: checkpoint.isInferred,
             lastAccessedAt: metadata.savedAt,
             downloadStatus: downloadStatus,
             needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata),

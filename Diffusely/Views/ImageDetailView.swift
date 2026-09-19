@@ -22,68 +22,57 @@ struct ImageDetailView: View {
     // so back walks the chain one level at a time.
     @EnvironmentObject private var router: NavigationRouter
 
-    var body: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
+    private var detailInformation: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            FeedItemStats(
+                likeCount: image.stats?.likeCountAllTime ?? 0,
+                heartCount: image.stats?.heartCountAllTime ?? 0,
+                laughCount: image.stats?.laughCountAllTime ?? 0,
+                cryCount: image.stats?.cryCountAllTime ?? 0,
+                commentCount: image.stats?.commentCountAllTime ?? 0,
+                dislikeCount: image.stats?.dislikeCountAllTime ?? 0
+            )
 
-            VStack(spacing: 0) {
-                // Main content - scrollable
-                GeometryReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        media(maxHeight: proxy.size.height)
+            Divider()
 
-                        // Stats section
-                        VStack(alignment: .leading, spacing: 12) {
-                            FeedItemStats(
-                                likeCount: image.stats?.likeCountAllTime ?? 0,
-                                heartCount: image.stats?.heartCountAllTime ?? 0,
-                                laughCount: image.stats?.laughCountAllTime ?? 0,
-                                cryCount: image.stats?.cryCountAllTime ?? 0,
-                                commentCount: image.stats?.commentCountAllTime ?? 0,
-                                dislikeCount: image.stats?.dislikeCountAllTime ?? 0
-                            )
+            // Generation data section
+            if isLoadingGenData {
+                ProgressView()
+                    .padding()
+            } else if let genData = generationData {
+                GenerationDataView(data: genData)
+            }
 
-                            Divider()
-
-                            // Generation data section
-                            if isLoadingGenData {
-                                ProgressView()
-                                    .padding()
-                            } else if let genData = generationData {
-                                GenerationDataView(data: genData)
-                            }
-
-                            // Tags section (hidden entirely when there are no
-                            // tags or the fetch failed).
-                            if !tags.isEmpty {
-                                Divider()
-                                TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
-                                    router.push(.tag(id: tag.id, name: tag.name, videos: image.isVideo))
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                }
-                .background(Color(.systemBackground))
+            // Tags section (hidden entirely when there are no
+            // tags or the fetch failed).
+            if !tags.isEmpty {
+                Divider()
+                TagsSectionView(tags: tags, showAll: $showAllTags) { tag in
+                    router.push(.tag(id: tag.id, name: tag.name, videos: image.isVideo))
                 }
             }
         }
+    }
+
+    var body: some View {
+        MediaDetailLayout { height in
+            media(maxHeight: height)
+        } details: {
+            detailInformation
+        }
         .toolbar { detailToolbar }
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
         #endif
         #if os(macOS)
-        // Esc pops the pushed detail view, matching the toolbar back button.
-        .onExitCommand { dismiss() }
-        // ⌘C copies the image. Responder-chain based so it doesn't steal
-        // Copy from selected generation-metadata text.
-        .onCopyCommand {
-            guard !image.isVideo else { return [] }
-            return ImageCopy.remoteImageProviders(urlString: image.detailURL)
-        }
+            // Esc pops the pushed detail view, matching the toolbar back button.
+            .onExitCommand { dismiss() }
+            // ⌘C copies the image. Responder-chain based so it doesn't steal
+            // Copy from selected generation-metadata text.
+            .onCopyCommand {
+                guard !image.isVideo else { return [] }
+                return ImageCopy.remoteImageProviders(urlString: image.detailURL)
+            }
         #endif
         .task {
             await loadGenerationData()
@@ -97,7 +86,7 @@ struct ImageDetailView: View {
             }
         }
         .alert("Couldn't Load Post", isPresented: $postLoadFailed) {
-            Button("OK", role: .cancel) { }
+            Button("OK", role: .cancel) {}
         } message: {
             Text("The post couldn't be loaded. Check your connection and try again.")
         }
@@ -169,13 +158,13 @@ struct ImageDetailView: View {
         }
 
         #if os(macOS)
-        if !image.isVideo {
-            Button(action: {
-                ImageCopy.copyRemoteImage(urlString: image.detailURL)
-            }) {
-                Label("Copy Image", systemImage: "doc.on.doc")
+            if !image.isVideo {
+                Button(action: {
+                    ImageCopy.copyRemoteImage(urlString: image.detailURL)
+                }) {
+                    Label("Copy Image", systemImage: "doc.on.doc")
+                }
             }
-        }
         #endif
 
         if let shareURL = URL(string: "https://civitai.com/images/\(image.id)") {
@@ -196,16 +185,18 @@ struct ImageDetailView: View {
     private var detailToolbar: some ToolbarContent {
         if let user = image.user, let username = user.username {
             ToolbarItem(placement: .principal) {
-                Menu {
-                    Button(action: { router.push(.user(user)) }) {
-                        Label("View \(username)'s content", systemImage: "person.crop.circle")
-                    }
+                Button {
+                    router.push(.user(user))
                 } label: {
-                    Text(username)
-                        .font(.headline)
+                    Text(username).font(.headline).lineLimit(1)
                 }
-                .fixedSize()
                 .help("\(username) — click for actions")
+            }
+        }
+        ToolbarItem(placement: .primaryAction) { SaveMediaButton(image: image) }
+        ToolbarItem(placement: .primaryAction) {
+            if let url = URL(string: "https://civitai.com/images/\(image.id)") {
+                ShareLink(item: url) { Label("Share Link", systemImage: "square.and.arrow.up") }
             }
         }
         ToolbarItem(placement: .primaryAction) {
@@ -250,7 +241,6 @@ struct ImageDetailView: View {
         isLoadingPost = false
     }
 }
-
 
 struct GenerationDataView: View {
     let data: GenerationData
@@ -348,10 +338,7 @@ struct CopyablePromptView: View {
 
     /// Prompts collapse to this many lines until expanded.
     private let collapsedLineLimit = 6
-    /// Only offer "Show more" for prompts long enough to actually clip at the
-    /// line limit. Character-count heuristic (prompts are dense comma-separated
-    /// tag lists), which avoids a fragile truncation measurement.
-    private var isLong: Bool { text.count > 280 }
+    // Always allow expansion: character count cannot predict wrapped lines.
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -368,24 +355,28 @@ struct CopyablePromptView: View {
                         withAnimation { copied = false }
                     }
                 } label: {
-                    Label(copied ? "Copied" : "Copy",
-                          systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .font(.caption2)
+                    Label(
+                        copied ? "Copied" : "Copy",
+                        systemImage: copied ? "checkmark" : "doc.on.doc"
+                    )
+                    .font(.caption2)
                 }
                 .buttonStyle(.borderless)
+                .comfortableHitTarget()
                 .disabled(copied)
             }
             Text(text)
-                .font(.caption)
+                .font(.callout)
                 .foregroundColor(.primary)
                 .textSelection(.enabled)
                 .lineLimit(expanded ? nil : collapsedLineLimit)
-            if isLong {
+            if !text.isEmpty {
                 Button(expanded ? "Show less" : "Show more") {
-                    withAnimation { expanded.toggle() }
+                    expanded.toggle()
                 }
-                .font(.caption2)
+                .font(.callout)
                 .buttonStyle(.borderless)
+                .comfortableHitTarget()
             }
         }
     }

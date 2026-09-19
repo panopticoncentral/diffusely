@@ -15,6 +15,7 @@ import SwiftUI
 /// two-way binding never wrote back on a Magic Mouse swipe, so the dot
 /// indicator stayed frozen on the first image.
 struct MediaCarousel<CellMenu: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let images: [CivitaiImage]
     @Binding var currentIndex: Int
     /// Height available to the carousel (the enclosing window/screen height).
@@ -33,7 +34,7 @@ struct MediaCarousel<CellMenu: View>: View {
     /// plus padding above and below. The media band subtracts this so the dots
     /// can't push the bottom of the image off screen. It's zero for a
     /// single-image post, where the indicator renders nothing at all.
-    private static var indicatorDotTarget: CGFloat { 14 }
+    private static var indicatorDotTarget: CGFloat { 44 }
     private static var indicatorPadding: CGFloat { 12 }
     private var indicatorRowHeight: CGFloat {
         images.count > 1 ? Self.indicatorDotTarget + Self.indicatorPadding * 2 : 0
@@ -148,7 +149,7 @@ struct MediaCarousel<CellMenu: View>: View {
                 #else
                 TabView(selection: $currentIndex) {
                     ForEach(Array(images.enumerated()), id: \.element.id) { index, image in
-                        mediaCell(for: image, maxHeight: geometry.size.height)
+                        mediaCell(for: image, maxHeight: geometry.size.height, isActive: index == currentIndex)
                             .tag(index)
                     }
                 }
@@ -173,7 +174,7 @@ struct MediaCarousel<CellMenu: View>: View {
             // free for them). On macOS the carousel claims the full window
             // height, so the dots float as an overlay above.
             #if os(iOS)
-            pageIndicator { index in withAnimation { currentIndex = index } }
+            pageIndicator { index in withAnimation(reduceMotion ? nil : .default) { currentIndex = index } }
                 .padding(.vertical, Self.indicatorPadding)
             #endif
         }
@@ -184,33 +185,32 @@ struct MediaCarousel<CellMenu: View>: View {
         }
     }
 
-    /// Row of small dots showing which image is currently visible. Tapping a dot
-    /// jumps to that page via `select`. The per-dot buttons stay hidden from
-    /// VoiceOver (`children: .ignore`), which keeps the single adjustable element.
+    /// Bounded previous/next controls and page count, also exposed as a single
+    /// adjustable VoiceOver element. All inputs use the same paging action.
     @ViewBuilder
     private func pageIndicator(select: @escaping (Int) -> Void) -> some View {
         if images.count > 1 {
-            HStack(spacing: 4) {
-                ForEach(0..<images.count, id: \.self) { index in
-                    Button {
-                        select(index)
-                    } label: {
-                        Circle()
-                            .fill(currentIndex == index ? Color.primary : Color.primary.opacity(0.3))
-                            .frame(width: 6, height: 6)
-                            // comfortable hit target
-                            .frame(width: Self.indicatorDotTarget, height: Self.indicatorDotTarget)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+            HStack(spacing: 12) {
+                Button { select(max(0, currentIndex - 1)) } label: {
+                    Label("Previous Image", systemImage: "chevron.left")
+                        .labelStyle(.iconOnly).comfortableHitTarget()
                 }
+                .disabled(currentIndex == 0)
+                Text("\(currentIndex + 1) of \(images.count)")
+                    .font(.callout.monospacedDigit())
+                Button { select(min(images.count - 1, currentIndex + 1)) } label: {
+                    Label("Next Image", systemImage: "chevron.right")
+                        .labelStyle(.iconOnly).comfortableHitTarget()
+                }
+                .disabled(currentIndex == images.count - 1)
             }
+            .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Image \(currentIndex + 1) of \(images.count)")
             .accessibilityAdjustableAction { direction in
                 switch direction {
-                case .increment: advance(by: 1)
-                case .decrement: advance(by: -1)
+                case .increment: select(min(images.count - 1, currentIndex + 1))
+                case .decrement: select(max(0, currentIndex - 1))
                 @unknown default: break
                 }
             }
@@ -254,7 +254,7 @@ struct MediaCarousel<CellMenu: View>: View {
         guard count > 0 else { return }
         let next = max(0, min(currentIndex + delta, count - 1))
         guard next != currentIndex else { return }
-        withAnimation { currentIndex = next }
+        withAnimation(reduceMotion ? nil : .default) { currentIndex = next }
     }
 
     #if os(macOS)
@@ -267,7 +267,7 @@ struct MediaCarousel<CellMenu: View>: View {
     private func scroll(to index: Int, using proxy: ScrollViewProxy) {
         let clamped = max(0, min(index, images.count - 1))
         guard clamped != currentIndex else { return }
-        withAnimation { proxy.scrollTo(clamped, anchor: .center) }
+        withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo(clamped, anchor: .center) }
     }
     #endif
 }

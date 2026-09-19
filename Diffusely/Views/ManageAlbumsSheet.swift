@@ -29,7 +29,7 @@ struct ManageAlbumsSheet: View {
     private let initialMemberCounts: [UUID: Int]
 
     @State private var creatingNew = false
-    @State private var newName = ""
+    @State private var query = ""
     @State private var didChange = false
     /// Explicit choices made during this presentation. They are submitted as
     /// one batch when the sheet closes, avoiding a full sidecar pass for every
@@ -72,21 +72,16 @@ struct ManageAlbumsSheet: View {
                         dismiss()
                     }
                 }
-                // Always-visible create affordance, so a new album can be made
-                // even when no albums exist yet (the list would otherwise be empty).
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        creatingNew = true
-                    } label: {
-                        Label("New Album", systemImage: "plus")
-                    }
-                }
+
             }
-            .alert("New Album", isPresented: $creatingNew) {
-                TextField("Album name", text: $newName)
-                Button("Cancel", role: .cancel) { newName = "" }
-                Button("Create") { createAlbum() }
-                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .searchable(text: $query, prompt: "Search albums")
+            .sheet(isPresented: $creatingNew) {
+                CreateAlbumSheet { id, name in
+                    didChange = true
+                    albums.append(LibrarySortService.AlbumSummary(id: id, name: name, count: 0, coverItem: nil))
+                    memberCounts[id] = itemIDs.count
+                    pendingMembershipAssignments[id] = true
+                }
             }
         }
         // Fire on any dismissal path (Done button or swipe-down) so the
@@ -134,7 +129,7 @@ struct ManageAlbumsSheet: View {
                 }
             }
             Section("Albums") {
-                ForEach(albums) { album in
+                ForEach(albums.filter { $0.name.matchesSearch(query) }) { album in
                     if itemIDs.isEmpty {
                         plainRow(album)
                     } else {
@@ -208,28 +203,4 @@ struct ManageAlbumsSheet: View {
         onChanged()
     }
 
-    private func createAlbum() {
-        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        newName = ""
-        guard !name.isEmpty else { return }
-        Task {
-            let id = await store.albumService.createAlbum(name: name)
-            if itemIDs.isEmpty {
-                // Create-only flow: nothing to manage, so we're done.
-                store.notifyAlbumsChanged()
-                dismiss()
-                return
-            }
-            await store.setAlbumMembership(itemIDs: itemIDs, assignments: [id: true])
-            didChange = true
-            // Stay open with the new album shown as a fully-checked row, so the
-            // user can keep adjusting other memberships.
-            withAnimation {
-                albums.append(LibrarySortService.AlbumSummary(
-                    id: id, name: name, count: 0, coverItem: nil))
-                albums.sort { $0.name.lowercased() < $1.name.lowercased() }
-                memberCounts[id] = itemIDs.count
-            }
-        }
-    }
 }

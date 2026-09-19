@@ -65,4 +65,46 @@ final class StubTagFeedURLProtocol: URLProtocol {
         #expect(!input.contains("\"tags\""))
         #expect(input.contains("useIndex"))
     }
+    @Test func refreshKeepsVisibleItemsOnFailureAndReplacesOnSuccess() async throws {
+        let first = #"[{"result":{"data":{"json":{"items":[{"id":1,"url":"u1","width":1,"height":1,"nsfwLevel":1,"type":"image"}],"nextCursor":"page2"}}}}]"#
+        StubTagFeedURLProtocol.handler = { _ in (200, Data(first.utf8)) }
+        defer { StubTagFeedURLProtocol.handler = nil }
+        let service = makeService()
+        await service.fetchImages(videos: false)
+        #expect(service.images.map(\.id) == [1])
+
+        StubTagFeedURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        await service.fetchImages(videos: false, replacing: true)
+        #expect(service.images.map(\.id) == [1])
+        #expect(service.error != nil)
+
+        var paginatedAfterFailure = false
+        StubTagFeedURLProtocol.handler = { _ in
+            paginatedAfterFailure = true
+            return (200, Data(first.utf8))
+        }
+        await service.loadMoreImages(videos: false)
+        #expect(!paginatedAfterFailure)
+
+        var requestInput: String?
+        let next = #"[{"result":{"data":{"json":{"items":[{"id":2,"url":"u2","width":1,"height":1,"nsfwLevel":1,"type":"image"}],"nextCursor":null}}}}]"#
+        StubTagFeedURLProtocol.handler = { request in
+            requestInput = request.url?.query?.removingPercentEncoding
+            return (200, Data(next.utf8))
+        }
+        await service.fetchImages(videos: false, replacing: true)
+        #expect(service.images.map(\.id) == [2])
+        #expect(service.error == nil)
+        #expect(requestInput?.contains("page2") == false)
+
+        // A terminal replacement page must clear the old pagination cursor.
+        var requestedAnotherPage = false
+        StubTagFeedURLProtocol.handler = { _ in
+            requestedAnotherPage = true
+            return (200, Data(next.utf8))
+        }
+        await service.loadMoreImages(videos: false)
+        #expect(!requestedAnotherPage)
+    }
+
 }

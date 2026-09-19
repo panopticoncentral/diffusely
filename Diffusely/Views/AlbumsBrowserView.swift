@@ -29,12 +29,10 @@ struct AlbumsBrowserView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
-                if notInAnyAlbumCount > 0 {
-                    NavigationLink(value: Route.libraryScope(filter: .notInAnyAlbum, title: "Not in any Album")) {
-                        smartTile(title: "Not in any Album", count: notInAnyAlbumCount, systemImage: "square.grid.2x2")
-                    }
-                    .buttonStyle(.plain)
+                NavigationLink(value: Route.libraryScope(filter: .notInAnyAlbum, title: "Not in Any Album")) {
+                    smartTile(title: "Not in Any Album", count: notInAnyAlbumCount, systemImage: "square.grid.2x2")
                 }
+                .buttonStyle(.plain)
 
                 ForEach(summaries) { album in
                     NavigationLink(value: Route.libraryScope(filter: .album(album.id), title: album.name)) {
@@ -53,9 +51,8 @@ struct AlbumsBrowserView: View {
                         } label: { Label("Delete Album", systemImage: "trash") }
                     }
                     #if os(macOS)
-                    // Accept Library items dragged onto the tile. Not reachable
-                    // while Photos/Albums are exclusive modes of one window, but
-                    // wired so a future album strip/sidebar gets it for free.
+                    // Accept items dragged from another Library window. Same-window
+                    // organization uses the always-visible sidebar drop targets.
                     .dropDestination(for: LibraryItemTransfer.self) { transfers, _ in
                         dropTargetAlbumID = nil
                         guard !transfers.isEmpty else { return false }

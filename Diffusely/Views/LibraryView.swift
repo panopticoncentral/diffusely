@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import Combine
+#if os(macOS)
+import AppKit
+#endif
 
 struct LibraryView: View {
     @EnvironmentObject private var store: LibraryStore
@@ -41,6 +44,21 @@ struct LibraryView: View {
     /// Title for scoped instances (album name, or "Not in any Album").
     var scopeTitle: String? = nil
 
+    let showsAlbums: Bool
+
+    init(filter: AlbumFilter = .all, scopeTitle: String? = nil, showsAlbums: Bool = false) {
+        self.showsAlbums = showsAlbums
+        self.filter = filter
+        self.scopeTitle = scopeTitle
+        let key: String
+        switch filter {
+        case .all: key = "all"
+        case .notInAnyAlbum: key = "unfiled"
+        case .album(let id): key = id.uuidString
+        }
+        _selectedSort = AppStorage(wrappedValue: .dateNewest, "librarySort.\(key)")
+    }
+
     /// Live album name for scoped instances. Seeded from `scopeTitle` on first
     /// appearance and updated in place after a rename, so the navigation title
     /// and the rename alert's seed text reflect the new name immediately instead
@@ -62,9 +80,13 @@ struct LibraryView: View {
     @State private var checkpointBackfillRemaining: Int = 0
     @State private var checkpointBackfillCancellable: AnyCancellable?
     @State private var content: LibrarySortService.LibrarySortedContent = .flat([])
-    @State private var selectedSort: LibrarySort = .dateNewest
+    @AppStorage private var selectedSort: LibrarySort
     @State private var expandedGroups: Set<String> = []
     @State private var didSeedGroups = false
+    @State private var query = ""
+    @AppStorage("libraryTileWidth") private var targetTileWidth: Double = 240
+    @State private var showingNewAlbum = false
+    @State private var selectionAnchor: Int?
     @State private var isSelecting = false
     @State private var selectedIDs: Set<Int> = []
     @State private var showingBulkDeleteConfirm = false
@@ -95,6 +117,7 @@ struct LibraryView: View {
     #if os(macOS)
     /// Roaming keyboard focus over the flat photo grid: index into `orderedItems`.
     @State private var focusedIndex: Int?
+    @State private var pointerChangedFocus = false
     /// Files handed to `QuickLookHost` when Space previews the focused item.
     @State private var quickLookURLs: [URL] = []
     @State private var quickLookPresented = false
@@ -121,14 +144,18 @@ struct LibraryView: View {
     #endif
 
     /// Identity-carrying payload for the Manage-Albums sheet. Using `.sheet(item:)`
-    /// with this (instead of `.sheet(isPresented:)` + a separate `[Int]?`) makes
-    /// SwiftUI rebuild the sheet's content — and re-read the current
-    /// `albumSummaries` — on every presentation. The old isPresented binding could
-    /// reuse stale content from an earlier presentation (e.g. an empty album list
-    /// captured before the first album was created).
+    /// with this (instead of `.sheet(isPresented:)` plus separate view state)
+    /// gives every presentation its own complete, immutable input snapshot. That
+    /// prevents the sheet from seeing values captured by the render before the
+    /// presentation action ran.
     struct AddToAlbumRequest: Identifiable {
         let id = UUID()
         let itemIDs: [Int]
+        /// The album rows fetched for this exact presentation. Keeping them on
+        /// the request is important: setting `albumSummaries` and presenting
+        /// the sheet happen in the same SwiftUI update, while the sheet's
+        /// content closure may still have captured the previous render's value.
+        let summaries: [LibrarySortService.AlbumSummary]
         /// How many of `itemIDs` are in each album, captured at presentation
         /// time — seeds the sheet's tri-state checkmarks.
         let membershipCounts: [UUID: Int]
@@ -161,14 +188,17 @@ struct LibraryView: View {
     /// the photo grid. Selection, sorting, and bulk actions all operate on the
     /// (hidden) photo content, so they must not be offered here.
     private var isAlbumsMode: Bool {
-        filter == .all && mode == .albums
+        filter == .all && (showsAlbums || mode == .albums)
     }
 
     @ViewBuilder
     private var rootContent: some View {
-        if filter == .all && mode == .albums {
+        if isAlbumsMode {
+            if !query.isEmpty && !albumSummaries.contains(where: { $0.name.matchesSearch(query) }) {
+                ContentUnavailableView.search(text: query)
+            } else {
             AlbumsBrowserView(
-                summaries: albumSummaries,
+                summaries: albumSummaries.filter { $0.name.matchesSearch(query) },
                 notInAnyAlbumCount: notInAnyAlbumCount,
                 onNewAlbum: { presentAddToAlbum([]) },   // empty selection → create-only flow
                 onRenameAlbum: { beginRenameAlbum(id: $0.id, name: $0.name) },
@@ -180,8 +210,9 @@ struct LibraryView: View {
                     }
                 }
             )
+            }
         } else {
-            content(for: content)
+            content(for: searchedContent)
         }
     }
 
@@ -234,6 +265,14 @@ struct LibraryView: View {
             )
         case .browsable:
             VStack(spacing: 0) {
+                #if os(iOS)
+                if filter == .all && !showsAlbums {
+                    ModeControl(title: "Library view", selection: $mode) {
+                        Text("All Items").tag(Mode.photos)
+                        Text("Albums").tag(Mode.albums)
+                    }
+                }
+                #endif
                 LibraryDownloadStatusBanner(progress: store.downloadProgress,
                                             indexedItems: store.itemCount)
                 rootContent
@@ -241,13 +280,21 @@ struct LibraryView: View {
         }
     }
 
-    var body: some View {
+    private var navigationContent: some View {
         gatedContent
             .navigationTitle(isSelecting ? selectionTitle : (resolvedScopeTitle ?? "Library"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar { libraryToolbar }
+            .searchable(text: $query, prompt: isAlbumsMode ? "Search albums" : "Search creator, model, or item ID")
+            .onChange(of: query) { _, _ in exitSelection() }
+            .onChange(of: mode) { _, _ in exitSelection(); query = "" }
+            .sheet(isPresented: $showingNewAlbum) { CreateAlbumSheet() }
+    }
+
+    private var deletionContent: some View {
+        navigationContent
             .confirmationDialog(
                 bulkDeleteTitle,
                 isPresented: $showingBulkDeleteConfirm,
@@ -262,7 +309,7 @@ struct LibraryView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This deletes your saved copies and their metadata from iCloud.")
+                Text(LibraryRootStore.standard.load().deletionMessage(plural: true, localOnly: store.iCloudStatus == .unavailable))
             }
             .confirmationDialog(
                 "Delete this item?",
@@ -278,8 +325,12 @@ struct LibraryView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { _ in
-                Text("This deletes your saved copy and its metadata from iCloud.")
+                Text(LibraryRootStore.standard.load().deletionMessage(plural: false, localOnly: store.iCloudStatus == .unavailable))
             }
+    }
+
+    private var albumContent: some View {
+        deletionContent
             .alert("Rename Album", isPresented: renameAlbumPresented) {
                 TextField("Album name", text: $renameAlbumText)
                 Button("Cancel", role: .cancel) {}
@@ -319,10 +370,14 @@ struct LibraryView: View {
             } message: { _ in
                 Text("The album is removed. Your photos and videos are kept.")
             }
+    }
+
+    private var presentedContent: some View {
+        albumContent
             .sheet(item: $addToAlbumRequest) { request in
                 ManageAlbumsSheet(
                     itemIDs: request.itemIDs,
-                    summaries: albumSummaries,
+                    summaries: request.summaries,
                     membershipCounts: request.membershipCounts,
                     onChanged: { exitSelection() }
                 )
@@ -351,6 +406,10 @@ struct LibraryView: View {
                 SettingsView()
             }
             #endif
+    }
+
+    var body: some View {
+        presentedContent
             // Keyed on the gate so the content load runs ONLY when the Library
             // is browsable, and RE-runs when the gate transitions into
             // `.browsable` (after unlock, after a migration finishes, after a
@@ -402,12 +461,19 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
-        // `isSelecting` is only reachable via the browsable grid's Select
-        // button, but a mid-selection auto-lock could leave it stale-true — so
-        // require `isBrowsable` here too, guaranteeing the store-backed
-        // selection toolbar (Select All / trash / Manage Albums) is never shown
-        // over a non-browsable Library.
-        if isSelecting && isBrowsable {
+        if isSelecting && isBrowsable && !isAlbumsMode { selectionToolbar }
+        else { browsingToolbar }
+    }
+
+    @ToolbarContentBuilder
+    private var selectionToolbar: some ToolbarContent {
+
+            #if os(macOS)
+            ToolbarItem(placement: .primaryAction) {
+                LibrarySortMenu(selectedSort: $selectedSort, showsGroupActions: !currentGroupIDs.isEmpty,
+                                onCollapseAll: collapseAllGroups, onExpandAll: expandAllGroups)
+            }
+            #endif
             ToolbarItem(placement: .navigation) {
                 Button(allSelected ? "Deselect All" : "Select All") {
                     if allSelected {
@@ -422,13 +488,21 @@ struct LibraryView: View {
                 .keyboardShortcut("a", modifiers: .command)
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("Done") { exitSelection() }
+                Button {
+                    exitSelection()
+                } label: {
+                    #if os(macOS)
+                    Text("Clear Selection")
+                    #else
+                    Text("Done")
+                    #endif
+                }
             }
             ToolbarItem(placement: .destructiveAction) {
                 Button(role: .destructive) {
                     showingBulkDeleteConfirm = true
                 } label: {
-                    Image(systemName: "trash")
+                    Label("Delete from Library", systemImage: "trash")
                 }
                 .disabled(selectedIDs.isEmpty)
                 // Delete key removes the current selection (disabled → no-op
@@ -455,19 +529,12 @@ struct LibraryView: View {
                     .disabled(selectedIDs.isEmpty)
                 }
             }
-        } else {
-            // The Mode picker is store-backed browsing UI (Albums mode reads the
-            // album browser), so it's present only when browsable.
-            if isBrowsable && filter == .all {
-                ToolbarItem(placement: .principal) {
-                    Picker("Mode", selection: $mode) {
-                        Text("Photos").tag(Mode.photos)
-                        Text("Albums").tag(Mode.albums)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
-                }
-            }
+
+    }
+
+    @ToolbarContentBuilder
+    private var browsingToolbar: some ToolbarContent {
+
             #if os(iOS)
             // iOS reaches Settings from each feed's toolbar gear; the Library
             // tab needs its own (macOS uses the app menu ▸ Settings). This is
@@ -475,7 +542,7 @@ struct LibraryView: View {
             // enable encryption and to resume a `.setupIncomplete` migration, so
             // it stays OUTSIDE the `isBrowsable` guard below.
             if filter == .all {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingSettings = true
                     } label: {
@@ -505,12 +572,23 @@ struct LibraryView: View {
                             onExpandAll: expandAllGroups
                         )
                     }
+                    #if os(iOS)
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Select") { isSelecting = true }
-                            .disabled(content.isEmpty)
+                        Button("Select") { isSelecting = true }.disabled(content.isEmpty)
                     }
+                    #else
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            Picker("Thumbnail Size", selection: $targetTileWidth) {
+                                Text("Small").tag(160.0)
+                                Text("Medium").tag(240.0)
+                                Text("Large").tag(320.0)
+                            }
+                        } label: { Label("Thumbnail Size", systemImage: "square.grid.2x2") }
+                    }
+                    #endif
                 }
-                if filter == .all && mode == .albums {
+                if isAlbumsMode {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             showingSortAssistant = true
@@ -541,6 +619,18 @@ struct LibraryView: View {
                     }
                 }
             }
+
+    }
+
+    private var searchedContent: LibrarySortService.LibrarySortedContent {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return content }
+        switch content {
+        case .flat(let items): return .flat(items.filter { $0.matchesSearch(query) })
+        case .grouped(let groups):
+            return .grouped(groups.compactMap { group in
+                let items = group.items.filter { $0.matchesSearch(query) }
+                return items.isEmpty ? nil : LibrarySortService.LibraryGroup(id: group.id, kind: group.kind, items: items)
+            })
         }
     }
 
@@ -550,17 +640,17 @@ struct LibraryView: View {
     // lets the grid compute its height without laying out every cell, so it
     // virtualizes (only on-screen rows are realized) at any library size — no
     // cap needed. A masonry (variable-height) grid can't virtualize this way.
-    private let gridSpacing: CGFloat = 10
+    private let gridSpacing: CGFloat = AppUI.gridSpacing
     private let gridEdgePadding: CGFloat = 16
     // Column count = floor(viewportWidth / targetTileWidth), min 2. Deriving it
     // from the viewport (not a fixed `adaptive(minimum:)`) keeps the tile size
     // consistent across devices — ≈5 across on a Mac-sized window, ≈2 on a
     // phone. Raise targetTileWidth for bigger pictures / fewer columns.
-    private let targetTileWidth: CGFloat = 300
     // Tile shape (width / height). Portrait 3:4 suits a mostly-portrait library
     // better than a square crop. Use 1 for square, 4.0/3.0 for landscape.
     private let tileAspectRatio: CGFloat = 3.0 / 4.0
     @State private var gridColumnCount: Int = 3
+    @State private var gridWidth: CGFloat = 0
 
     private var gridColumns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: gridColumnCount)
@@ -576,11 +666,8 @@ struct LibraryView: View {
                     if store.iCloudStatus == .unavailable && !isCustomRoot {
                         localOnlyBanner
                     }
-                    if backfillRemaining > 0 {
-                        backfillBanner(remaining: backfillRemaining)
-                    }
-                    if checkpointBackfillRemaining > 0 {
-                        checkpointBackfillBanner(remaining: checkpointBackfillRemaining)
+                    if backfillRemaining > 0 || checkpointBackfillRemaining > 0 {
+                        metadataStatus
                     }
                     switch content {
                     case .flat(let items):
@@ -609,21 +696,39 @@ struct LibraryView: View {
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.width
                 } action: { width in
+                    gridWidth = width
                     let count = max(2, Int(width / targetTileWidth))
                     if count != gridColumnCount { gridColumnCount = count }
                 }
+                .onChange(of: targetTileWidth) { _, _ in
+                    gridColumnCount = max(2, Int(gridWidth / targetTileWidth))
+                }
                 #if os(macOS)
-                // Keyboard focus + Return-to-open + Space→Quick Look, but only
-                // for the flat grid: collapsed sections make a roaming focus
-                // index unreliable, so grouped sorts keep click-only behavior.
+                // Navigate the currently visible items, excluding collapsed groups.
                 .gridKeyboardNavigation(
-                    count: navigableItemCount(for: content),
+                    count: orderedItems.count,
                     columns: gridColumnCount,
                     focusedIndex: $focusedIndex,
                     onActivate: { openFocusedItem($0) },
-                    onQuickLook: { quickLookFocusedItem($0) }
+                    onQuickLook: { quickLookFocusedItem($0) },
+                    autoFocus: false
                 )
-                .onChange(of: focusedIndex) { scrollFocusedItemIntoView(using: proxy) }
+                .onChange(of: focusedIndex) {
+                    scrollFocusedItemIntoView(using: proxy)
+                    if pointerChangedFocus { pointerChangedFocus = false; return }
+                    if let focusedIndex, orderedItems.indices.contains(focusedIndex) {
+                        let id = orderedItems[focusedIndex].itemID
+                        selectedIDs = LibrarySelection.selecting(id, in: orderedItems.map(\.itemID), current: selectedIDs,
+                                                               anchor: selectionAnchor, extending: NSEvent.modifierFlags.contains(.shift), toggling: false)
+                        if !NSEvent.modifierFlags.contains(.shift) { selectionAnchor = id }
+                        isSelecting = !selectedIDs.isEmpty
+                    }
+                }
+                .onChange(of: orderedItems.map(\.itemID)) { _, ids in
+                    selectedIDs.formIntersection(ids)
+                    isSelecting = !selectedIDs.isEmpty
+                    if let focusedIndex, focusedIndex >= ids.count { self.focusedIndex = ids.isEmpty ? nil : ids.count - 1 }
+                }
                 .background {
                     QuickLookHost(urls: quickLookURLs, isPresented: $quickLookPresented) {
                         quickLookPresented = false
@@ -644,52 +749,64 @@ struct LibraryView: View {
     @ViewBuilder
     private func cells(for items: [PersistedLibraryItem]) -> some View {
         ForEach(items) { item in
-            if isSelecting {
-                Button {
-                    toggleSelection(item.itemID)
-                } label: {
-                    selectableThumbnail(for: item)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(item.isVideo ? "Video" : "Photo")
-                .accessibilityAddTraits(selectedIDs.contains(item.itemID) ? .isSelected : [])
-            } else {
-                NavigationLink(value: Route.libraryItem(item.itemID)) {
-                    thumbnail(for: item)
-                }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button {
-                        presentAddToAlbum([item.itemID])
-                    } label: { Label("Manage Albums", systemImage: "rectangle.stack") }
-                    if case .album(let albumID) = filter {
-                        Button {
-                            Task {
-                                await store.setAlbumMembership(itemIDs: [item.itemID], assignments: [albumID: false])
-                            }
-                        } label: { Label("Remove from Album", systemImage: "rectangle.stack.badge.minus") }
-                    }
-                    Button(role: .destructive) {
-                        pendingDeleteID = item.itemID
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
-                #if os(macOS)
-                // Drag a saved item out to Finder / Photos / other apps. iOS is
-                // omitted: there, drag start (long-press) fights the cell's
-                // context menu and navigation gestures.
-                .draggable(LibraryItemTransfer(itemID: item.itemID, mediaFileName: item.mediaFileName))
+            #if os(macOS)
+            thumbnail(for: item)
                 .overlay {
-                    if item.itemID == focusedItemID {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color.accentColor, lineWidth: 3)
+                    if selectedIDs.contains(item.itemID) {
+                        Rectangle().strokeBorder(Color.accentColor, lineWidth: 3)
                     }
                 }
-                #endif
+                .onTapGesture(count: 2) { router.push(.libraryItem(item.itemID)) }
+                .onTapGesture { selectMacItem(item.itemID) }
+                .accessibilityLabel(item.mediaAccessibilityLabel)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAddTraits(selectedIDs.contains(item.itemID) ? .isSelected : [])
+                .accessibilityAction { router.push(.libraryItem(item.itemID)) }
+                .accessibilityAction(named: "Select") { selectMacItem(item.itemID) }
+                .contextMenu { itemMenu(item) }
+                .draggable(LibraryItemTransfer(itemID: item.itemID, mediaFileName: item.mediaFileName))
+            #else
+            if isSelecting {
+                Button { toggleSelection(item.itemID) } label: { selectableThumbnail(for: item) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(item.mediaAccessibilityLabel)
+                    .accessibilityAddTraits(selectedIDs.contains(item.itemID) ? .isSelected : [])
+            } else {
+                NavigationLink(value: Route.libraryItem(item.itemID)) { thumbnail(for: item) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(item.mediaAccessibilityLabel)
+                    .contextMenu { itemMenu(item) }
             }
+            #endif
         }
     }
+
+    @ViewBuilder
+    private func itemMenu(_ item: PersistedLibraryItem) -> some View {
+        Button("Open", systemImage: "arrow.up.right.square") { router.push(.libraryItem(item.itemID)) }
+        Button("Manage Albums", systemImage: "rectangle.stack") {
+            presentAddToAlbum(selectedIDs.contains(item.itemID) ? Array(selectedIDs) : [item.itemID])
+        }
+        if case .album(let albumID) = filter {
+            Button("Remove from Album", systemImage: "rectangle.stack.badge.minus") {
+                Task { await store.setAlbumMembership(itemIDs: [item.itemID], assignments: [albumID: false]) }
+            }
+        }
+        Button("Delete from Library…", systemImage: "trash", role: .destructive) { pendingDeleteID = item.itemID }
+    }
+
+    #if os(macOS)
+    private func selectMacItem(_ id: Int) {
+        let modifiers = NSEvent.modifierFlags
+        selectedIDs = LibrarySelection.selecting(id, in: orderedItems.map(\.itemID), current: selectedIDs,
+                                               anchor: selectionAnchor, extending: modifiers.contains(.shift),
+                                               toggling: modifiers.contains(.command))
+        if !modifiers.contains(.shift) { selectionAnchor = id }
+        let index = orderedItems.firstIndex { $0.itemID == id }
+        if focusedIndex != index { pointerChangedFocus = true; focusedIndex = index }
+        isSelecting = !selectedIDs.isEmpty
+    }
+    #endif
 
     @ViewBuilder
     private func header(for group: LibrarySortService.LibraryGroup) -> some View {
@@ -705,10 +822,10 @@ struct LibraryView: View {
                 isExpanded: expandedGroups.contains(group.id),
                 onToggleCollapse: { toggle(group.id) }
             )
-        case .checkpoint(let name):
+        case .checkpoint(let name, let inferred):
             LibraryGroupHeader(
                 icon: "cube.transparent",
-                title: name,
+                title: inferred ? "\(name) · inferred base model" : name,
                 itemCount: group.items.count,
                 isExpanded: expandedGroups.contains(group.id),
                 onTap: { toggle(group.id) }
@@ -749,30 +866,22 @@ struct LibraryView: View {
             .padding(.vertical, 16)
     }
 
-    @ViewBuilder
-    private func backfillBanner(remaining: Int) -> some View {
-        HStack(spacing: 8) {
-            ProgressView().scaleEffect(0.7)
-            Text("Backfilling publish dates… \(remaining) remaining")
-                .font(.caption)
-                .foregroundColor(.secondary)
+    private var metadataStatus: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 4) {
+                if backfillRemaining > 0 { Text("Dates: \(backfillRemaining) items remaining") }
+                if checkpointBackfillRemaining > 0 { Text("Models: \(checkpointBackfillRemaining) items remaining") }
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        } label: {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Updating item details…").font(.footnote).foregroundStyle(.secondary)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(8)
-        .background(Color.gray.opacity(0.08))
-    }
-
-    @ViewBuilder
-    private func checkpointBackfillBanner(remaining: Int) -> some View {
-        HStack(spacing: 8) {
-            ProgressView().scaleEffect(0.7)
-            Text("Recovering checkpoint info… \(remaining) remaining")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(8)
-        .background(Color.gray.opacity(0.08))
+        .padding(.horizontal, AppUI.contentMargin)
+        .padding(.vertical, 8)
     }
 
     private func itemCountText(for items: [PersistedLibraryItem]) -> String {
@@ -840,7 +949,7 @@ struct LibraryView: View {
 
     // All item IDs currently shown, flattened across any sort groups.
     private var allItemIDs: [Int] {
-        switch content {
+        switch searchedContent {
         case .flat(let items):
             return items.map { $0.itemID }
         case .grouped(let groups):
@@ -857,9 +966,9 @@ struct LibraryView: View {
 
     /// The photo items in display order — the sequence keyboard focus walks.
     private var orderedItems: [PersistedLibraryItem] {
-        switch content {
+        switch searchedContent {
         case .flat(let items): return items
-        case .grouped(let groups): return groups.flatMap { $0.items }
+        case .grouped(let groups): return groups.filter { expandedGroups.contains($0.id) }.flatMap { $0.items }
         }
     }
 
@@ -964,9 +1073,9 @@ struct LibraryView: View {
             Image(systemName: "photo.on.rectangle.angled")
                 .font(.system(size: 44))
                 .foregroundColor(.secondary)
-            Text("Your Library is Empty")
+            Text(!query.isEmpty ? "No Matching Items" : filter == .all ? "Your Library is Empty" : "No Items Here")
                 .font(.headline)
-            Text(isCustomRoot
+            Text(!query.isEmpty ? "Try a different creator, model, or item ID." : filter == .notInAnyAlbum ? "All your saved items belong to an album." : filter != .all ? "Items added to this album will appear here." : isCustomRoot
                  ? "Use \"Save to Library\" on any image or video to keep your own copy in your chosen folder."
                  : "Use \"Save to Library\" on any image or video to keep your own iCloud-synced copy.")
                 .font(.subheadline)
@@ -1031,12 +1140,17 @@ struct LibraryView: View {
     /// *now*, then present the Manage-Albums sheet — so it always reflects the
     /// current state regardless of reload timing.
     private func presentAddToAlbum(_ ids: [Int]) {
-        if let sortService {
-            albumSummaries = sortService.albumSummaries()
-        }
+        if ids.isEmpty { showingNewAlbum = true; return }
+        // This action can beat the view's `.task` on its first appearance, so
+        // never depend on that task having initialized `sortService` already.
+        let service = sortService ?? LibrarySortService(modelContext: modelContext)
+        if sortService == nil { sortService = service }
+        let summaries = service.albumSummaries()
+        albumSummaries = summaries
         addToAlbumRequest = AddToAlbumRequest(
             itemIDs: ids,
-            membershipCounts: sortService?.albumMembershipCounts(for: ids) ?? [:]
+            summaries: summaries,
+            membershipCounts: service.albumMembershipCounts(for: ids)
         )
     }
 
@@ -1058,6 +1172,10 @@ struct LibraryView: View {
         // and `.onChange` guards.
         guard isBrowsable else { return }
         guard let sortService else { return }
+        if case .album(let id) = filter {
+            let descriptor = FetchDescriptor<PersistedAlbum>(predicate: #Predicate { $0.id == id })
+            currentScopeTitle = (try? modelContext.fetch(descriptor).first)?.name ?? scopeTitle
+        }
         let newContent: LibrarySortService.LibrarySortedContent
         if filter == .all {
             // The top-level Library can switch to the Albums browser without a
@@ -1191,6 +1309,7 @@ struct LibraryView: View {
     private func exitSelection() {
         isSelecting = false
         selectedIDs.removeAll()
+        selectionAnchor = nil
     }
 
     /// Stable surrogate id for `AuthorSectionHeader`, which expects an

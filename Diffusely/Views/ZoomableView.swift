@@ -8,6 +8,7 @@ import SwiftUI
 /// with normal page swiping or scrolling at 1×. Scale and offset snap back to
 /// identity when a gesture would leave the content smaller than fit.
 struct ZoomableView<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder var content: () -> Content
 
     private static var maxScale: CGFloat { 5 }
@@ -33,13 +34,27 @@ struct ZoomableView<Content: View>: View {
                 .gesture(magnifyGesture(in: geometry.size))
                 .highPriorityGesture(effectiveScale > 1.01 ? panGesture(in: geometry.size) : nil)
                 .onTapGesture(count: 2) { toggleZoom() }
-                .animation(.easeOut(duration: 0.2), value: scale)
-                .animation(.easeOut(duration: 0.2), value: offset)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: scale)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: offset)
         }
         // Zoomed content must not bleed over neighboring carousel pages or the
         // metadata below the media.
         .clipped()
         .contentShape(Rectangle())
+        .accessibilityAction(named: "Zoom In") { scale = min(Self.maxScale, scale * 1.5) }
+        .accessibilityAction(named: "Fit Image") { reset() }
+        #if os(macOS)
+        .overlay(alignment: .bottomTrailing) {
+            HStack(spacing: 8) {
+                Button { scale = max(1, scale / 1.5); offset = .zero } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
+                Button("Fit") { reset() }
+                Button { scale = min(Self.maxScale, scale * 1.5) } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .padding(8).background(.regularMaterial, in: Capsule()).padding(12)
+        }
+        #endif
     }
 
     private func magnifyGesture(in size: CGSize) -> some Gesture {

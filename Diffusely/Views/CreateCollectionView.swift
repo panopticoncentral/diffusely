@@ -123,6 +123,7 @@ struct CreateCollectionView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                         .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -145,6 +146,7 @@ struct CreateCollectionView: View {
                 Text(errorMessage ?? "")
             }
         }
+        .interactiveDismissDisabled(isSaving || !name.isEmpty || !description.isEmpty)
         #if os(macOS)
         .frame(minWidth: 420, idealWidth: 480, minHeight: 360, idealHeight: 460)
         #endif

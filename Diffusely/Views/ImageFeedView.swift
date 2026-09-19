@@ -48,12 +48,10 @@ struct ImageFeedView: View {
     @State private var showingSettings = false
     #endif
 
-    #if os(macOS)
     /// Roaming keyboard focus over the feed (index into `civitaiService.images`).
     /// Linear next/prev — the masonry fills column-major, so there's no clean 2-D.
     @State private var focusedIndex: Int?
     @EnvironmentObject private var router: NavigationRouter
-    #endif
 
     private var isGridLayout: Bool {
         horizontalSizeClass == .regular
@@ -111,6 +109,7 @@ struct ImageFeedView: View {
     private var feedScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
+                FeedFilterSummary(period: selectedPeriod, sort: selectedSort)
                 feedContent
 
                 if civitaiService.isLoading {
@@ -135,16 +134,10 @@ struct ImageFeedView: View {
             }
             .onChange(of: selectedPeriod) { _, _ in Task { await refreshImages() } }
             .onChange(of: selectedSort) { _, _ in Task { await refreshImages() } }
-            .onChange(of: domainManager.domain) { _, _ in Task { await refreshImages() } }
+            .onChange(of: domainManager.domain) { _, _ in Task { civitaiService.clear(); await refreshImages() } }
             #if os(macOS)
             // Arrow keys move a focus ring through the feed; Return opens the
             // focused image (same paged detail as a click).
-            .gridKeyboardNavigation(
-                count: civitaiService.images.count,
-                columns: 1,
-                focusedIndex: $focusedIndex,
-                onActivate: { openFeedItem($0) }
-            )
             .onChange(of: focusedIndex) { scrollFeedItemIntoView(using: proxy) }
             #endif
         }
@@ -175,7 +168,9 @@ struct ImageFeedView: View {
     private var masonryFeed: some View {
         MasonryGrid(
             items: civitaiService.images,
-            aspectRatio: { CGFloat($0.width) / max(1, CGFloat($0.height)) }
+            aspectRatio: { ImageFeedItemView.displayAspectRatio(width: $0.width, height: $0.height) },
+            onActivate: { router.push(.image($0)) },
+            onFocus: { id in focusedIndex = civitaiService.images.firstIndex { $0.id == id } }
         ) { image in
             feedCell(image)
                 .onAppear { maybeLoadMore(for: image) }
@@ -201,48 +196,11 @@ struct ImageFeedView: View {
     }
 
     private func errorState(_ error: Error) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text(videos ? "Couldn't Load Videos" : "Couldn't Load Images")
-                .font(.headline)
-            Text(error.localizedDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Try Again") {
-                Task { await refreshImages() }
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        // Push a full-screen error toward the center; an error appended below
-        // existing content stays compact.
-        .padding(.top, civitaiService.images.isEmpty ? 80 : 0)
+        FeedStatusView(videos: videos, error: error) { Task { await refreshImages() } }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: videos ? "video.slash" : "photo.on.rectangle.angled")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text(videos ? "No Videos" : "No Images")
-                .font(.headline)
-            #if os(macOS)
-            Text("Try a different time period, or press ⌘R to refresh.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            #else
-            Text("Try a different time period or pull to refresh.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            #endif
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .padding(.top, 80)
+        FeedStatusView(videos: videos, error: nil) { Task { await refreshImages() } }
     }
 
     /// Kicks off the next page when `image` is the prefetch trigger (≈5 items
@@ -287,7 +245,6 @@ struct ImageFeedView: View {
     }
 
     private func refreshImages() async {
-        civitaiService.clear()
-        await loadImages()
+        await civitaiService.fetchImages(videos: videos, period: selectedPeriod, sort: selectedSort, replacing: true)
     }
 }

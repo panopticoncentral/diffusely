@@ -40,5 +40,8 @@ struct LibraryGroupHeader: View {
             .background(Color(.secondarySystemBackground))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(itemCount) items")
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityHint("Double-tap to \(isExpanded ? "collapse" : "expand") section")
     }
 }

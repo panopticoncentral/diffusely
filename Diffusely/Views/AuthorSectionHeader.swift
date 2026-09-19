@@ -53,6 +53,9 @@ struct AuthorSectionHeader: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .comfortableHitTarget()
+            .accessibilityLabel(isExpanded ? "Collapse section" : "Expand section")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

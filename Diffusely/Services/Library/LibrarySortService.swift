@@ -33,7 +33,7 @@ final class LibrarySortService {
     struct LibraryGroup: Identifiable, Equatable {
         enum Kind: Equatable {
             case author(username: String, avatarURL: String?)
-            case checkpoint(name: String)
+            case checkpoint(name: String, inferred: Bool)
             case bucket(Bucket)
         }
         enum Bucket: Equatable {
@@ -229,13 +229,17 @@ final class LibrarySortService {
         _ items: [PersistedLibraryItem],
         ascending: Bool
     ) -> [LibraryGroup] {
-        var named: [String: [PersistedLibraryItem]] = [:]
+        struct Key: Hashable {
+            let name: String
+            let inferred: Bool
+        }
+        var named: [Key: [PersistedLibraryItem]] = [:]
         var videos: [PersistedLibraryItem] = []
         var other: [PersistedLibraryItem] = []
 
         for item in items {
             if let name = item.checkpointName, !name.isEmpty {
-                named[name, default: []].append(item)
+                named[Key(name: name, inferred: item.checkpointIsInferred), default: []].append(item)
             } else if item.isVideo {
                 videos.append(item)
             } else {
@@ -244,16 +248,25 @@ final class LibrarySortService {
         }
 
         var groups: [LibraryGroup] = named
-            .map { name, list in
+            .map { key, list in
                 LibraryGroup(
-                    id: "checkpoint:\(name)",
-                    kind: .checkpoint(name: name),
+                    id: "checkpoint:\(key.inferred ? "inferred:" : "explicit:")\(key.name)",
+                    kind: .checkpoint(name: key.name, inferred: key.inferred),
                     items: newestFirst(list)
                 )
             }
             .sorted { lhs, rhs in
                 let l = displayName(lhs).lowercased()
                 let r = displayName(rhs).lowercased()
+                if l == r {
+                    let lhsInferred: Bool
+                    let rhsInferred: Bool
+                    if case .checkpoint(_, let inferred) = lhs.kind { lhsInferred = inferred }
+                    else { lhsInferred = false }
+                    if case .checkpoint(_, let inferred) = rhs.kind { rhsInferred = inferred }
+                    else { rhsInferred = false }
+                    return lhsInferred == rhsInferred ? lhs.id < rhs.id : !lhsInferred
+                }
                 return ascending ? l < r : l > r
             }
 
@@ -277,7 +290,7 @@ final class LibrarySortService {
     private func displayName(_ group: LibraryGroup) -> String {
         switch group.kind {
         case .author(let username, _): return username
-        case .checkpoint(let name):     return name
+        case .checkpoint(let name, _):  return name
         case .bucket(.videos):          return "Videos"
         case .bucket(.other):           return "Other"
         case .bucket(.unknownAuthor):   return "Unknown"

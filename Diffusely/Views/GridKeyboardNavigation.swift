@@ -14,6 +14,8 @@ private struct GridKeyboardNavigation: ViewModifier {
     @Binding var focusedIndex: Int?
     let onActivate: (Int) -> Void
     var onQuickLook: ((Int) -> Void)?
+    var autoFocus = true
+    var destination: ((Int, MoveCommandDirection) -> Int?)?
 
     @FocusState private var focused: Bool
     @State private var didInitialFocus = false
@@ -34,7 +36,7 @@ private struct GridKeyboardNavigation: ViewModifier {
     /// a click. Guarded so later page-loads (which grow `count`) don't yank
     /// focus back mid-scroll.
     private func autoFocusIfNeeded() {
-        guard !didInitialFocus, count > 0 else { return }
+        guard autoFocus, !didInitialFocus, count > 0 else { return }
         didInitialFocus = true
         if focusedIndex == nil { focusedIndex = 0 }
         focused = true
@@ -42,7 +44,12 @@ private struct GridKeyboardNavigation: ViewModifier {
 
     private func move(_ direction: MoveCommandDirection) {
         guard count > 0 else { return }
-        let current = focusedIndex ?? 0
+        let current = min(focusedIndex ?? 0, count - 1)
+        if let destination {
+            if focusedIndex == nil { focusedIndex = 0 }
+            else if let next = destination(current, direction) { focusedIndex = next }
+            return
+        }
         let step: Int
         switch direction {
         case .left: step = -1
@@ -79,14 +86,18 @@ extension View {
         columns: Int,
         focusedIndex: Binding<Int?>,
         onActivate: @escaping (Int) -> Void,
-        onQuickLook: ((Int) -> Void)? = nil
+        onQuickLook: ((Int) -> Void)? = nil,
+        autoFocus: Bool = true,
+        destination: ((Int, MoveCommandDirection) -> Int?)? = nil
     ) -> some View {
         modifier(GridKeyboardNavigation(
             count: count,
             columns: columns,
             focusedIndex: focusedIndex,
             onActivate: onActivate,
-            onQuickLook: onQuickLook
+            onQuickLook: onQuickLook,
+            autoFocus: autoFocus,
+            destination: destination
         ))
     }
 }

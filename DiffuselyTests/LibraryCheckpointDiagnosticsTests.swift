@@ -33,9 +33,9 @@ private func makeMeta(
     )
 }
 
-private func resource(_ type: String?, _ name: String?) -> GenerationResource {
+private func resource(_ type: String?, _ name: String?, baseModel: String? = nil) -> GenerationResource {
     GenerationResource(modelId: 1, modelName: name, modelType: type,
-                       versionId: 1, versionName: "v1", strength: 1)
+                       versionId: 1, versionName: "v1", baseModel: baseModel, strength: 1)
 }
 
 private func day(_ iso: String) -> Date {
@@ -94,6 +94,16 @@ private func day(_ iso: String) -> Date {
         let finding = LibraryCheckpointDiagnostics.classify(makeMeta(itemID: 6, generationData: gen))
         #expect(finding.kind == .hasCheckpoint)
         #expect(finding.checkpointName == "Pony Diffusion V6 XL")
+    }
+
+    @Test func loraBaseModelIsClassifiedAsInferredGrouping() {
+        let gen = GenerationData(type: "image", meta: nil, resources: [
+            resource("LORA", "Krea style", baseModel: "Krea 2")
+        ])
+        let finding = LibraryCheckpointDiagnostics.classify(makeMeta(itemID: 9, generationData: gen))
+        #expect(finding.kind == .hasInferredBaseModel)
+        #expect(finding.checkpointName == "Krea 2")
+        #expect(!finding.isUngrouped)
     }
 
     @Test func derivationMatchesPersistedLibraryItemExactly() {

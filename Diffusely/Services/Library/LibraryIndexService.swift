@@ -127,10 +127,9 @@ actor LibraryIndexService {
         row.publishedAt = metadata.publishedAt
         row.needsDateBackfill = PersistedLibraryItem.computeNeedsDateBackfill(for: metadata)
         row.needsGenerationDataBackfill = PersistedLibraryItem.computeNeedsGenerationDataBackfill(for: metadata)
-        row.checkpointName = metadata.generationData?
-            .resources?
-            .first(where: { $0.modelType == "Checkpoint" })?
-            .modelName
+        let checkpoint = PersistedLibraryItem.checkpointGrouping(for: metadata)
+        row.checkpointName = checkpoint.name
+        row.checkpointIsInferred = checkpoint.isInferred
         row.downloadStatus = downloadStatus
         row.sidecarFileName = sidecarFileName
         row.sidecarModifiedAt = sidecarModifiedAt

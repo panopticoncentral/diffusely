@@ -9,11 +9,13 @@ struct ManageCollectionsSheet: View {
     @StateObject private var civitaiService = CivitaiService()
     @State private var viewModel: ManageCollectionsViewModel?
     @State private var showingCreate = false
+    @State private var query = ""
 
     var body: some View {
         NavigationStack {
             content
                 .navigationTitle("Manage Collections")
+                .searchable(text: $query, prompt: "Search collections")
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
@@ -95,7 +97,7 @@ struct ManageCollectionsSheet: View {
                             .padding(.vertical, 24)
                         }
                     } else {
-                        ForEach(vm.collections) { collection in
+                        ForEach(vm.collections.filter { $0.name.matchesSearch(query) }) { collection in
                             collectionRow(collection, vm: vm)
                         }
                     }
@@ -128,6 +130,7 @@ struct ManageCollectionsSheet: View {
                         }
                     }
                     Spacer()
+                    if vm.pendingFlips.contains(collection.id) { ProgressView().controlSize(.small) }
                 }
                 .contentShape(Rectangle())
             }
@@ -143,9 +146,8 @@ struct ManageCollectionsSheet: View {
                         .foregroundColor(.secondary)
                 }
                 .font(.caption)
-                .onTapGesture {
-                    Task { await vm.toggle(collection) }
-                }
+                Button("Retry") { Task { await vm.toggle(collection) } }
+                    .buttonStyle(.borderless)
             }
         }
     }

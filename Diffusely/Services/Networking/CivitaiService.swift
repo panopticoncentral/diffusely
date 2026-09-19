@@ -186,7 +186,7 @@ class CivitaiService: ObservableObject {
         nextPostCursor = nil
     }
     
-    func fetchImages(videos: Bool, limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil, tags: [Int]? = nil) async {
+    func fetchImages(videos: Bool, limit: Int = 20, period: Timeframe = .week, sort: FeedSort = .mostCollected, collectionId: Int? = nil, username: String? = nil, tags: [Int]? = nil, replacing: Bool = false) async {
         // Cancel any in-flight request and wait for it to fully unwind before
         // starting a new one. Cancellation is cooperative, so `isLoading` and the
         // task aren't settled the instant we call cancel(); awaiting the old task
@@ -195,6 +195,10 @@ class CivitaiService: ObservableObject {
         let inFlight = currentTask
         inFlight?.cancel()
         await inFlight?.value
+
+        // Retained items belong to the previous query until replacement succeeds.
+        // Never append a new filter's page using that previous query's cursor.
+        if replacing { nextCursor = nil }
 
         currentTask = Task {
             isLoading = true
@@ -225,7 +229,7 @@ class CivitaiService: ObservableObject {
                     }
                 }
 
-                if let cursor = nextCursor {
+                if !replacing, let cursor = nextCursor {
                     inputParams["cursor"] = cursor
                 }
                 
@@ -263,16 +267,14 @@ class CivitaiService: ObservableObject {
                 let response = tRPCResponse[0].result.data.json
 
                 let newImages = response.items
-                images.append(contentsOf: newImages)
+                if replacing { images = newImages } else { images.append(contentsOf: newImages) }
 
                 // Trigger preloading for newly added images
                 if !newImages.isEmpty {
                     mediaCacheService.preloadImages(newImages)
                 }
 
-                if let cursor = response.nextCursor {
-                    nextCursor = cursor.stringValue
-                }
+                nextCursor = response.nextCursor?.stringValue
             } catch {
                 // Don't set error for cancellation - this is expected behavior
                 if !(error is CancellationError) && !error.localizedDescription.contains("cancelled") {

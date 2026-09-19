@@ -100,7 +100,8 @@ struct DiffuselyApp: App {
             PersistedAlbum.self
         ])
         // Hosted tests must never open or recover the user's on-disk index.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        if ProcessInfo.processInfo.arguments.contains("--ui-review")
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || NSClassFromString("XCTestCase") != nil {
             return try! ModelContainer(
                 for: schema,
@@ -223,7 +224,17 @@ struct DiffuselyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--ui-review") {
+                    UIReviewHarness()
+                } else {
+                    ContentView()
+                }
+                #else
+                ContentView()
+                #endif
+            }
                 .environmentObject(libraryStore)
                 // Idle auto-lock: on return to the foreground past the idle
                 // threshold, re-lock the Library vault so it demands an unlock

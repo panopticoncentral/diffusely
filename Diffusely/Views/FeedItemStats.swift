@@ -9,7 +9,7 @@ struct FeedItemStats: View {
     let dislikeCount: Int
 
     var body: some View {
-        HStack(spacing: 16) {
+        FlowLayout(spacing: 12) {
             stat(icon: "hand.thumbsup.fill", count: likeCount, color: .secondary, label: "likes")
             stat(icon: "heart.fill", count: heartCount, color: .red, label: "hearts")
             stat(icon: "face.smiling", count: laughCount, color: .secondary, label: "laughs")
@@ -17,9 +17,8 @@ struct FeedItemStats: View {
             stat(icon: "message", count: commentCount, color: .secondary, label: "comments")
             stat(icon: "hand.thumbsdown", count: dislikeCount, color: .secondary, label: "dislikes")
 
-            Spacer()
         }
-        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 12)
         .padding(.bottom, 16)
     }
