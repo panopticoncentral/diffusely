@@ -90,7 +90,7 @@ enum LibraryImageRequest {
         let originalURL = dir.appendingPathComponent(mediaFileName)
 
         // 1. CDN-first — a static thumbnail without downloading the original.
-        if let cdn = await cdnThumbnailData(itemID: itemID, isVideo: isVideo, maxDimension: maxDimension, dir: dir) {
+        if let cdn = await cdnThumbnailData(itemID: itemID, isVideo: isVideo, maxDimension: maxDimension, store: store) {
             return cdn
         }
 
@@ -107,12 +107,16 @@ enum LibraryImageRequest {
         return data
     }
 
-    /// Encrypted-vault byte cascade: no CDN shortcut (that would network-leak
-    /// which images are saved to a third party). Materializes the opaque
-    /// media file from iCloud if needed, decrypts it in memory, then builds
-    /// the thumbnail from the decrypted bytes — for video, via a decrypt-to-temp
-    /// poster frame that is removed on every exit path.
-    private static func loadEncryptedBytes(itemID: Int, isVideo: Bool, maxDimension: CGFloat, store: LibraryFileStore) async throws -> Data {
+    /// Unlocked encrypted libraries use the same CDN-first previews as plaintext
+    /// libraries. Only the metadata needs decrypting for a CDN request. If the
+    /// CDN is unavailable, materialize and decrypt the original; video poster
+    /// generation uses a temporary plaintext file removed on every exit path.
+    /// The session parameter lets tests verify the cascade without live requests.
+    static func loadEncryptedBytes(itemID: Int, isVideo: Bool, maxDimension: CGFloat, store: LibraryFileStore, session: URLSession = cdnSession) async throws -> Data {
+        if let cdn = await cdnThumbnailData(itemID: itemID, isVideo: isVideo, maxDimension: maxDimension, store: store, session: session) {
+            return cdn
+        }
+
         let mediaURL = store.mediaURL(itemID: itemID, plaintextExtension: "")
         if await LibraryFileMaterializer.isReady(url: mediaURL) == false {
             try await LibraryFileMaterializer.download(url: mediaURL)
@@ -152,11 +156,11 @@ enum LibraryImageRequest {
     /// bytes on HTTP 200, else nil so the caller falls back to the iCloud
     /// original. If the CDN mis-serves video bytes, the registered
     /// `VideoFrameImageDecoder` extracts a frame downstream.
-    private static func cdnThumbnailData(itemID: Int, isVideo: Bool, maxDimension: CGFloat, dir: URL) async -> Data? {
-        guard let original = await runIO({ originalCDNURL(itemID: itemID, in: dir) }),
+    private static func cdnThumbnailData(itemID: Int, isVideo: Bool, maxDimension: CGFloat, store: LibraryFileStore, session: URLSession = cdnSession) async -> Data? {
+        guard let original = await runIO({ originalCDNURL(itemID: itemID, store: store) }),
               let thumb = CivitaiThumbnailURL.thumbnail(fromOriginal: original, isVideo: isVideo, width: Int(maxDimension)),
               let url = URL(string: thumb) else { return nil }
-        guard let (data, response) = try? await cdnSession.data(from: url),
+        guard let (data, response) = try? await session.data(from: url),
               let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
         return data
     }
@@ -202,15 +206,10 @@ enum LibraryImageRequest {
         return nil
     }
 
-    /// Reads `originalCDNURL` from the item's local sidecar JSON. Sidecars are
-    /// local and never evicted.
-    private static func originalCDNURL(itemID: Int, in dir: URL) -> String? {
-        let jsonURL = dir.appendingPathComponent("\(itemID).json")
-        var data: Data?
-        NSFileCoordinator().coordinate(readingItemAt: jsonURL, options: [], error: nil) { url in
-            data = try? Data(contentsOf: url)
-        }
-        guard let data,
+    /// Reads the CDN URL through the store so encrypted sidecars are decrypted
+    /// with the unlocked vault's key. This never reads the item's media file.
+    private static func originalCDNURL(itemID: Int, store: LibraryFileStore) -> String? {
+        guard let data = store.readMetadata(itemID: itemID),
               let meta = try? LibraryItemMetadata.decoder().decode(LibraryItemMetadata.self, from: data)
         else { return nil }
         return meta.originalCDNURL
