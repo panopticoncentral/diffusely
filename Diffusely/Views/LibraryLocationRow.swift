@@ -23,7 +23,7 @@ struct LibraryLocationRow: View {
     /// leaving them live would just produce an error the user didn't earn —
     /// and this row and the Library tab's recovery gate are both on screen at
     /// once on macOS, which is exactly how a second click gets made.
-    private var isSwitching: Bool { vaultProvider.libraryGate == .switchingRoot }
+    private var isSwitching: Bool { vaultProvider.libraryGate == .switchingRoot || !vaultProvider.canSwitchLibraries }
 
     nonisolated static func displayName(for root: LibraryRoot) -> String {
         switch root {
@@ -54,7 +54,7 @@ struct LibraryLocationRow: View {
                     .foregroundColor(.red)
             }
             if root.isCustom {
-                Text("This Library is stored as plain files in the folder above. In-app encryption is available only in iCloud.")
+                Text("This Library is stored in the folder above. You can protect it with Library Encryption.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -70,7 +70,7 @@ struct LibraryLocationRow: View {
             }
             Button("Cancel", role: .cancel) { pendingFolder = nil }
         } message: {
-            Text("The index will be rebuilt for the new folder now. In-app encryption isn't available outside iCloud. Nothing is moved or deleted — your current Library stays where it is.")
+            Text("The index will be rebuilt for the new folder. If the Library is encrypted, you’ll be asked to unlock it. Nothing is moved or deleted — your current Library stays where it is.")
         }
     }
 

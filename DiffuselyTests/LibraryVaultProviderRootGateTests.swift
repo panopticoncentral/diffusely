@@ -8,7 +8,6 @@ final class LibraryVaultProviderRootGateTests: XCTestCase {
         let gate = Provider.computedGate(
             rootOverride: .switchingRoot,
             migrationPhase: .encrypting(done: 1, total: 10),
-            isPlaintextRoot: false,
             vaultState: .locked,
             pendingPlaintextCount: 5
         )
@@ -20,23 +19,15 @@ final class LibraryVaultProviderRootGateTests: XCTestCase {
         let gate = Provider.computedGate(
             rootOverride: .rootUnavailable(url),
             migrationPhase: .encrypting(done: 1, total: 10),
-            isPlaintextRoot: false,
             vaultState: .locked,
             pendingPlaintextCount: 5
         )
         XCTAssertEqual(gate, .rootUnavailable(url))
     }
 
-    /// A custom root is unconditionally plaintext: there is no vault to consult,
-    /// so it must browse immediately rather than failing closed on `nil`.
-    func testPlaintextRootIsBrowsableWithNoVault() {
-        let gate = Provider.computedGate(
-            rootOverride: nil,
-            migrationPhase: .idle,
-            isPlaintextRoot: true,
-            vaultState: nil,
-            pendingPlaintextCount: 0
-        )
+    func testUnconfiguredVaultIsBrowsable() {
+        let gate = Provider.computedGate(rootOverride: nil, migrationPhase: .idle,
+            vaultState: .notConfigured, pendingPlaintextCount: 0)
         XCTAssertEqual(gate, .browsable)
     }
 
@@ -44,7 +35,6 @@ final class LibraryVaultProviderRootGateTests: XCTestCase {
         let gate = Provider.computedGate(
             rootOverride: nil,
             migrationPhase: .idle,
-            isPlaintextRoot: false,
             vaultState: nil,
             pendingPlaintextCount: 0
         )
@@ -55,7 +45,6 @@ final class LibraryVaultProviderRootGateTests: XCTestCase {
         let gate = Provider.computedGate(
             rootOverride: nil,
             migrationPhase: .encrypting(done: 2, total: 9),
-            isPlaintextRoot: false,
             vaultState: .unlocked,
             pendingPlaintextCount: 0
         )
@@ -66,7 +55,6 @@ final class LibraryVaultProviderRootGateTests: XCTestCase {
         let gate = Provider.computedGate(
             rootOverride: nil,
             migrationPhase: .idle,
-            isPlaintextRoot: false,
             vaultState: .locked,
             pendingPlaintextCount: 0
         )
@@ -77,7 +65,6 @@ final class LibraryVaultProviderRootGateTests: XCTestCase {
         let gate = Provider.computedGate(
             rootOverride: nil,
             migrationPhase: .idle,
-            isPlaintextRoot: false,
             vaultState: .unlocked,
             pendingPlaintextCount: 3
         )

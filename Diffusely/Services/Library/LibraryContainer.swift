@@ -26,10 +26,9 @@ private final class LibraryRootProbeCompletion: @unchecked Sendable {
 ///
 /// - `.iCloud` — the app's ubiquity container (`Documents/Items`), falling back
 ///   to a local Application Support directory when iCloud is off, with local
-///   items migrated in the next time the container becomes available. This is
-///   the only root that may be encrypted at rest.
+///   items migrated in the next time the container becomes available.
 /// - `.custom` — a local folder the user chose, which IS the items directory.
-///   Never created and never encrypted; if it isn't there, that's an error, not
+///   Never created automatically; if it isn't there, that's an error, not
 ///   something to repair (creating it would hand reconcile an empty directory
 ///   to treat as authoritative).
 ///
@@ -65,6 +64,15 @@ actor LibraryContainer {
     init(rootStore: LibraryRootStore) {
         self.rootStore = rootStore
         self.root = rootStore.load()
+    }
+
+    /// Tests/previews can supply an already-resolved iCloud directory without
+    /// accessing the user's ubiquity container or migrating local files.
+    init(rootStore: LibraryRootStore, resolvedICloudItemsDirectory: URL) {
+        self.rootStore = rootStore
+        self.root = .iCloud
+        self.cachedItemsDirectory = resolvedICloudItemsDirectory
+        self.resolvedICloud = true
     }
 
     /// True once `itemsDirectory()` has resolved to an iCloud-backed location.
@@ -214,18 +222,12 @@ actor LibraryContainer {
             .appendingPathComponent(Self.itemsFolderName, isDirectory: true)
     }
 
-    /// `vault.json` + backup live in `Documents/` (siblings of `Items/`), so they
-    /// are never enumerated as library items.
-    ///
-    /// Throws for a custom root: the `deletingLastPathComponent()` derivation
-    /// below is a property of the iCloud layout, and under a flat custom root it
-    /// would resolve to the PARENT of the user's own folder. Custom roots are
-    /// unconditionally plaintext, so no caller legitimately needs this there.
+    /// Every library is self-contained: vault files live beside its items,
+    /// including inside Documents/Items for iCloud.
     func vaultURLs() async throws -> (vault: URL, backup: URL) {
-        guard !root.isCustom else { throw LibraryRootError.encryptedLibrary }
-        let documents = try await itemsDirectory().deletingLastPathComponent()
-        return (documents.appendingPathComponent("vault.json"),
-                documents.appendingPathComponent("vault.backup.json"))
+        let directory = try await itemsDirectory()
+        return (directory.appendingPathComponent("vault.json"),
+                directory.appendingPathComponent("vault.backup.json"))
     }
 
     func metadataURL(forItemID id: Int) async throws -> URL {

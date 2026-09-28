@@ -19,21 +19,8 @@ final class LibraryEncryptionCoordinatorTests: XCTestCase {
         return dir
     }
 
-    /// Builds a vault rooted alongside (not "../" out of) `dir`. The task
-    /// brief's own verbatim reference test used `dir.appendingPathComponent
-    /// ("../vault.json")`, which — since `dir` is directly under the shared
-    /// system `temporaryDirectory`, not nested one level like production's
-    /// `Documents/Items` — collapses to a single vault.json path shared by
-    /// EVERY test in this file (and every other test run) rather than one
-    /// scoped to this test's own temp directory. That cross-test collision
-    /// is real, not hypothetical: the disable-safety test below deliberately
-    /// leaves its vault configured (never tears down), so a suite run that
-    /// hit that test before this one would leave a stray vault.json behind,
-    /// and the next test's `vault.configure()` would throw `.malformed`
-    /// against an "already configured" vault it never created. Scoping the
-    /// vault files to `dir` itself (safe: `vault.json`/`vault.backup.json`
-    /// don't match `pendingItemIDs()`'s `<Int>.json` filter or the `album-`
-    /// aux prefix) keeps every test's vault fully isolated.
+    /// Keep each test's vault inside its own items directory, matching the
+    /// self-contained production layout without sharing keys between tests.
     private func makeVault(_ dir: URL) -> LibraryVault {
         LibraryVault(
             vaultURL: dir.appendingPathComponent("vault.json"),

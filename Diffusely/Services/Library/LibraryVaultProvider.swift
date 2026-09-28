@@ -1,13 +1,7 @@
 import Foundation
 import Combine
 
-/// Thrown by the enable/disable entry points when there is no vault to act on
-/// — a `.custom` root is plaintext by construction, so `encryptionCoordinator()`
-/// returns `nil` there. Settings hides the affordances that reach these calls
-/// once a root switcher exists to offer a custom root (Task 8), so this is a
-/// defensive rather than a routinely-user-facing error; the generic
-/// catch-all in `LibraryEncryptionSettingsView.legibleMessage(for:action:)`
-/// gives it a serviceable fallback message rather than crashing.
+/// The library location has not resolved to a usable vault.
 enum LibraryVaultProviderError: Error {
     case noVault
 }
@@ -80,9 +74,22 @@ final class LibraryVaultProvider: ObservableObject {
     /// found missing. Outranks every vault consideration.
     private var rootOverride: LibraryGate?
 
-    /// True when the active root is `.custom` — unconditionally plaintext, so
-    /// there is no vault to resolve and no reason to fail closed on a nil one.
-    private var isPlaintextRoot = false
+    /// Storage policy is independent of whether this library is encrypted.
+    private var isCustomRoot = false
+    private var containerOverride: LibraryContainer?
+    private var keyStore: LibraryKeyStore = KeychainKeyStore()
+    private var kdfRounds: UInt32 = 600_000
+    private var rebuildOverride: (() async -> Void)?
+    private var resolutionGeneration = 0
+    @Published private(set) var encryptionOperationInProgress = false
+
+    var canSwitchLibraries: Bool {
+        guard !encryptionOperationInProgress else { return false }
+        switch migrationPhase {
+        case .encrypting, .decrypting: return false
+        case .idle, .failed: return true
+        }
+    }
 
     /// Lazily built + cached by `encryptionCoordinator()`.
     private var encryptionCoordinatorInstance: LibraryEncryptionCoordinator?
@@ -97,9 +104,19 @@ final class LibraryVaultProvider: ObservableObject {
     )
 
     /// Injectable initializer for tests/previews: `vault` is set immediately.
-    init(vault: LibraryVault, itemsDirectory: URL) {
+    init(vault: LibraryVault, itemsDirectory: URL, isCustomRoot: Bool = false) {
         self.vault = vault
         self.itemsDirectory = itemsDirectory
+        self.isCustomRoot = isCustomRoot
+    }
+
+    /// Exercises the production root-resolution path without touching user data.
+    init(container: LibraryContainer, keyStore: LibraryKeyStore, rounds: UInt32 = 1000,
+         rebuildIndex: @escaping () async -> Void = {}) {
+        containerOverride = container
+        self.keyStore = keyStore
+        kdfRounds = rounds
+        rebuildOverride = rebuildIndex
     }
 
     private init() {}
@@ -165,27 +182,27 @@ final class LibraryVaultProvider: ObservableObject {
             return
         }
         guard vault == nil else { return }
-        guard !Self.isRunningInTestHost else { return }
+        guard containerOverride != nil || !Self.isRunningInTestHost else { return }
 
+        let generation = resolutionGeneration
         let task = Task {
             do {
-                let container = LibraryContainer.shared
+                let container = containerOverride ?? LibraryContainer.shared
                 let root = await container.root
                 let dir = try await container.itemsDirectory()
 
                 if root.isCustom {
-                    // Custom roots are unconditionally plaintext. Build no vault
-                    // at all: `vaultURLs()` throws there by design, and a nil
-                    // vault already yields a passthrough file store.
-                    self.finishBootstrap(vault: nil, itemsDirectory: dir, isPlaintextRoot: true)
-                    return
+                    let error = await Self.validateCustomDirectory(dir)
+                    guard error == nil else { throw LibraryRootError.unavailable(dir) }
                 }
 
                 let urls = try await container.vaultURLs()
                 let vault = LibraryVault(vaultURL: urls.vault, backupURL: urls.backup,
-                                          keyStore: KeychainKeyStore(), rounds: 600_000)
-                self.finishBootstrap(vault: vault, itemsDirectory: dir, isPlaintextRoot: false)
+                                          keyStore: keyStore, rounds: kdfRounds)
+                guard generation == resolutionGeneration else { return }
+                self.finishBootstrap(vault: vault, itemsDirectory: dir, isCustomRoot: root.isCustom)
             } catch let error as LibraryRootError {
+                guard generation == resolutionGeneration else { return }
                 // A missing custom root is a real, reportable state — not a
                 // transient hiccup to retry silently.
                 if case .unavailable(let url) = error {
@@ -194,6 +211,7 @@ final class LibraryVaultProvider: ObservableObject {
                 }
                 self.bootstrapTask = nil
             } catch {
+                guard generation == resolutionGeneration else { return }
                 // Directory resolution failed (e.g. disk full). Leave `vault`
                 // nil so state stays `.notConfigured`/passthrough, and clear
                 // `bootstrapTask` so a later call retries instead of being
@@ -205,10 +223,10 @@ final class LibraryVaultProvider: ObservableObject {
         await task.value
     }
 
-    private func finishBootstrap(vault: LibraryVault?, itemsDirectory: URL, isPlaintextRoot: Bool) {
+    private func finishBootstrap(vault: LibraryVault?, itemsDirectory: URL, isCustomRoot: Bool) {
         self.vault = vault
         self.itemsDirectory = itemsDirectory
-        self.isPlaintextRoot = isPlaintextRoot
+        self.isCustomRoot = isCustomRoot
         // A real resolve just succeeded: a stale `.rootUnavailable` from an
         // earlier failed resolve (or a `rebootstrap()` mid-switch) no longer
         // describes reality, and nothing else ever clears it — `bootstrap()`'s
@@ -235,10 +253,16 @@ final class LibraryVaultProvider: ObservableObject {
     /// Tears down the resolved vault and resolves again against whatever root
     /// `LibraryContainer` now holds. Used by `LibraryRootCoordinator` mid-switch.
     func rebootstrap() async {
+        resolutionGeneration += 1
+        encryptionCoordinatorInstance?.onPhaseChange = nil
+        encryptionCoordinatorInstance = nil
+        migrationPhase = .idle
+        let oldVault = vault
         bootstrapTask = nil
         vault = nil
         itemsDirectory = nil
-        isPlaintextRoot = false
+        isCustomRoot = false
+        await oldVault?.lock()
         await resolveIfNeeded()
         await recomputeGate()
     }
@@ -286,14 +310,14 @@ final class LibraryVaultProvider: ObservableObject {
     /// passthrough otherwise).
     func fileStore() async -> LibraryFileStore {
         await bootstrap()
-        // Read the directory AND the root's plaintext-ness BEFORE the await
+        // Read the directory AND the root's storage policy BEFORE the await
         // below, so the pair describes one root. A `rebootstrap()` landing on
         // this actor at that suspension point would otherwise pair one root's
         // directory with the other's `createsContainerDirectory` — which, at a
         // custom root, means recreating a folder tree at a path that is
         // deliberately never created.
         let directory = resolvedDirectory()
-        let createsContainerDirectory = !isPlaintextRoot
+        let createsContainerDirectory = !isCustomRoot
         let crypto = await vault?.crypto()
         return LibraryFileStore(itemsDirectory: directory, crypto: crypto,
                                  createsContainerDirectory: createsContainerDirectory)
@@ -312,10 +336,10 @@ final class LibraryVaultProvider: ObservableObject {
     /// between them, closing the gap.
     func reconcileContext() async -> (state: LibraryVault.State, store: LibraryFileStore) {
         await bootstrap()
-        // Same discipline as `fileStore()`: directory + plaintext-ness captured
+        // Same discipline as `fileStore()`: directory + storage policy captured
         // together, before the vault await, so they can't describe two roots.
         let directory = resolvedDirectory()
-        let createsContainerDirectory = !isPlaintextRoot
+        let createsContainerDirectory = !isCustomRoot
         let snap = await vault?.snapshot() ?? (state: .notConfigured, crypto: nil)
         return (snap.state, LibraryFileStore(itemsDirectory: directory, crypto: snap.crypto,
                                               createsContainerDirectory: createsContainerDirectory))
@@ -356,22 +380,20 @@ final class LibraryVaultProvider: ObservableObject {
     /// — by not passing a `rebuildIndex` argument, so enabling/disabling here
     /// rebuilds the index exactly as a standalone coordinator would.
     ///
-    /// Returns `nil` when there is no vault to coordinate. That is now a
-    /// NORMAL outcome, not an exceptional one: a `.custom` root is plaintext
-    /// by construction (Step 5), so `vault` stays `nil` for the life of the
-    /// process and there is nothing for a coordinator to enable/disable/
-    /// migrate. Awaits `bootstrap()` first, so the `nil` this returns always
-    /// reflects the resolved root, not an unresolved one.
+    /// Returns nil only while the library location is unresolved/unavailable.
     func encryptionCoordinator() async -> LibraryEncryptionCoordinator? {
         await bootstrap()
         guard let vault else { return nil }
         if let encryptionCoordinatorInstance {
             return encryptionCoordinatorInstance
         }
-        let coordinator = LibraryEncryptionCoordinator(
-            itemsDirectory: resolvedDirectory(),
-            vault: vault
-        )
+        let coordinator: LibraryEncryptionCoordinator
+        if let rebuildOverride {
+            coordinator = LibraryEncryptionCoordinator(itemsDirectory: resolvedDirectory(), vault: vault,
+                rebuildIndex: rebuildOverride)
+        } else {
+            coordinator = LibraryEncryptionCoordinator(itemsDirectory: resolvedDirectory(), vault: vault)
+        }
         coordinator.onPhaseChange = { [weak self] phase in
             guard let self else { return }
             self.migrationPhase = phase
@@ -400,6 +422,9 @@ final class LibraryVaultProvider: ObservableObject {
     /// > 0). The 16b UI shows/acknowledges the recovery key, then calls
     /// `runEnableMigration()`.
     func enableConfigure(password: String) async throws -> String {
+        guard canSwitchLibraries, rootOverride == nil else { throw LibraryVaultProviderError.noVault }
+        encryptionOperationInProgress = true
+        defer { encryptionOperationInProgress = false }
         guard let coordinator = await encryptionCoordinator() else {
             throw LibraryVaultProviderError.noVault
         }
@@ -413,6 +438,9 @@ final class LibraryVaultProvider: ObservableObject {
     /// deterministically on return (`.browsable` on full success,
     /// `.setupIncomplete` if it threw partway) before the caller continues.
     func runEnableMigration() async throws {
+        guard canSwitchLibraries, rootOverride == nil else { throw LibraryVaultProviderError.noVault }
+        encryptionOperationInProgress = true
+        defer { encryptionOperationInProgress = false }
         guard let coordinator = await encryptionCoordinator() else {
             throw LibraryVaultProviderError.noVault
         }
@@ -447,6 +475,9 @@ final class LibraryVaultProvider: ObservableObject {
     /// Turn encryption off: reverse-migrate to plaintext + tear down the vault,
     /// then recompute the gate (which lands `.browsable`, encryption now off).
     func disableEncryption() async throws {
+        guard canSwitchLibraries, rootOverride == nil else { throw LibraryVaultProviderError.noVault }
+        encryptionOperationInProgress = true
+        defer { encryptionOperationInProgress = false }
         guard let coordinator = await encryptionCoordinator() else {
             throw LibraryVaultProviderError.noVault
         }
@@ -467,7 +498,9 @@ final class LibraryVaultProvider: ObservableObject {
     /// initial bootstrap resolution, from `refreshState()`, and on every
     /// coordinator phase change.
     private func recomputeGate() async {
+        let generation = resolutionGeneration
         let target = await computedGate()
+        guard generation == resolutionGeneration else { return }
         if libraryGate != target { libraryGate = target }
     }
 
@@ -476,7 +509,6 @@ final class LibraryVaultProvider: ObservableObject {
     nonisolated static func computedGate(
         rootOverride: LibraryGate?,
         migrationPhase: LibraryEncryptionCoordinator.Phase,
-        isPlaintextRoot: Bool,
         vaultState: LibraryVault.State?,
         pendingPlaintextCount: Int
     ) -> LibraryGate {
@@ -491,13 +523,7 @@ final class LibraryVaultProvider: ObservableObject {
             break
         }
 
-        // A custom root is plaintext by construction — no vault, nothing to
-        // fail closed about.
-        if isPlaintextRoot { return .browsable }
-
-        // Fail CLOSED, never open, when an iCloud vault hasn't resolved: a nil
-        // vault must not be conflated with the real `.notConfigured` state, or a
-        // reconcile could prune against the empty fallback scratch directory.
+        // Both storage locations require a resolved vault before browsing.
         guard let vaultState else { return .loading }
 
         switch vaultState {
@@ -511,9 +537,19 @@ final class LibraryVaultProvider: ObservableObject {
     }
 
     private func computedGate() async -> LibraryGate {
+        if let rootOverride { return rootOverride }
+        // Progress callbacks must not enumerate an SMB folder on every item.
+        switch migrationPhase {
+        case .encrypting, .decrypting: return .migrating
+        case .idle, .failed: break
+        }
+        if isCustomRoot, let directory = itemsDirectory,
+           await Self.validateCustomDirectory(directory) != nil {
+            return .rootUnavailable(directory)
+        }
         let snapshot = await vault?.snapshot()
 
-        // The static below is the ONLY place the gate is decided. The guard
+        // The static below decides the remaining vault states. The guard
         // here decides something narrower: whether the expensive part — a
         // blocking directory listing on `gateScanQueue` — is worth doing at
         // all. It is only ever consulted for an unlocked, configured vault
@@ -525,29 +561,41 @@ final class LibraryVaultProvider: ObservableObject {
         }
 
         var pending = 0
-        if rootOverride == nil, !isPlaintextRoot, !migrationBlocks,
+        if rootOverride == nil, !migrationBlocks,
            snapshot?.state == .unlocked, let crypto = snapshot?.crypto {
             pending = await Self.scanPendingPlaintextCount(
-                directory: resolvedDirectory(), crypto: crypto)
+                directory: resolvedDirectory(), crypto: crypto, disableMarker: vault?.disableInProgressMarkerURL)
         }
 
         return Self.computedGate(
             rootOverride: rootOverride,
             migrationPhase: migrationPhase,
-            isPlaintextRoot: isPlaintextRoot,
             vaultState: snapshot?.state,
             pendingPlaintextCount: pending
         )
     }
 
+    private static func validateCustomDirectory(_ directory: URL) async -> LibraryRootError? {
+        guard await LibraryContainer.customRootIsDirectory(directory) else { return .unavailable(directory) }
+        return await withCheckedContinuation { continuation in
+            gateScanQueue.async {
+                continuation.resume(returning: LibraryRootStore.standard.validate(directory, iCloudItemsDirectory: nil))
+            }
+        }
+    }
+
     /// Off-main directory listing of pending plaintext items + aux files (no
     /// file reads, no crypto — see `LibraryEncryptionMigrator
     /// .pendingItemsAndAuxCount`). Runs on `gateScanQueue`.
-    private static func scanPendingPlaintextCount(directory: URL, crypto: LibraryFileCrypto) async -> Int {
+    private static func scanPendingPlaintextCount(directory: URL, crypto: LibraryFileCrypto, disableMarker: URL?) async -> Int {
         await withCheckedContinuation { continuation in
             gateScanQueue.async {
                 let migrator = LibraryEncryptionMigrator(itemsDirectory: directory, crypto: crypto)
-                continuation.resume(returning: migrator.pendingItemsAndAuxCount())
+                let pending = (try? migrator.checkedPendingPlaintextCount()) ?? 1
+                let journal = directory.appendingPathComponent(LibraryChangeJournal.directoryName)
+                continuation.resume(returning: pending +
+                    ((disableMarker.map { FileManager.default.fileExists(atPath: $0.path) } == true ||
+                      FileManager.default.fileExists(atPath: journal.path)) ? 1 : 0))
             }
         }
     }

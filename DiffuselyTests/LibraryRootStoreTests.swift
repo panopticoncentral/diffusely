@@ -49,10 +49,11 @@ final class LibraryRootStoreTests: XCTestCase {
                                       iCloudItemsDirectory: nil), .notADirectory)
     }
 
-    func testFolderWithVaultFileIsRejected() throws {
+    func testFolderWithVaultFileCanBeOpenedForUnlock() throws {
         let folder = try makeFolder("vaulted")
         try write("vault.json", into: folder)
-        XCTAssertEqual(store.validate(folder, iCloudItemsDirectory: nil), .encryptedLibrary)
+        try write("opaque.m", into: folder)
+        XCTAssertNil(store.validate(folder, iCloudItemsDirectory: nil))
     }
 
     func testFolderWithSealedFilesIsRejected() throws {

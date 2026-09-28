@@ -2,10 +2,8 @@ import Foundation
 import CryptoKit
 
 /// Session-scoped source of truth for Library encryption. Owns the vault file
-/// on disk and the in-memory DEK. File I/O here is fast enough for the actor,
-/// but the PBKDF2-backed crypto calls (`configure`/`unlock`/`changePassword`)
-/// are bridged to a dedicated queue — see `kdfQueue` below — so callers can
-/// invoke them from anywhere without risking cooperative-pool starvation.
+/// on disk and the in-memory DEK. Blocking file I/O and PBKDF2-backed crypto
+/// calls use dedicated queues to avoid occupying cooperative-pool threads.
 actor LibraryVault {
     enum State: Equatable { case notConfigured, locked, unlocked }
 
@@ -15,6 +13,7 @@ actor LibraryVault {
     private let rounds: UInt32
 
     private var dek: SymmetricKey?
+    private var vaultIdentity: String?
 
     /// Dedicated serial queue for the blocking PBKDF2 work inside
     /// `LibraryVaultCrypto.create`/`.unlock`/`.rewrapPassword`. At the
@@ -58,8 +57,8 @@ actor LibraryVault {
 
     private let materialization: MaterializationProbe
 
-    /// Dedicated serial queue for vault-file reads. `Data(contentsOf:)` over
-    /// the iCloud container is blocking I/O, and must not occupy a Swift
+    /// Dedicated serial queue for vault-file reads and writes. Storage access
+    /// can block on iCloud or network folders, and must not occupy a Swift
     /// concurrency cooperative thread — same discipline as `kdfQueue` and
     /// `LibraryEncryptionCoordinator.ioQueue`.
     private static let ioQueue = DispatchQueue(
@@ -92,8 +91,8 @@ actor LibraryVault {
     }
 
     /// URL of a small coordinator-owned marker file living in the SAME durable
-    /// directory as the vault file itself (a sibling of `vault.json`, not inside
-    /// the items directory), used to record that a reverse (disable) migration
+    /// directory as the vault file itself (a sibling of `vault.json`), used to
+    /// record that a reverse (disable) migration
     /// is in progress. Persisting it right next to the vault means an
     /// interrupted disable stays recognizable AS a disable — rather than being
     /// misread as an interrupted enable from the forward-pending plaintext count
@@ -123,9 +122,10 @@ actor LibraryVault {
         let (file, dek, recovery) = try await Self.runOnKDFQueue {
             try LibraryVaultCrypto.create(password: password, rounds: rounds)
         }
-        try writeFile(file)
+        try await writeFile(file)
         self.dek = dek
-        try? keyStore.store(dek: dek.withUnsafeBytes { Data($0) })
+        vaultIdentity = file.identity
+        try? keyStore.store(dek: dek.withUnsafeBytes { Data($0) }, vaultID: file.identity)
         return recovery
     }
 
@@ -134,8 +134,7 @@ actor LibraryVault {
         let key = try await Self.runOnKDFQueue {
             try LibraryVaultCrypto.unlock(file, password: password)
         }
-        self.dek = key
-        try? keyStore.store(dek: key.withUnsafeBytes { Data($0) })
+        try await cacheVerifiedKey(key, file: file)
     }
 
     func unlock(recoveryKey: String) async throws {
@@ -143,16 +142,29 @@ actor LibraryVault {
         let key = try await Self.runOnKDFQueue {
             try LibraryVaultCrypto.unlock(file, recoveryKey: recoveryKey)
         }
-        self.dek = key
-        try? keyStore.store(dek: key.withUnsafeBytes { Data($0) })
+        try await cacheVerifiedKey(key, file: file)
+    }
+
+    private func cacheVerifiedKey(_ key: SymmetricKey, file: LibraryVaultFile) async throws {
+        var verified = file
+        if verified.keyCheck == nil {
+            verified.keyCheck = try LibraryVaultCrypto.makeKeyCheck(dek: key)
+            try await writeFile(verified)
+        }
+        guard LibraryVaultCrypto.verifies(key, for: verified) else { throw LibraryVaultError.malformed }
+        dek = key
+        vaultIdentity = verified.identity
+        try? keyStore.store(dek: key.withUnsafeBytes { Data($0) }, vaultID: verified.identity)
     }
 
     func unlockWithBiometrics() async -> Bool {
-        guard case .loaded = await loadFile() else { return false }
-        guard let raw = try? await keyStore.loadWithBiometrics(reason: "Unlock your Library"), !raw.isEmpty else {
-            return false
-        }
-        self.dek = SymmetricKey(data: raw)
+        guard case .loaded(let file) = await loadFile(),
+              let raw = try? await keyStore.loadWithBiometrics(reason: "Unlock your Library", vaultID: file.identity),
+              raw.count == 32 else { return false }
+        let key = SymmetricKey(data: raw)
+        guard LibraryVaultCrypto.verifies(key, for: file) else { return false }
+        dek = key
+        vaultIdentity = file.identity
         return true
     }
 
@@ -175,14 +187,24 @@ actor LibraryVault {
             let key = try LibraryVaultCrypto.unlock(file, password: old)
             return try LibraryVaultCrypto.rewrapPassword(file, dek: key, newPassword: new)
         }
-        try writeFile(rewrapped)
+        try await writeFile(rewrapped)
     }
 
-    func teardown() {
+    func teardown() async throws {
+        // Validate the directory first; missing storage must not count as success.
+        let vaultURL = vaultURL, backupURL = backupURL
+        let result = await Self.runOnIOQueue {
+            Result<Void, Error> {
+                let names = try FileManager.default.contentsOfDirectory(atPath: vaultURL.deletingLastPathComponent().path)
+                // Keep the primary until the backup has been removed successfully.
+                if names.contains(backupURL.lastPathComponent) { try FileManager.default.removeItem(at: backupURL) }
+                if names.contains(vaultURL.lastPathComponent) { try FileManager.default.removeItem(at: vaultURL) }
+            }
+        }
+        try result.get()
         dek = nil
-        try? keyStore.clear()
-        try? FileManager.default.removeItem(at: vaultURL)
-        try? FileManager.default.removeItem(at: backupURL)
+        if let vaultIdentity { try? keyStore.clear(vaultID: vaultIdentity) }
+        vaultIdentity = nil
     }
 
     // MARK: - Persistence (primary + backup)
@@ -210,7 +232,7 @@ actor LibraryVault {
     /// backup — but only ever reading a file whose contents are actually on
     /// local disk.
     ///
-    /// Both files live in the app's iCloud ubiquity container, where macOS
+    /// When files live in the app's iCloud ubiquity container, macOS
     /// evicts contents under storage pressure ("dataless"), leaving the
     /// directory entry and its real size behind. `Data(contentsOf:)` on a
     /// dataless file blocks inside `read(2)` until the file provider
@@ -265,9 +287,15 @@ actor LibraryVault {
         return values.ubiquitousItemDownloadingStatus == .notDownloaded ? .notDownloaded : .materialized
     }
 
-    private func writeFile(_ file: LibraryVaultFile) throws {
-        let data = try JSONEncoder().encode(file)
-        try data.write(to: vaultURL, options: .atomic)
-        try data.write(to: backupURL, options: .atomic)
+    private func writeFile(_ file: LibraryVaultFile) async throws {
+        let vaultURL = vaultURL, backupURL = backupURL
+        let result = await Self.runOnIOQueue {
+            Result<Void, Error> {
+                let data = try JSONEncoder().encode(file)
+                try data.write(to: vaultURL, options: .atomic)
+                try data.write(to: backupURL, options: .atomic)
+            }
+        }
+        try result.get()
     }
 }

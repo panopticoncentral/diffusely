@@ -45,17 +45,23 @@ final class LibraryContainerRootTests: XCTestCase {
                        "a missing custom root must never be created")
     }
 
-    func testVaultURLsThrowForACustomRoot() async {
+    func testCustomRootVaultURLsStayInsideSelectedFolder() async throws {
         let container = makeContainer()
         await container.setRoot(.custom(tempRoot))
-        do {
-            _ = try await container.vaultURLs()
-            XCTFail("expected vaultURLs() to throw for a custom root")
-        } catch let error as LibraryRootError {
-            XCTAssertEqual(error, .encryptedLibrary)
-        } catch {
-            XCTFail("unexpected error: \(error)")
-        }
+        let urls = try await container.vaultURLs()
+        XCTAssertEqual(urls.vault, tempRoot.appendingPathComponent("vault.json"))
+        XCTAssertEqual(urls.backup, tempRoot.appendingPathComponent("vault.backup.json"))
+    }
+
+    func testICloudVaultURLsStayInsideItemsFolder() async throws {
+        let items = tempRoot.appendingPathComponent("Documents/Items", isDirectory: true)
+        try FileManager.default.createDirectory(at: items, withIntermediateDirectories: true)
+        let defaults = UserDefaults(suiteName: "LibraryContainerRootTests-\(UUID().uuidString)")!
+        let container = LibraryContainer(rootStore: LibraryRootStore(defaults: defaults),
+                                         resolvedICloudItemsDirectory: items)
+        let urls = try await container.vaultURLs()
+        XCTAssertEqual(urls.vault, items.appendingPathComponent("vault.json"))
+        XCTAssertEqual(urls.backup, items.appendingPathComponent("vault.backup.json"))
     }
 
     func testSetRootBumpsTheGeneration() async {

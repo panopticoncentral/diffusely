@@ -45,6 +45,7 @@ final class LibraryRootCoordinator: ObservableObject {
         /// `nil` when the failure names no folder of the user's — see
         /// `LibraryVaultProvider.LibraryGate.rootUnavailable`.
         var reportUnavailable: (URL?) -> Void
+        var canSwitch: () -> Bool = { true }
     }
 
     @Published private(set) var isSwitching = false
@@ -76,6 +77,7 @@ final class LibraryRootCoordinator: ObservableObject {
         // which told the user their "Library [was] not found at /" — a path
         // nobody chose — and then offered to Locate… it.
         guard !isSwitching else { return .switchInProgress }
+        guard dependencies.canSwitch() else { return .encryptionInProgress }
 
         // Set the latch immediately after the guard, BEFORE the validation
         // await below. `validate` genuinely suspends in production (it awaits
@@ -97,6 +99,7 @@ final class LibraryRootCoordinator: ObservableObject {
             return error
         }
 
+        guard dependencies.canSwitch() else { return .encryptionInProgress }
         dependencies.beginSwitch()
         await dependencies.quiesce()
 
@@ -196,7 +199,8 @@ extension LibraryRootCoordinator {
             },
             restartStore: { await store.restartAfterRootSwitch() },
             endSwitch: { await provider.endRootSwitch() },
-            reportUnavailable: { provider.reportRootUnavailable($0) }
+            reportUnavailable: { provider.reportRootUnavailable($0) },
+            canSwitch: { provider.canSwitchLibraries }
         ))
     }
 }

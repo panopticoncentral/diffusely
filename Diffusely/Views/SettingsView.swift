@@ -343,18 +343,13 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .disabled(!rootCapabilities.allowsEncryption)
 
-            if !rootCapabilities.allowsEncryption {
-                Text("Library Encryption is available only when your Library is in iCloud.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
             #endif
 
         } header: {
             Text("Personal Library")
         } footer: {
             if isCustomRoot {
-                Text("Your Library is stored as plain files in the folder you chose above.")
+                Text("Your Library is stored in the folder you chose above.")
                     .font(.caption)
             } else {
                 Text("Originals are stored in iCloud Drive. This device keeps roughly the selected amount downloaded for fast viewing; iCloud may keep more or less.")

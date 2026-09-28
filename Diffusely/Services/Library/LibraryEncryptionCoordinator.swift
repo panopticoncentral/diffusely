@@ -126,7 +126,20 @@ final class LibraryEncryptionCoordinator: ObservableObject {
     /// this against an already-configured vault throws `.malformed` without
     /// side effects.
     func configureVault(password: String) async throws -> String {
-        try await vault.configure(password: password)
+        let directory = itemsDirectory
+        try await runOnIOQueue {
+            _ = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        }
+        guard await vault.state() == .notConfigured else { throw LibraryVaultError.malformed }
+        let marker = disableMarkerURL
+        try await runOnIOQueue {
+            let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            guard !names.contains(where: { ["m", "b", "x"].contains(($0 as NSString).pathExtension) }) else {
+                throw LibraryEncryptionMigrator.MigrateError.incomplete
+            }
+            if FileManager.default.fileExists(atPath: marker.path) { try FileManager.default.removeItem(at: marker) }
+        }
+        return try await vault.configure(password: password)
     }
 
     /// The SECOND half of enabling encryption: encrypts every plaintext item +
@@ -149,10 +162,23 @@ final class LibraryEncryptionCoordinator: ObservableObject {
         let migrator = LibraryEncryptionMigrator(itemsDirectory: itemsDirectory, crypto: crypto)
 
         do {
-            phase = .encrypting(done: 0, total: migrator.pendingItemsAndAuxCount())
+            phase = .encrypting(done: 0, total: 0)
+            let marker = disableMarkerURL
             try await runOnIOQueue {
+                guard !FileManager.default.fileExists(atPath: marker.path) else {
+                    throw LibraryEncryptionMigrator.MigrateError.incomplete
+                }
                 try migrator.migrateAllMaterializing { done, total in
-                    Task { @MainActor in self.phase = .encrypting(done: done, total: total) }
+                    Task { @MainActor in
+                        if case .encrypting = self.phase { self.phase = .encrypting(done: done, total: total) }
+                    }
+                }
+                // Old plaintext journals contain item/album filenames. Drop them
+                // only after conversion completes; encrypted stores don't use them.
+                let names = try migrator.checkedContents()
+                if names.contains(LibraryChangeJournal.directoryName) {
+                    try FileManager.default.removeItem(at: migrator.itemsDirectory
+                        .appendingPathComponent(LibraryChangeJournal.directoryName))
                 }
             }
 
@@ -182,7 +208,10 @@ final class LibraryEncryptionCoordinator: ObservableObject {
         let pending = await withCheckedContinuation { continuation in
             Self.ioQueue.async {
                 let migrator = LibraryEncryptionMigrator(itemsDirectory: directory, crypto: crypto)
-                continuation.resume(returning: migrator.pendingItemsAndAuxCount())
+                let names = try? migrator.checkedContents()
+                let pending = (try? migrator.checkedPendingPlaintextCount()) ?? 1
+                continuation.resume(returning: pending +
+                    (names?.contains(LibraryChangeJournal.directoryName) == true ? 1 : 0))
             }
         }
         return pending > 0
@@ -233,32 +262,31 @@ final class LibraryEncryptionCoordinator: ObservableObject {
         // the DISABLE direction. Removed only on the success path below, so a
         // thrown/interrupted disable leaves it in place. Idempotent: a retried
         // disable() just rewrites it.
-        writeDisableMarker()
-
         do {
-            phase = .decrypting(done: 0, total: migrator.pendingEncryptedItemsAndAuxCount())
+            phase = .decrypting(done: 0, total: 0)
+            let marker = disableMarkerURL
             try await runOnIOQueue {
-                try migrator.decryptAllMaterializing { done, total in
-                    Task { @MainActor in self.phase = .decrypting(done: done, total: total) }
+                _ = try migrator.checkedContents()
+                // Failure to persist the direction must stop us BEFORE decryption.
+                try Data("disabling".utf8).write(to: marker, options: .atomic)
+                guard try Data(contentsOf: marker) == Data("disabling".utf8) else {
+                    throw LibraryEncryptionMigrator.MigrateError.verifyFailed
                 }
+                try migrator.decryptAllMaterializing { done, total in
+                    Task { @MainActor in
+                        if case .decrypting = self.phase { self.phase = .decrypting(done: done, total: total) }
+                    }
+                }
+                try migrator.verifyNoCiphertextRemains()
             }
+            try await vault.teardown()
+            try await runOnIOQueue { try FileManager.default.removeItem(at: marker) }
+            await rebuildIndex()
+            phase = .idle
         } catch {
             phase = .failed(String(describing: error))
             throw error
         }
-
-        // Reached only after `decryptAll` returned having verified zero
-        // ciphertext remains — safe to discard the DEK now.
-        await vault.teardown()
-        // Disable fully succeeded (container is all-plaintext, vault gone). Clear
-        // the marker so a LATER fresh enable isn't misread as an interrupted
-        // disable — `teardown()` removed `vault.json`/backup but not this
-        // sibling marker, so it must be cleaned up explicitly. No suspension
-        // point between teardown and this line, keeping the "configured but
-        // marked" window closed on the success path.
-        removeDisableMarker()
-        await rebuildIndex()
-        phase = .idle
     }
 
     // MARK: - Resume direction
@@ -269,14 +297,6 @@ final class LibraryEncryptionCoordinator: ObservableObject {
 
     private func disableMarkerExists() -> Bool {
         FileManager.default.fileExists(atPath: disableMarkerURL.path)
-    }
-
-    private func writeDisableMarker() {
-        try? Data("disabling".utf8).write(to: disableMarkerURL, options: .atomic)
-    }
-
-    private func removeDisableMarker() {
-        try? FileManager.default.removeItem(at: disableMarkerURL)
     }
 
     /// The direction an interrupted migration should resume in, or `nil` when
@@ -297,6 +317,7 @@ final class LibraryEncryptionCoordinator: ObservableObject {
     /// actor; the `.enable` fallback's directory listing is offloaded by
     /// `isEnableIncomplete()`.
     func incompleteMigrationDirection() async -> LibraryMigrationDirection? {
+        guard await vault.state() != .notConfigured else { return nil }
         if disableMarkerExists() { return .disable }
         return await isEnableIncomplete() ? .enable : nil
     }

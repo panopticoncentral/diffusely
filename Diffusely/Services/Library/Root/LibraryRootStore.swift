@@ -36,11 +36,8 @@ final class LibraryRootStore {
         }
     }
 
-    /// Encrypted-container markers. `vault.json` is the vault file itself;
-    /// `.m` / `.b` / `.x` are `LibraryFileCrypto`'s opaque sealed-file roles
-    /// (meta / media / aux). Any of them means this folder is an encrypted
-    /// Library, which only iCloud may hold — and refusing it here is what stops
-    /// such a folder opening as a mysteriously empty Library.
+    /// Orphaned ciphertext must never be opened as an empty plaintext library.
+    /// A primary or backup vault permits opening; the unlock flow validates it.
     private static let vaultFileName = "vault.json"
     private static let sealedExtensions: Set<String> = ["m", "b", "x"]
 
@@ -77,13 +74,11 @@ final class LibraryRootStore {
             return .unreadable
         }
 
-        for name in contents {
-            if name == Self.vaultFileName {
-                return .encryptedLibrary
-            }
-            if Self.sealedExtensions.contains((name as NSString).pathExtension) {
-                return .encryptedLibrary
-            }
+        let hasVault = contents.contains(Self.vaultFileName) || contents.contains("vault.backup.json")
+        if !hasVault && (contents.contains(where: {
+            Self.sealedExtensions.contains(($0 as NSString).pathExtension)
+        })) {
+            return .encryptedLibrary
         }
 
         // An empty folder is deliberately valid: that is how a user starts a

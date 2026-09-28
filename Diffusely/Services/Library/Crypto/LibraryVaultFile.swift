@@ -22,6 +22,14 @@ struct LibraryVaultFile: Codable, Equatable {
     var wrappedDEKPW: Data
     var saltRecovery: Data
     var wrappedDEKRecovery: Data
+    /// Optional for compatibility with existing vaults. Added after a successful
+    /// password/recovery unlock before biometric keys are cached.
+    var keyCheck: Data? = nil
+
+    /// Stable across folder moves and password changes; unique per vault key.
+    var identity: String {
+        LibraryKDF.hex(Data(SHA256.hash(data: saltRecovery + wrappedDEKRecovery)))
+    }
 }
 
 /// Creates and unlocks a `LibraryVaultFile`. A wrong credential surfaces as a
@@ -39,11 +47,12 @@ enum LibraryVaultCrypto {
         let wrappedPW = try wrap(dek: dek, secret: Data(password.utf8), salt: saltPW, rounds: rounds)
         let wrappedRec = try wrap(dek: dek, secret: recoveryBytes, salt: saltRec, rounds: rounds)
 
-        let file = LibraryVaultFile(
+        var file = LibraryVaultFile(
             version: currentVersion, kdfRounds: rounds,
             saltPW: saltPW, wrappedDEKPW: wrappedPW,
             saltRecovery: saltRec, wrappedDEKRecovery: wrappedRec
         )
+        file.keyCheck = try makeKeyCheck(dek: dek)
         return (file, dek, recoveryKey)
     }
 
@@ -62,6 +71,22 @@ enum LibraryVaultCrypto {
         copy.saltPW = newSalt
         copy.wrappedDEKPW = try wrap(dek: dek, secret: Data(newPassword.utf8), salt: newSalt, rounds: file.kdfRounds)
         return copy
+    }
+
+    private static let checkMessage = Data("Diffusely vault key verification".utf8)
+
+    static func makeKeyCheck(dek: SymmetricKey) throws -> Data {
+        guard let combined = try AES.GCM.seal(checkMessage, using: dek).combined else {
+            throw LibraryVaultError.malformed
+        }
+        return combined
+    }
+
+    static func verifies(_ key: SymmetricKey, for file: LibraryVaultFile) -> Bool {
+        guard let check = file.keyCheck,
+              let box = try? AES.GCM.SealedBox(combined: check),
+              let message = try? AES.GCM.open(box, using: key) else { return false }
+        return message == checkMessage
     }
 
     // MARK: - Wrapping

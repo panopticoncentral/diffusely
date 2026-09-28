@@ -137,15 +137,15 @@ enum LibraryExportDestination {
     /// `Items/` and passes that check — so a full plaintext, decrypted copy of
     /// an at-rest-encrypted Library would be written into the same iCloud
     /// container and uploaded. That is the same security reasoning that makes
-    /// "never export `vault.json`" a rule, and it also sits directly beside
-    /// `vault.json` itself, which lives in `Documents/`.
+    /// "never export `vault.json`" a rule. Vault files now live inside `Items/`,
+    /// but plaintext exports must still stay outside the ubiquity container.
     ///
     /// The two layouts `LibraryContainer.itemsDirectory()` can produce are
     /// recognised structurally:
     /// - iCloud: `<ubiquityRoot>/Documents/Items` → the whole ubiquity
     ///   container root is protected.
     /// - Local fallback: `<Application Support>/Library/Items` → the app's
-    ///   `Library` folder (which also holds `vault.json`) is protected. Its
+    ///   `Library` folder is protected. Its
     ///   parent, all of Application Support, deliberately is NOT: that would
     ///   be a guard over other apps' data, far wider than this feature's
     ///   business.
@@ -163,7 +163,7 @@ enum LibraryExportDestination {
         // container root, so siblings of `Documents` are covered too.
         case "Documents": return parent.deletingLastPathComponent()
         // `<Application Support>/Library/Items` — the app's own Library
-        // folder, which also holds `vault.json`.
+        // folder remains protected as a whole.
         case "Library": return parent
         default: return itemsDirectory
         }

@@ -3,7 +3,7 @@ import Foundation
 /// Where the personal Library lives.
 ///
 /// `.iCloud` is the app's ubiquity container (with its Application Support
-/// fallback when iCloud is off) — the only root that may be encrypted at rest.
+/// fallback when iCloud is off). Both roots support encryption at rest.
 /// `.custom` is a local folder the user chose, which IS the items directory:
 /// flat `<id>.json` / `<id>.<ext>` / `album-<uuid>.json`, exactly the layout
 /// `LibraryExporter` writes, so an export destination opens in place.
@@ -30,13 +30,10 @@ enum LibraryRoot: Equatable {
                 supportsCacheLimit: true
             )
         case .custom:
-            // Encryption is an iCloud-only concern: a folder the user chose is
-            // storage they control and can encrypt themselves. The other two
-            // are iCloud mechanisms with no local equivalent — and a cache
-            // limit in particular would be a control that silently does nothing,
-            // since `evictUbiquitousItem` is a no-op on a plain file.
+            // Encryption belongs to the library. Download eviction and metadata
+            // queries remain specific to iCloud, regardless of encryption.
             return LibraryRootCapabilities(
-                allowsEncryption: false,
+                allowsEncryption: true,
                 usesMetadataQuery: false,
                 supportsCacheLimit: false
             )
@@ -56,7 +53,7 @@ enum LibraryRoot: Equatable {
 /// weaker encoding of a rule the file-level check already enforces everywhere.
 struct LibraryRootCapabilities: Equatable {
     /// Whether at-rest encryption may be offered. Read by Settings to gate the
-    /// Library Encryption row (a custom root is plaintext by construction).
+    /// Library Encryption row.
     let allowsEncryption: Bool
     /// `NSMetadataQuery` (iCloud) vs. a `DispatchSource` folder watcher.
     /// Read by `LibraryStore.configureChangeDetection`.
@@ -85,6 +82,7 @@ enum LibraryRootError: Error, Equatable {
     /// A second switch arrived while one was still running. Rejected outright
     /// rather than interleaved; the current Library is untouched.
     case switchInProgress
+    case encryptionInProgress
 
     /// The folder this error is ABOUT, when it is about one. Lets a caller
     /// carry the real failing path forward instead of substituting a
@@ -101,7 +99,7 @@ enum LibraryRootError: Error, Equatable {
         case .notWritable:
             return "Diffusely can't write to that folder."
         case .encryptedLibrary:
-            return "That folder holds an encrypted Library. Encrypted Libraries can only be opened in iCloud."
+            return "That folder contains encrypted Library files but no vault key file. Restore vault.json or vault.backup.json to this folder before opening it."
         case .isICloudContainer:
             return "That's Diffusely's own iCloud folder — choose iCloud Drive instead."
         case .unreadable:
@@ -110,6 +108,8 @@ enum LibraryRootError: Error, Equatable {
             return "Library not found at \(url.path)."
         case .switchFailed:
             return "Diffusely couldn't finish switching your Library location."
+        case .encryptionInProgress:
+            return "Wait for Library encryption to finish before switching folders."
         case .switchInProgress:
             return "A Library location switch is already running."
         }

@@ -16,7 +16,7 @@ final class LibraryRootTests: XCTestCase {
 
     func testCustomCapabilitiesAreAllOff() {
         let caps = LibraryRoot.custom(URL(fileURLWithPath: "/tmp/x", isDirectory: true)).capabilities
-        XCTAssertFalse(caps.allowsEncryption)
+        XCTAssertTrue(caps.allowsEncryption)
         XCTAssertFalse(caps.usesMetadataQuery)
         XCTAssertFalse(caps.supportsCacheLimit)
     }

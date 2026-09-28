@@ -75,14 +75,42 @@ struct LibraryEncryptionMigrator {
     }
 
     private var encryptedStore: LibraryFileStore {
-        LibraryFileStore(itemsDirectory: itemsDirectory, crypto: crypto)
+        LibraryFileStore(itemsDirectory: itemsDirectory, crypto: crypto, createsContainerDirectory: false)
     }
 
     /// The store used for the post-write verification reads. Identical to
     /// `encryptedStore` in production (`verifyCryptoOverride` is nil); see
     /// that property's doc comment.
     private var verifyStore: LibraryFileStore {
-        LibraryFileStore(itemsDirectory: itemsDirectory, crypto: verifyCryptoOverride ?? crypto)
+        LibraryFileStore(itemsDirectory: itemsDirectory, crypto: verifyCryptoOverride ?? crypto, createsContainerDirectory: false)
+    }
+
+    /// These checks must propagate listing failures. A disconnected share must
+    /// never be mistaken for a completed conversion, especially before key removal.
+    func checkedContents() throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: itemsDirectory.path)
+    }
+
+    func verifyNoPlaintextRemains() throws {
+        let names = try checkedContents()
+        guard !names.contains(where: Self.isPlaintextLibraryFile) else { throw MigrateError.incomplete }
+    }
+
+    func verifyNoCiphertextRemains() throws {
+        let names = try checkedContents()
+        guard !names.contains(where: { ["m", "b", "x"].contains(($0 as NSString).pathExtension) }) else {
+            throw MigrateError.incomplete
+        }
+    }
+
+    private static func isPlaintextLibraryFile(_ name: String) -> Bool {
+        name == SortAssistantStateStore.fileName ||
+            (name.hasSuffix(".json") && (name.hasPrefix(LibraryAlbumStore.fileNamePrefix) ||
+                Int((name as NSString).deletingPathExtension) != nil))
+    }
+
+    func checkedPendingPlaintextCount() throws -> Int {
+        try checkedContents().filter(Self.isPlaintextLibraryFile).count
     }
 
     // MARK: Items
@@ -201,6 +229,7 @@ struct LibraryEncryptionMigrator {
     /// completes. Stops (throwing) on the first failure, leaving whatever
     /// hasn't been reached yet untouched and resumable.
     func migrateAll(progress: (Int, Int) -> Void) throws {
+        _ = try checkedContents()
         let itemIDs = pendingItemIDs()
         let auxNames = pendingAuxNames()
         let total = itemIDs.count + auxNames.count
@@ -217,6 +246,7 @@ struct LibraryEncryptionMigrator {
             done += 1
             progress(done, total)
         }
+        try verifyNoPlaintextRemains()
     }
 
     /// Resolves an item's plaintext media extension from its sidecar's
@@ -284,6 +314,7 @@ struct LibraryEncryptionMigrator {
     /// point `LibraryEncryptionCoordinator.enable` uses instead of
     /// `migrateAll`.
     func migrateAllMaterializing(progress: (Int, Int) -> Void) throws {
+        _ = try checkedContents()
         let itemIDs = pendingItemIDs()
         let auxNames = pendingAuxNames()
         let total = itemIDs.count + auxNames.count
@@ -302,6 +333,7 @@ struct LibraryEncryptionMigrator {
             done += 1
             progress(done, total)
         }
+        try verifyNoPlaintextRemains()
     }
 
     /// Total pending work `migrateAllMaterializing` will report progress
@@ -457,45 +489,11 @@ struct LibraryEncryptionMigrator {
     /// (throwing) on the first failure, leaving whatever hasn't been reached
     /// yet untouched and resumable.
     ///
-    /// Then, before returning normally, asserts REAL completeness: neither
-    /// `decryptItem` nor `decryptAux` is guaranteed to either fully convert
-    /// an item/aux file or throw — each has a legitimate silent-no-op path
-    /// (an unclassifiable aux payload; an item whose sidecar decodes as the
-    /// tiny stub `pendingEncryptedItemIDs()` uses but fails the full
-    /// `LibraryItemMetadata` decode `decryptItem` needs). Looping over a
-    /// snapshot of pending work and calling `progress` for each entry would
-    /// otherwise let such an item finish the loop "counted done" while its
-    /// ciphertext is still sitting on disk untouched. Callers — in
-    /// particular the disable-encryption coordinator deciding whether it's
-    /// safe to discard the DEK — must be able to trust a non-throwing return
-    /// as a hard guarantee that zero ciphertext remains, so re-check both
-    /// `pendingEncryptedItemIDs()` and `enumerateAuxFiles()` are empty and
-    /// throw `.incomplete` if not. (`migrateAll`, the forward direction,
-    /// doesn't have this gap: `migrateItem` never decodes the plaintext
-    /// sidecar to decide whether to act — it moves bytes unconditionally —
-    /// so it has no analogous silent no-op path to guard against.)
-    ///
-    /// **`pendingEncryptedItemIDs()` alone is not enough for this recheck,
-    /// and never was.** It's `enumerateMetadataFiles().compactMap {
-    /// itemID(forMetadataFile:) }` — a `.m` sidecar whose GCM-open or
-    /// `{ itemID }` stub-decode fails is silently DROPPED by `compactMap`,
-    /// not surfaced as an error. So a present-but-undecodable ciphertext
-    /// sidecar (corrupted on disk, for whatever reason) is invisible to
-    /// `pendingEncryptedItemIDs().isEmpty` even though its `.m` (and
-    /// possibly still-intact `.b`) file is very much still there: the guard
-    /// would pass, the disable-encryption coordinator would trust the clean
-    /// return and tear down the vault, and that ciphertext would become
-    /// permanently unrecoverable the moment the DEK is discarded. The guard
-    /// therefore ALSO re-checks the RAW file listing,
-    /// `encryptedStore.enumerateMetadataFiles().isEmpty` — pure filename
-    /// matching, no decode attempted, so an undecodable sidecar still counts
-    /// as "remaining" and correctly forces `.incomplete`. Kept alongside
-    /// (not instead of) `pendingEncryptedItemIDs().isEmpty` since that's the
-    /// pre-existing guard the "stub decodes, full `LibraryItemMetadata`
-    /// decode fails" case was originally written against — both checks are
-    /// cheap, and requiring both to be empty is strictly safer than either
-    /// alone.
+    /// Before returning, a throwing directory listing must confirm that no
+    /// `.m`, `.b`, or `.x` files remain. Decoded item IDs alone miss corrupt
+    /// sidecars and orphaned media; neither may permit vault teardown.
     func decryptAll(progress: (Int, Int) -> Void) throws {
+        _ = try checkedContents()
         let itemIDs = pendingEncryptedItemIDs()
         let auxURLs = encryptedStore.enumerateAuxFiles()
         let total = itemIDs.count + auxURLs.count
@@ -513,11 +511,7 @@ struct LibraryEncryptionMigrator {
             progress(done, total)
         }
 
-        guard pendingEncryptedItemIDs().isEmpty,
-              encryptedStore.enumerateMetadataFiles().isEmpty,
-              encryptedStore.enumerateAuxFiles().isEmpty else {
-            throw MigrateError.incomplete
-        }
+        try verifyNoCiphertextRemains()
     }
 
     /// Reverse migration variant of `decryptAll` that materializes each
@@ -554,6 +548,7 @@ struct LibraryEncryptionMigrator {
     /// is ever called. Each item's media file is then materialized
     /// individually right before its `decryptItem` call.
     func decryptAllMaterializing(progress: (Int, Int) -> Void) throws {
+        _ = try checkedContents()
         for url in encryptedStore.enumerateMetadataFiles() {
             materializeIfNeeded(url)
         }
@@ -583,16 +578,8 @@ struct LibraryEncryptionMigrator {
             progress(done, total)
         }
 
-        // Same hard completeness recheck as `decryptAll` (see its doc comment
-        // for why `pendingEncryptedItemIDs()` alone can silently miss a
-        // present-but-undecodable `.m` sidecar): both the decoded-ids view
-        // AND the raw file listing must be empty before the caller may treat
-        // zero ciphertext as remaining.
-        guard pendingEncryptedItemIDs().isEmpty,
-              encryptedStore.enumerateMetadataFiles().isEmpty,
-              encryptedStore.enumerateAuxFiles().isEmpty else {
-            throw MigrateError.incomplete
-        }
+        // Raw filenames also catch undecodable sidecars and orphaned media.
+        try verifyNoCiphertextRemains()
     }
 
     /// Total pending work `decryptAllMaterializing` will report progress
