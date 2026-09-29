@@ -8,6 +8,16 @@ import Combine
 /// download progress to the UI, and exposes Settings actions.
 enum ICloudStatus { case checking, available, unavailable }
 
+enum LibraryModelBackfillStatus: Equatable {
+    case idle
+    case checking
+    case running(remaining: Int)
+    case completed(CheckpointBackfillSummary)
+    case previous(CheckpointBackfillReport)
+    case noPendingItems
+    case interrupted
+}
+
 @MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var iCloudStatus: ICloudStatus = .checking
@@ -21,6 +31,7 @@ final class LibraryStore: ObservableObject {
     /// in progress.
     @Published private(set) var didRunDateBackfillThisSession: Bool = false
     @Published private(set) var didRunCheckpointBackfillThisSession: Bool = false
+    @Published private(set) var modelBackfillStatus: LibraryModelBackfillStatus = .idle
     /// Bumped whenever an album is created/renamed/deleted or membership changes
     /// — by local edits (views call `notifyAlbumsChanged()`) and by reconciles
     /// that ingest album/membership changes synced in from another device.
@@ -329,6 +340,7 @@ final class LibraryStore: ObservableObject {
         // backfill at all until the app was relaunched.
         didRunDateBackfillThisSession = false
         didRunCheckpointBackfillThisSession = false
+        modelBackfillStatus = .idle
     }
 
     /// Re-arms everything against whatever root `LibraryContainer` now holds.
@@ -348,6 +360,15 @@ final class LibraryStore: ObservableObject {
     /// otherwise restart it.
     func markCheckpointBackfillRanThisSession() {
         didRunCheckpointBackfillThisSession = true
+    }
+
+    func setModelBackfillStatus(_ status: LibraryModelBackfillStatus) {
+        modelBackfillStatus = status
+    }
+
+    func resetInterruptedCheckpointBackfill() {
+        didRunCheckpointBackfillThisSession = false
+        modelBackfillStatus = .interrupted
     }
 
     /// Called by album operations (create/rename/delete/membership) to signal

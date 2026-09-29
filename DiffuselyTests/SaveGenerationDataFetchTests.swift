@@ -69,8 +69,8 @@ import Foundation
     }
 
     @Test func stampsTheMarkerWhenCivitaiConfirmsThereIsNoData() async {
-        // `result.data.json` is null — a decode failure, and a final answer.
-        // Stamping here means the backfill never wastes a request on it.
+        // `result.data.json` is null, so generation-data fetches stop retrying.
+        // The separate public image-metadata probe may still recover a raw ID.
         var calls = 0
         let result = await LibrarySaveService.fetchGenerationDataForSave(now: { self.fixedNow }) {
             calls += 1

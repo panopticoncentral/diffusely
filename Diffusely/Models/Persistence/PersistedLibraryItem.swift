@@ -33,7 +33,7 @@ final class PersistedLibraryItem {
     /// Original Civitai publish date (denormalized from sidecar). Nullable
     /// for items predating schema v3; backfilled on demand.
     var publishedAt: Date?
-    /// First `Checkpoint`-typed resource in the sidecar's generationData.
+    /// First named `Checkpoint`-typed resource in the sidecar's generationData.
     /// Nullable when generation data is missing or has no checkpoint
     /// (typical for videos and bare uploads).
     var checkpointName: String?
@@ -55,6 +55,10 @@ final class PersistedLibraryItem {
     /// (and decrypting) every sidecar in the container on each launch. Mirrors
     /// `needsDateBackfill`.
     var needsGenerationDataBackfill: Bool = false
+    /// Defaults to true on pre-upgrade index rows so the next Library opening
+    /// audits their sidecars once for a raw checkpoint version ID. Fresh rows
+    /// compute the precise value from their sidecar.
+    var needsCheckpointVersionBackfill: Bool = true
     /// Denormalized album membership: the item's album UUIDs joined by U+001F
     /// (a delimiter that can't appear in a UUID string). Kept in sync with the
     /// sidecar's `albumIDs` by the convenience init and `LibraryIndexService.apply`.
@@ -95,6 +99,7 @@ final class PersistedLibraryItem {
         downloadStatus: LibraryDownloadStatus,
         needsDateBackfill: Bool,
         needsGenerationDataBackfill: Bool = false,
+        needsCheckpointVersionBackfill: Bool = false,
         albumIDsJoined: String = "",
         sidecarFileName: String = "",
         sidecarModifiedAt: Date? = nil,
@@ -119,6 +124,7 @@ final class PersistedLibraryItem {
         self.downloadStatusRaw = downloadStatus.rawValue
         self.needsDateBackfill = needsDateBackfill
         self.needsGenerationDataBackfill = needsGenerationDataBackfill
+        self.needsCheckpointVersionBackfill = needsCheckpointVersionBackfill
         self.albumIDsJoined = albumIDsJoined
         self.sidecarFileName = sidecarFileName
         self.sidecarModifiedAt = sidecarModifiedAt
@@ -138,9 +144,17 @@ final class PersistedLibraryItem {
     /// missing checkpoint — an item whose generation data Civitai has already
     /// returned without a Checkpoint resource is not fixable by re-asking, and
     /// re-fetching it every session would be pure waste. Mirrors the pending
-    /// filter in `FileLibraryBackfillSidecarStore.itemsMissingGenerationData`.
+    /// filter in `FileLibraryBackfillSidecarStore.scanPendingItems`.
     static func computeNeedsGenerationDataBackfill(for metadata: LibraryItemMetadata) -> Bool {
         metadata.generationData == nil && metadata.generationDataBackfillAttemptedAt == nil
+    }
+
+    static func computeNeedsCheckpointVersionBackfill(for metadata: LibraryItemMetadata) -> Bool {
+        checkpointGrouping(for: metadata).name == nil
+            && ((metadata.checkpointVersionLookupAttemptedAt == nil
+                    && (metadata.generationData?.rawCheckpointVersionID != nil
+                        || metadata.checkpointVersionProbePending))
+                || (metadata.mediaType == .image && metadata.embeddedCheckpointProbePending))
     }
 
     struct CheckpointGrouping: Equatable {
@@ -153,11 +167,15 @@ final class PersistedLibraryItem {
     /// base model, or one unambiguous resource base model, identifies the
     /// ecosystem without pretending that we know the exact checkpoint version.
     static func checkpointGrouping(for metadata: LibraryItemMetadata) -> CheckpointGrouping {
-        guard let generationData = metadata.generationData else {
+        checkpointGrouping(for: metadata.generationData)
+    }
+
+    static func checkpointGrouping(for generationData: GenerationData?) -> CheckpointGrouping {
+        guard let generationData else {
             return CheckpointGrouping(name: nil, isInferred: false)
         }
         if let explicit = generationData.resources?
-            .first(where: { $0.modelType == "Checkpoint" })?
+            .first(where: { $0.modelType == "Checkpoint" && $0.modelName.flatMap(nonBlank) != nil })?
             .modelName.flatMap(nonBlank) {
             return CheckpointGrouping(name: explicit, isInferred: false)
         }
@@ -207,6 +225,7 @@ final class PersistedLibraryItem {
             downloadStatus: downloadStatus,
             needsDateBackfill: Self.computeNeedsDateBackfill(for: metadata),
             needsGenerationDataBackfill: Self.computeNeedsGenerationDataBackfill(for: metadata),
+            needsCheckpointVersionBackfill: Self.computeNeedsCheckpointVersionBackfill(for: metadata),
             albumIDsJoined: Self.join(metadata.albumIDs),
             sidecarFileName: sidecarFileName,
             sidecarModifiedAt: sidecarModifiedAt,

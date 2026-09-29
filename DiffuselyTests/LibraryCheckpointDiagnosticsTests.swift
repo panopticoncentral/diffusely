@@ -109,7 +109,7 @@ private func day(_ iso: String) -> Date {
     @Test func derivationMatchesPersistedLibraryItemExactly() {
         // The diagnostic is only trustworthy if it reproduces the real
         // derivation in `PersistedLibraryItem.init(metadata:downloadStatus:)`:
-        // FIRST resource whose modelType is exactly "Checkpoint".
+        // First named resource whose modelType is exactly "Checkpoint".
         let cases: [GenerationData?] = [
             nil,
             GenerationData(type: "image", meta: nil, resources: nil),

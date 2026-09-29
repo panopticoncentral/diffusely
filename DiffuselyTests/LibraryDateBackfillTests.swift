@@ -9,7 +9,8 @@ private func makeMeta(
     itemID: Int,
     mediaType: LibraryMediaType = .image,
     publishedAt: Date? = nil,
-    publishedAtBackfillAttemptedAt: Date? = nil
+    publishedAtBackfillAttemptedAt: Date? = nil,
+    checkpointVersionProbePending: Bool = false
 ) -> LibraryItemMetadata {
     LibraryItemMetadata(
         schemaVersion: LibraryItemMetadata.currentSchemaVersion,
@@ -30,6 +31,7 @@ private func makeMeta(
         generationData: nil,
         publishedAt: publishedAt,
         publishedAtBackfillAttemptedAt: publishedAtBackfillAttemptedAt,
+        checkpointVersionProbePending: checkpointVersionProbePending,
         savedAt: Date(),
         savedByAppVersion: "t"
     )
@@ -112,6 +114,19 @@ private func civitaiImage(id: Int, publishedAtISO: String?) -> CivitaiImage {
             for: PersistedLibraryItem.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         )
+    }
+
+    @Test func dateRewritePreservesPendingCheckpointProbe() async throws {
+        let source = makeMeta(itemID: 71, checkpointVersionProbePending: true)
+        let store = RecordingSidecarStore(pending: [source])
+        let index = LibraryIndexService(modelContainer: try makeContainer())
+        let fetcher = StubFetchImageProvider()
+        fetcher.responses[71] = civitaiImage(id: 71, publishedAtISO: "2024-03-22T10:52:00.000Z")
+        let service = await LibraryDateBackfillService(
+            indexService: index, sidecarStore: store, fetcher: fetcher)
+        await service.runOnce()
+
+        #expect(store.rewrittenItems.first?.checkpointVersionProbePending == true)
     }
 
     @Test func backfillRewritesSidecarsAndUpdatesIndexRows() async throws {

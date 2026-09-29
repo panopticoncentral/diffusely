@@ -432,6 +432,98 @@ class CivitaiService: ObservableObject {
         return tRPCResponse[0].result.data.json
     }
 
+    /// Resolve a version ID embedded in an image's raw generation parameters.
+    /// The public endpoint supplies the parent model's name and type; a version
+    /// ID alone is not a display name or proof that it is a checkpoint.
+    func fetchCheckpointVersion(versionId: Int) async throws -> GenerationResource? {
+        guard versionId > 0,
+              let url = URL(string: "https://civitai.com/api/v1/model-versions/\(versionId)")
+        else { return nil }
+
+        struct Version: Decodable {
+            struct Model: Decodable {
+                let name: String
+                let type: String
+            }
+            let id: Int
+            let modelId: Int
+            let name: String
+            let baseModel: String?
+            let model: Model
+        }
+
+        var request = URLRequest(url: url)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, _) = try await fetchWithTimeout(request)
+        let version = try JSONDecoder().decode(Version.self, from: data)
+        guard version.id == versionId,
+              version.model.type.caseInsensitiveCompare("Checkpoint") == .orderedSame,
+              !version.model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return GenerationResource(
+            modelId: version.modelId, modelName: version.model.name,
+            modelType: "Checkpoint", versionId: version.id,
+            versionName: version.name, baseModel: version.baseModel, strength: nil
+        )
+    }
+
+    /// Public image metadata retains raw `civitaiResources` version IDs that
+    /// older Library sidecars did not decode. Query only when an image remains
+    /// ungrouped after its saved generation data has been inspected.
+    func fetchRawCheckpointVersionID(imageId: Int) async throws -> Int? {
+        var components = URLComponents(string: "https://civitai.com/api/v1/images")!
+        components.queryItems = [
+            URLQueryItem(name: "imageId", value: String(imageId)),
+            URLQueryItem(name: "withMeta", value: "true"),
+            URLQueryItem(name: "browsingLevel", value: String(browsingLevel))
+        ]
+        guard let url = components.url else { throw URLError(.badURL) }
+
+        struct ImagesResponse: Decodable {
+            struct Image: Decodable {
+                struct Meta: Decodable {
+                    let prompt: String?
+                    let civitaiResources: [CivitaiResourceReference]?
+
+                    private enum CodingKeys: String, CodingKey { case prompt, civitaiResources }
+
+                    init(from decoder: Decoder) throws {
+                        if let raw = try? decoder.singleValueContainer().decode(String.self) {
+                            prompt = raw
+                            civitaiResources = nil
+                            return
+                        }
+                        let values = try decoder.container(keyedBy: CodingKeys.self)
+                        prompt = try? values.decode(String.self, forKey: .prompt)
+                        civitaiResources = try? values.decode(
+                            [CivitaiResourceReference].self, forKey: .civitaiResources)
+                    }
+                }
+                let meta: Meta?
+            }
+            let items: [Image]
+        }
+
+        var request = URLRequest(url: url)
+        if let apiKey = APIKeyManager.shared.apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, _) = try await fetchWithTimeout(request)
+        let response = try JSONDecoder().decode(ImagesResponse.self, from: data)
+        guard let meta = response.items.first?.meta else { return nil }
+        return GenerationData(
+            type: "image",
+            meta: GenerationMeta(
+                prompt: meta.prompt, negativePrompt: nil, cfgScale: nil,
+                steps: nil, sampler: nil, seed: nil, clipSkip: nil,
+                civitaiResources: meta.civitaiResources
+            ),
+            resources: nil
+        ).rawCheckpointVersionID
+    }
+
     /// Searches Civitai's tag list via `tag.getAll`, for the Add Tag sheet.
     /// Scoped to image tags since that is what the tag feeds filter on.
     /// Returns `[]` on any error — tag search is non-critical UI and the sheet

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import Combine
+import CryptoKit
 #if os(macOS)
 import AppKit
 #endif
@@ -75,9 +76,9 @@ struct LibraryView: View {
     @State private var sortService: LibrarySortService?
     @State private var backfillService: LibraryDateBackfillService?
     @State private var backfillRemaining: Int = 0
+    @State private var dateBackfillInProgress = false
     @State private var backfillCancellable: AnyCancellable?
     @State private var checkpointBackfillService: LibraryCheckpointBackfillService?
-    @State private var checkpointBackfillRemaining: Int = 0
     @State private var checkpointBackfillCancellable: AnyCancellable?
     @State private var content: LibrarySortService.LibrarySortedContent = .flat([])
     @AppStorage private var selectedSort: LibrarySort
@@ -275,6 +276,9 @@ struct LibraryView: View {
                 #endif
                 LibraryDownloadStatusBanner(progress: store.downloadProgress,
                                             indexedItems: store.itemCount)
+                if store.modelBackfillStatus != .idle {
+                    modelBackfillStatus
+                }
                 rootContent
             }
         }
@@ -429,6 +433,9 @@ struct LibraryView: View {
                 store.start()
                 initializeServices()
                 reloadContent()
+                if store.modelBackfillStatus == .idle {
+                    store.setModelBackfillStatus(.checking)
+                }
                 await maybeStartBackfill()
                 await maybeStartCheckpointBackfill()
             }
@@ -440,15 +447,11 @@ struct LibraryView: View {
             .onChange(of: store.itemCount) {
                 guard isBrowsable else { return }
                 scheduleReload()
-                // Also the retry hook for the checkpoint backfill. The `.task`
-                // above can run BEFORE the index has been populated — most
-                // sharply on the launch after a schema change, when the
-                // "rebuild, don't migrate" path recreates the store empty and
-                // it refills from the container asynchronously. The pending
-                // count is 0 at that moment, so the backfill would otherwise
-                // never fire for the whole session. Safe to call repeatedly:
-                // the count check precedes the one-shot session gate, so an
-                // early no-op doesn't burn it.
+                // Newly reconciled items can need model metadata even after
+                // the initial index-ready check found nothing pending.
+                Task { await maybeStartCheckpointBackfill() }
+            }
+            .onChange(of: store.isReady) {
                 Task { await maybeStartCheckpointBackfill() }
             }
             .onChange(of: store.albumsVersion) {
@@ -666,7 +669,7 @@ struct LibraryView: View {
                     if store.iCloudStatus == .unavailable && !isCustomRoot {
                         localOnlyBanner
                     }
-                    if backfillRemaining > 0 || checkpointBackfillRemaining > 0 {
+                    if backfillRemaining > 0 {
                         metadataStatus
                     }
                     switch content {
@@ -870,7 +873,6 @@ struct LibraryView: View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 4) {
                 if backfillRemaining > 0 { Text("Dates: \(backfillRemaining) items remaining") }
-                if checkpointBackfillRemaining > 0 { Text("Models: \(checkpointBackfillRemaining) items remaining") }
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -880,6 +882,38 @@ struct LibraryView: View {
                 Text("Updating item details…").font(.footnote).foregroundStyle(.secondary)
             }
         }
+        .padding(.horizontal, AppUI.contentMargin)
+        .padding(.vertical, 8)
+    }
+
+    private var modelBackfillStatus: some View {
+        HStack(spacing: 8) {
+            switch store.modelBackfillStatus {
+            case .idle:
+                EmptyView()
+            case .checking:
+                ProgressView().controlSize(.small)
+                Text("Checking model metadata…")
+            case .running(let remaining):
+                ProgressView().controlSize(.small)
+                Text("Updating models: \(remaining) items remaining")
+            case .completed(let summary):
+                Image(systemName: "checkmark.circle")
+                Text("Model check finished: \(summary.checked) checked, \(summary.grouped) grouped, \(summary.unresolved) unresolved, \(summary.retryLater) to retry")
+            case .previous(let report):
+                Image(systemName: "checkmark.circle")
+                Text("Last model check \(report.completedAt.formatted(date: .abbreviated, time: .shortened)): \(report.summary.checked) checked, \(report.summary.grouped) grouped, \(report.summary.unresolved) unresolved, \(report.summary.retryLater) to retry")
+            case .noPendingItems:
+                Image(systemName: "checkmark.circle")
+                Text("No model backfill pending")
+            case .interrupted:
+                Image(systemName: "exclamationmark.circle")
+                Text("Model check interrupted; reopen Library to retry")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
         .padding(.horizontal, AppUI.contentMargin)
         .padding(.vertical, 8)
     }
@@ -1230,6 +1264,8 @@ struct LibraryView: View {
         guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
         guard !store.didRunDateBackfillThisSession else { return }
         store.markDateBackfillRanThisSession()
+        dateBackfillInProgress = true
+        defer { dateBackfillInProgress = false }
         let service = LibraryDateBackfillService(
             indexService: store.indexService,
             itemsDirectory: dir,
@@ -1248,28 +1284,69 @@ struct LibraryView: View {
     /// `maybeStartBackfill`, including resolving the container BEFORE claiming
     /// the gate so a cold-launch race can still retry on a later mount.
     ///
-    /// Runs after the date backfill rather than alongside it: both walk the
-    /// container and hit Civitai, and overlapping them would double the
-    /// request rate for no gain.
+    /// Runs after the date backfill on the initial view task. The index-ready
+    /// hook also retries if that task reached this method before reconciliation
+    /// had populated the index.
     private func maybeStartCheckpointBackfill() async {
         guard isBrowsable else { return }
         guard !store.didRunCheckpointBackfillThisSession,
               let sortService else { return }
-        guard sortService.countItemsNeedingCheckpointBackfill() > 0 else { return }
-
-        guard let dir = try? await LibraryContainer.shared.itemsDirectory() else { return }
+        guard !dateBackfillInProgress else {
+            store.setModelBackfillStatus(.checking)
+            return
+        }
+        guard store.isReady else {
+            store.setModelBackfillStatus(.checking)
+            return
+        }
+        guard let location = try? await LibraryContainer.shared.resolveItemsDirectory() else {
+            store.setModelBackfillStatus(.interrupted)
+            return
+        }
+        // Existing index rows can all say "done" even though their embedded
+        // resources were never parsed correctly. Force one audit per root after
+        // upgrading, then let the index's pending flags drive later retries.
+        let rootDigest = SHA256.hash(data: Data(location.url.standardizedFileURL.path.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let auditKey = "library.embeddedCheckpointAuditV9.\(rootDigest)"
+        guard sortService.countItemsNeedingCheckpointBackfill() > 0
+                || !UserDefaults.standard.bool(forKey: auditKey) else {
+            if let data = UserDefaults.standard.data(forKey: "\(auditKey).report"),
+               let report = try? JSONDecoder().decode(CheckpointBackfillReport.self, from: data) {
+                store.setModelBackfillStatus(.previous(report))
+            } else {
+                store.setModelBackfillStatus(.noPendingItems)
+            }
+            return
+        }
         guard !store.didRunCheckpointBackfillThisSession else { return }
         store.markCheckpointBackfillRanThisSession()
+        store.setModelBackfillStatus(.checking)
         let service = LibraryCheckpointBackfillService(
             indexService: store.indexService,
-            itemsDirectory: dir,
+            itemsDirectory: location.url,
             fetcher: CivitaiServiceGenerationDataAdapter()
         )
         checkpointBackfillService = service
         checkpointBackfillCancellable = service.$remaining.sink { value in
-            checkpointBackfillRemaining = value
+            if value > 0 { store.setModelBackfillStatus(.running(remaining: value)) }
         }
         await service.runOnce()
+        guard await LibraryContainer.shared.rootGeneration == location.generation else { return }
+        guard isBrowsable else {
+            store.resetInterruptedCheckpointBackfill()
+            return
+        }
+        if let summary = service.summary {
+            UserDefaults.standard.set(true, forKey: auditKey)
+            let report = CheckpointBackfillReport(completedAt: Date(), summary: summary)
+            if let data = try? JSONEncoder().encode(report) {
+                UserDefaults.standard.set(data, forKey: "\(auditKey).report")
+            }
+            store.setModelBackfillStatus(.completed(summary))
+        } else {
+            store.resetInterruptedCheckpointBackfill()
+        }
         reloadContent()
     }
 

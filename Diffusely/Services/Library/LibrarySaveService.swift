@@ -386,6 +386,12 @@ final class LibrarySaveService: ObservableObject {
             generationData: generationData,
             publishedAt: image.publishedAtDate ?? knownPublishedAt,
             generationDataBackfillAttemptedAt: generation.attemptedAt,
+            checkpointVersionProbePending: generationData == nil
+                ? generation.attemptedAt != nil
+                : (PersistedLibraryItem.checkpointGrouping(for: generationData).name == nil
+                    && generationData?.rawCheckpointVersionID == nil),
+            embeddedCheckpointProbePending: mediaType == .image
+                && PersistedLibraryItem.checkpointGrouping(for: generationData).name == nil,
             savedAt: Date(),
             savedByAppVersion: Self.appVersion
         )

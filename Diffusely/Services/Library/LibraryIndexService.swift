@@ -84,6 +84,28 @@ actor LibraryIndexService {
         try? modelContext.save()
     }
 
+    /// Synchronize the index flags with sidecars this scan actually decoded.
+    /// Older index rows may say "done" even though a v7 sidecar still needs the
+    /// newly introduced embedded-media probe. Leave unexamined iCloud rows as
+    /// they were so a later hydration can be retried.
+    func markCheckpointVersionAuditComplete(examinedIDs: [Int], pendingIDs: Set<Int>) {
+        guard !examinedIDs.isEmpty else { return }
+        let examined = Set(examinedIDs)
+        let descriptor = FetchDescriptor<PersistedLibraryItem>()
+        guard let rows = try? modelContext.fetch(descriptor) else { return }
+        var changed = false
+        for row in rows where examined.contains(row.itemID) {
+            let pending = pendingIDs.contains(row.itemID)
+            guard row.needsCheckpointVersionBackfill != pending else { continue }
+            row.needsCheckpointVersionBackfill = pending
+            changed = true
+        }
+        if changed {
+            bumpMutationEpoch()
+            try? modelContext.save()
+        }
+    }
+
     /// Copies the mutable fields from a freshly-read sidecar onto an existing
     /// index row. Pure in-memory work — no fetch, no save. Returns whether the
     /// row's album membership changed, so reconcile can signal album-observing UI.
@@ -127,6 +149,7 @@ actor LibraryIndexService {
         row.publishedAt = metadata.publishedAt
         row.needsDateBackfill = PersistedLibraryItem.computeNeedsDateBackfill(for: metadata)
         row.needsGenerationDataBackfill = PersistedLibraryItem.computeNeedsGenerationDataBackfill(for: metadata)
+        row.needsCheckpointVersionBackfill = PersistedLibraryItem.computeNeedsCheckpointVersionBackfill(for: metadata)
         let checkpoint = PersistedLibraryItem.checkpointGrouping(for: metadata)
         row.checkpointName = checkpoint.name
         row.checkpointIsInferred = checkpoint.isInferred

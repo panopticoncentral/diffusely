@@ -22,6 +22,17 @@ final class LibrarySortService {
         case flat([PersistedLibraryItem])
         case grouped([LibraryGroup])
 
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            switch (lhs, rhs) {
+            case (.flat(let left), .flat(let right)):
+                return left.map(\.itemID) == right.map(\.itemID)
+            case (.grouped(let left), .grouped(let right)):
+                return left == right
+            default:
+                return false
+            }
+        }
+
         var isEmpty: Bool {
             switch self {
             case .flat(let items):    return items.isEmpty
@@ -44,6 +55,11 @@ final class LibrarySortService {
         let id: String
         let kind: Kind
         let items: [PersistedLibraryItem]
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id && lhs.kind == rhs.kind
+                && lhs.items.map(\.itemID) == rhs.items.map(\.itemID)
+        }
     }
 
     /// Everything `LibraryView.reloadContent()` needs, derived from a SINGLE
@@ -108,10 +124,14 @@ final class LibrarySortService {
     /// one count query; the alternative — asking the sidecar store — walks and
     /// decrypts every file in the container on each launch.
     func countItemsNeedingCheckpointBackfill() -> Int {
-        let descriptor = FetchDescriptor<PersistedLibraryItem>(
+        let missingData = FetchDescriptor<PersistedLibraryItem>(
             predicate: #Predicate { $0.needsGenerationDataBackfill }
         )
-        return (try? modelContext.fetchCount(descriptor)) ?? 0
+        let rawVersion = FetchDescriptor<PersistedLibraryItem>(
+            predicate: #Predicate { $0.needsCheckpointVersionBackfill }
+        )
+        return ((try? modelContext.fetchCount(missingData)) ?? 0)
+            + ((try? modelContext.fetchCount(rawVersion)) ?? 0)
     }
 
     // MARK: - Internals

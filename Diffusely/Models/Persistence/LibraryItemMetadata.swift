@@ -23,7 +23,7 @@ struct LibraryAuthor: Codable, Hashable {
 /// cache rebuilt entirely from these files (including ones synced from other
 /// devices), so every field needed to render and re-link an item lives here.
 struct LibraryItemMetadata: Codable, Equatable {
-    static let currentSchemaVersion = 6   // v3 publishedAt; v4 publishedAtBackfillAttemptedAt; v5 albumIDs; v6 generationDataBackfillAttemptedAt
+    static let currentSchemaVersion = 9   // v9 named embedded resources and bracket-safe parsing
 
     var schemaVersion: Int
     /// Civitai image id. Also the filename stem for both the media and this JSON.
@@ -67,6 +67,15 @@ struct LibraryItemMetadata: Codable, Equatable {
     /// `publishedAtBackfillAttemptedAt` plays for dates. A transient network
     /// failure deliberately does NOT set it, so those retry next session.
     let generationDataBackfillAttemptedAt: Date?
+    /// Civitai had no raw checkpoint reference, or the referenced version was
+    /// unavailable or not a checkpoint. Avoids repeating a terminal lookup.
+    let checkpointVersionLookupAttemptedAt: Date?
+    /// Carries the one-time probe across unrelated sidecar rewrites (dates or
+    /// albums). Old v6 sidecars decode as pending; new saves start false.
+    let checkpointVersionProbePending: Bool
+    /// One-time read of the image's own generation parameters. v8 and older
+    /// sidecars requeue because their parser missed bracketed model names.
+    let embeddedCheckpointProbePending: Bool
     /// Album membership: UUID strings for every album this item belongs to.
     /// Many-to-many — an item can be in several albums. Absent in v4-and-earlier
     /// sidecars (decodes to []). The source of truth for membership; the index's
@@ -115,6 +124,9 @@ struct LibraryItemMetadata: Codable, Equatable {
         publishedAt: Date?,
         publishedAtBackfillAttemptedAt: Date? = nil,
         generationDataBackfillAttemptedAt: Date? = nil,
+        checkpointVersionLookupAttemptedAt: Date? = nil,
+        checkpointVersionProbePending: Bool = false,
+        embeddedCheckpointProbePending: Bool = false,
         albumIDs: [String] = [],
         savedAt: Date,
         savedByAppVersion: String
@@ -140,6 +152,9 @@ struct LibraryItemMetadata: Codable, Equatable {
         self.publishedAt = publishedAt
         self.publishedAtBackfillAttemptedAt = publishedAtBackfillAttemptedAt
         self.generationDataBackfillAttemptedAt = generationDataBackfillAttemptedAt
+        self.checkpointVersionLookupAttemptedAt = checkpointVersionLookupAttemptedAt
+        self.checkpointVersionProbePending = checkpointVersionProbePending
+        self.embeddedCheckpointProbePending = embeddedCheckpointProbePending
         self.albumIDs = albumIDs
         self.savedAt = savedAt
         self.savedByAppVersion = savedByAppVersion
@@ -160,14 +175,21 @@ extension LibraryItemMetadata {
             nsfwLevel: nsfwLevel, author: author, stats: stats,
             generationData: generationData, publishedAt: publishedAt,
             publishedAtBackfillAttemptedAt: publishedAtBackfillAttemptedAt,
+            generationDataBackfillAttemptedAt: generationDataBackfillAttemptedAt,
+            checkpointVersionLookupAttemptedAt: checkpointVersionLookupAttemptedAt,
+            checkpointVersionProbePending: checkpointVersionProbePending,
+            embeddedCheckpointProbePending: embeddedCheckpointProbePending,
             albumIDs: ids, savedAt: savedAt, savedByAppVersion: savedByAppVersion
         )
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: FullKeys.self)
+        let decodedSchemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        let storedEmbeddedProbePending = try c.decodeIfPresent(
+            Bool.self, forKey: .embeddedCheckpointProbePending) ?? false
         self.init(
-            schemaVersion: try c.decode(Int.self, forKey: .schemaVersion),
+            schemaVersion: decodedSchemaVersion,
             itemID: try c.decode(Int.self, forKey: .itemID),
             sourcePostID: try c.decodeIfPresent(Int.self, forKey: .sourcePostID),
             sourcePostTitle: try c.decodeIfPresent(String.self, forKey: .sourcePostTitle),
@@ -188,6 +210,10 @@ extension LibraryItemMetadata {
             publishedAt: try c.decodeIfPresent(Date.self, forKey: .publishedAt),
             publishedAtBackfillAttemptedAt: try c.decodeIfPresent(Date.self, forKey: .publishedAtBackfillAttemptedAt),
             generationDataBackfillAttemptedAt: try c.decodeIfPresent(Date.self, forKey: .generationDataBackfillAttemptedAt),
+            checkpointVersionLookupAttemptedAt: try c.decodeIfPresent(Date.self, forKey: .checkpointVersionLookupAttemptedAt),
+            checkpointVersionProbePending: try c.decodeIfPresent(Bool.self, forKey: .checkpointVersionProbePending)
+                ?? (try c.decode(Int.self, forKey: .schemaVersion) < 7),
+            embeddedCheckpointProbePending: decodedSchemaVersion < 9 || storedEmbeddedProbePending,
             albumIDs: try c.decodeIfPresent([String].self, forKey: .albumIDs) ?? [],
             savedAt: try c.decode(Date.self, forKey: .savedAt),
             savedByAppVersion: try c.decode(String.self, forKey: .savedByAppVersion)
@@ -199,7 +225,8 @@ extension LibraryItemMetadata {
         case canonicalPageURL, sourceDomain, originalCDNURL, mediaType, mediaFileName
         case fileByteSize, contentSHA256, width, height, nsfwLevel, author, stats
         case generationData, publishedAt, publishedAtBackfillAttemptedAt
-        case generationDataBackfillAttemptedAt, albumIDs
+        case generationDataBackfillAttemptedAt, checkpointVersionLookupAttemptedAt
+        case checkpointVersionProbePending, embeddedCheckpointProbePending, albumIDs
         case savedAt, savedByAppVersion
     }
 }

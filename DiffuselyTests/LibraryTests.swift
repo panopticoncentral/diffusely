@@ -103,11 +103,9 @@ func makeMetadata(
         #expect(decoded.generationData?.resources?.first?.modelName == "M")
     }
 
-    @Test func currentSchemaVersionIsSix() {
-        // v6 added generationDataBackfillAttemptedAt (the checkpoint backfill's
-        // "Civitai confirmed it has nothing" stamp) on top of v5's albumIDs,
-        // v4's publishedAtBackfillAttemptedAt and v3's publishedAt.
-        #expect(LibraryItemMetadata.currentSchemaVersion == 6)
+    @Test func currentSchemaVersionIsNine() {
+        // v9 retries embedded resources after fixing bracketed model names.
+        #expect(LibraryItemMetadata.currentSchemaVersion == 9)
     }
 
     @Test func decodesV3JSONMissingBackfillMarkerAsNil() throws {

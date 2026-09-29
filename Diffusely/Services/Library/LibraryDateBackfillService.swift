@@ -285,6 +285,13 @@ final class LibraryDateBackfillService: ObservableObject {
             generationData: base.generationData,
             publishedAt: publishedAt,
             publishedAtBackfillAttemptedAt: attemptedAt,
+            generationDataBackfillAttemptedAt: base.generationDataBackfillAttemptedAt,
+            checkpointVersionLookupAttemptedAt: base.checkpointVersionLookupAttemptedAt,
+            checkpointVersionProbePending: base.checkpointVersionProbePending,
+            embeddedCheckpointProbePending: base.embeddedCheckpointProbePending
+                || (base.schemaVersion < LibraryItemMetadata.currentSchemaVersion
+                    && base.mediaType == .image
+                    && PersistedLibraryItem.checkpointGrouping(for: base).name == nil),
             albumIDs: base.albumIDs,
             savedAt: base.savedAt,
             savedByAppVersion: base.savedByAppVersion

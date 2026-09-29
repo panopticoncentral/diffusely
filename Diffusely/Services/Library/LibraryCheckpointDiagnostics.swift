@@ -101,7 +101,7 @@ enum LibraryCheckpointDiagnostics {
         }
 
         let types = Set(resources.compactMap(\.modelType)).sorted()
-        // Same predicate as the denormalization: exact "Checkpoint", first match.
+        // Grouping found no named Checkpoint; report a blank one separately.
         guard let checkpoint = resources.first(where: { $0.modelType == "Checkpoint" }) else {
             return base(.noCheckpointResource, nil, types)
         }
