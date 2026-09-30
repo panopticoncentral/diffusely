@@ -13,6 +13,24 @@ struct CivitaiImage: Codable, Identifiable, Hashable {
     let thumbnailUrl: String?  // API-provided thumbnail URL for videos
     let publishedAt: String?  // ISO 8601 publish timestamp (nullable)
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        // Feed records can have null or absent dimensions. Keep the image and
+        // use the existing zero-dimension layout fallback instead of rejecting
+        // the entire page (and preventing pagination beyond it).
+        width = try container.decodeIfPresent(Int.self, forKey: .width) ?? 0
+        height = try container.decodeIfPresent(Int.self, forKey: .height) ?? 0
+        nsfwLevel = try container.decode(Int.self, forKey: .nsfwLevel)
+        type = try container.decode(String.self, forKey: .type)
+        postId = try container.decodeIfPresent(Int.self, forKey: .postId)
+        user = try container.decodeIfPresent(CivitaiUser.self, forKey: .user)
+        stats = try container.decodeIfPresent(ImageStats.self, forKey: .stats)
+        thumbnailUrl = try container.decodeIfPresent(String.self, forKey: .thumbnailUrl)
+        publishedAt = try container.decodeIfPresent(String.self, forKey: .publishedAt)
+    }
+
     /// Parsed publish date, or nil if absent/unparseable.
     var publishedAtDate: Date? {
         parseCivitaiDate(publishedAt)

@@ -70,4 +70,74 @@ final class StubDevalueFeedURLProtocol: URLProtocol {
         #expect(service.images.count == 1)
         #expect(service.images.first?.id == 7)
     }
+
+    @Test(arguments: [false, true])
+    func paginationContinuesPastUnknownDimensions(devalue: Bool) async throws {
+        let first = #"[{"result":{"data":{"json":{"nextCursor":"feed:4:1","items":[{"id":1,"url":"u1","width":100,"height":200,"nsfwLevel":1,"type":"image"}]}}}}]"#
+        // Reduced reproduction of the live Today / Most Collected response:
+        // a null dimension must not prevent decoding the page and its cursor.
+        let second: String
+        if devalue {
+            second = #"[{"result":{"data":"[{\"nextCursor\":1,\"items\":2},\"feed:3:2\",[3],{\"id\":4,\"url\":5,\"width\":6,\"height\":6,\"nsfwLevel\":7,\"type\":8},2,\"u2\",null,1,\"image\"]"}}]"#
+        } else {
+            second = #"[{"result":{"data":{"json":{"nextCursor":"feed:3:2","items":[{"id":2,"url":"u2","width":null,"height":null,"nsfwLevel":1,"type":"image"}]}}}}]"#
+        }
+        let third = #"[{"result":{"data":{"json":{"nextCursor":null,"items":[{"id":3,"url":"u3","width":300,"height":400,"nsfwLevel":1,"type":"image"}]}}}}]"#
+        var requestCount = 0
+        StubDevalueFeedURLProtocol.handler = { request in
+            let components = try #require(URLComponents(url: request.url!, resolvingAgainstBaseURL: false))
+            let input = try #require(components.queryItems?.first { $0.name == "input" }?.value)
+            let batch = try #require(JSONSerialization.jsonObject(with: Data(input.utf8)) as? [String: [String: [String: Any]]])
+            let parameters = try #require(batch["0"]?["json"])
+            #expect(parameters["period"] as? String == "Day")
+            #expect(parameters["sort"] as? String == "Most Collected")
+            #expect(parameters["useIndex"] as? Bool == true)
+            requestCount += 1
+            switch requestCount {
+            case 1:
+                #expect(parameters["cursor"] == nil)
+                return (200, Data(first.utf8))
+            case 2:
+                #expect(parameters["cursor"] as? String == "feed:4:1")
+                return (200, Data(second.utf8))
+            default:
+                #expect(parameters["cursor"] as? String == "feed:3:2")
+                return (200, Data(third.utf8))
+            }
+        }
+        defer { StubDevalueFeedURLProtocol.handler = nil }
+
+        let service = makeService()
+        await service.fetchImages(videos: false, period: .day, sort: .mostCollected)
+        await service.loadMoreImages(videos: false, period: .day, sort: .mostCollected)
+        #expect(service.error == nil)
+        #expect(service.images.map(\.id) == [1, 2])
+        let unknownSize = try #require(service.images.last)
+        #expect(unknownSize.width == 0)
+        #expect(unknownSize.height == 0)
+
+        await service.loadMoreImages(videos: false, period: .day, sort: .mostCollected)
+        #expect(service.error == nil)
+        #expect(service.images.map(\.id) == [1, 2, 3])
+        #expect(service.images.last?.width == 300)
+        #expect(service.images.last?.height == 400)
+        await service.loadMoreImages(videos: false, period: .day, sort: .mostCollected)
+        #expect(requestCount == 3)
+    }
+
+    @Test(arguments: [
+        #""#,
+        #", "width": null, "height": 200"#,
+        #", "width": 100, "height": null"#
+    ])
+    func missingDimensionsUseLayoutFallback(dimensions: String) throws {
+        let json = #"{"id":1,"url":"u1","nsfwLevel":1,"type":"image"\#(dimensions)}"#
+        let image = try JSONDecoder().decode(CivitaiImage.self, from: Data(json.utf8))
+        #expect(image.width == (dimensions.contains("100") ? 100 : 0))
+        #expect(image.height == (dimensions.contains("200") ? 200 : 0))
+        let ratio = ImageFeedItemView.displayAspectRatio(width: image.width, height: image.height)
+        #expect(ratio.isFinite && ratio > 0)
+        let roundTrip = try JSONDecoder().decode(CivitaiImage.self, from: JSONEncoder().encode(image))
+        #expect(roundTrip == image)
+    }
 }
