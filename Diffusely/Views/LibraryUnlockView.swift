@@ -102,6 +102,7 @@ struct LibraryUnlockView: View {
     private func biometrics() async {
         guard let vault = provider.vault else { return }
         busy = true
+        error = nil
         defer { busy = false }
         if await vault.unlockWithBiometrics() {
             await provider.refreshState()

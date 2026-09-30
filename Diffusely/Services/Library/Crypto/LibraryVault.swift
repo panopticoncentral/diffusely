@@ -248,11 +248,16 @@ actor LibraryVault {
     /// a later retry can succeed. The read itself runs on `ioQueue`, never a
     /// cooperative thread.
     private func loadFile() async -> Load {
-        let urls = [vaultURL, backupURL]
+        let paths = [vaultURL.path, backupURL.path]
         let probe = materialization
         return await Self.runOnIOQueue {
             var sawPlaceholder = false
-            for url in urls {
+            for path in paths {
+                // URL caches resource values on its backing object. Reusing
+                // the stored URLs can keep reporting an old .notDownloaded
+                // status after iCloud finishes downloading (or miss eviction).
+                // Every attempt needs a fresh metadata snapshot.
+                let url = URL(fileURLWithPath: path)
                 switch probe(url) {
                 case .absent:
                     continue

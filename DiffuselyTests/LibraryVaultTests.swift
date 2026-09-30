@@ -151,6 +151,46 @@ final class LibraryVaultTests: XCTestCase {
 
     // MARK: - Evicted iCloud vault file (dataless placeholder)
 
+    /// File size uses the same URL resource-value cache as iCloud download
+    /// status. Empty local files stand in for placeholders so this exercises
+    /// a real stale-cache transition without touching the user's iCloud data.
+    func testRetryObservesMaterializedVaultAfterCachedPlaceholder() async throws {
+        let (source, sourceDirectory) = makeVault()
+        defer { try? FileManager.default.removeItem(at: sourceDirectory) }
+        let recovery = try await source.configure(password: "pw")
+        let data = try Data(contentsOf: sourceDirectory.appendingPathComponent("vault.json"))
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let primary = directory.appendingPathComponent("vault.json")
+        let backup = directory.appendingPathComponent("vault.backup.json")
+        try Data().write(to: primary)
+        try Data().write(to: backup)
+        let vault = LibraryVault(
+            vaultURL: primary, backupURL: backup,
+            keyStore: InMemoryKeyStore(), rounds: 1000,
+            materialization: { url in
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+                return size == 0 ? .notDownloaded : .materialized
+            }
+        )
+
+        let initiallyAwaiting = await vault.isAwaitingDownload()
+        XCTAssertTrue(initiallyAwaiting)
+        try data.write(to: primary)
+        try data.write(to: backup)
+
+        let stillAwaiting = await vault.isAwaitingDownload()
+        XCTAssertFalse(stillAwaiting, "Retry must discard the cached placeholder status")
+        try await vault.unlock(password: "pw")
+        await vault.lock()
+        try await vault.unlock(recoveryKey: recovery)
+        await vault.lock()
+        let biometricUnlocked = await vault.unlockWithBiometrics()
+        XCTAssertTrue(biometricUnlocked)
+    }
+
     /// Builds a vault over `dir` whose files all report as un-materialized
     /// iCloud placeholders — the state macOS leaves behind when it evicts the
     /// ubiquity container under storage pressure. A genuinely dataless file
